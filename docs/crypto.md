@@ -35,17 +35,34 @@ norm-v1\n{METHOD}\n{PATH}\n{timestamp}\n{nonce}\n{sha256hex(body)}
 - 服务端校验顺序：头部齐全 → 时间戳在 ±`SIGNATURE_WINDOW_SECONDS` 内 → `(address, nonce)` 首次出现 → 验签。
 - nonce 一经落库即作废；同一 nonce 第二次到达一律 401 `nonce_replayed`。
 
-## 3. BYOK 密文（服务端读不懂）
+## 3. 上游密钥的封装（拖库拿不到明文）
 
 ```
-key      = PBKDF2-SHA256(passphrase, salt = "norm-v1|" + address, c = 600000, dkLen = 32)
-sealed   = base58( nonce24 || XChaCha20-Poly1305(key, nonce24, plaintext = utf8(upstreamKey), aad = utf8(address)) )
-kdf      = "pbkdf2-sha256-600000+xchacha20poly1305"
+key     = base64url 解码 NORM_MASTER_KEY（必须是 32 字节，Worker secret，不进仓库、不进 D1）
+sealed  = base64url( iv12 || AES-256-GCM(key, iv12, plaintext = utf8(upstreamKey), aad = utf8(address + "|" + credentialId)) )
+kdf     = "aes-256-gcm+worker-secret"
 ```
 
-- 只用 `@noble/hashes/pbkdf2` + `@noble/ciphers/chacha`（`xchacha20poly1305`）。
-- 服务端只存 `sealed`、`kdf`、`key_hint`（前 4 + `…` + 后 4，明文密钥被截断后的展示用），从不接收 passphrase。
-- 调用模型时由浏览器解封，把明文密钥放进 `X-Norm-Upstream-Key` 随该次请求发送；Worker 只用不存。
+- 封装与解封都在 Worker 里：`POST /api/v1/credentials` 收到明文 `upstream_key`，立刻封装后丢弃；
+  `POST /v1/chat/completions` 现解现用，只在本次请求的作用域里存在。
+- AAD 把密文绑到「哪个账户的哪条凭证」，两条记录被互换也会解密失败，不需要额外的完整性字段。
+- 库里只有 `sealed_key`、`kdf`、`key_hint`（前 4 + `…` + 后 4）。
+- 为什么不早先那套「用户口令派生」：口令只保护**存储中的副本**，而中转站每次调用都必然看见明文，
+  它防不住运行期、只能防拖库；既然如此，一把由系统配置的高熵密钥就够了，也不引入弱口令与「每次调用重输」的负担。
+- 代价要说清：拿到 `NORM_MASTER_KEY` 又拿到库，就能解开全部上游密钥。所以它是 Worker secret，
+  轮换等于全量重封（旧密文解不开，必须重录或做一次迁移）。
+
+## 3b. 下游消费者密钥（`sk-norm-…`）
+
+```
+key       = "sk-norm-" + base58(32 字节随机)        → 只在创建与轮换的响应里出现一次
+key_sha256 = sha256hex(utf8(key))                    → 库里唯一存的形态（UNIQUE 索引即查表）
+key_hint  = "sk-norm-" + 前 4 + "…" + 后 4           → 列表与页面只用它
+```
+
+- 查表即鉴权：`Authorization: Bearer sk-norm-…` → `key_sha256` → 账户。
+- 轮换就地替换哈希，旧钥立刻失效，备注名与使用历史留在同一行。
+- 管理面（`/api/v1/*`）只认签名，所以一把下游密钥不能再铸钥匙、也撤销不了凭证。
 
 ## 4. 计费计数器
 

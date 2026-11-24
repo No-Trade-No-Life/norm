@@ -5,6 +5,7 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
+import { unsealUpstreamKey } from '../seal';
 import { charge, findCredential, findPrincipal } from '../store';
 import { adapterFor, upstreamUrlFor, type ChatBody, type UpstreamProtocol } from '../upstreams';
 
@@ -26,12 +27,19 @@ relayRoutes.post('/chat/completions', (c: RelayContext) => proxy(c));
 async function proxy(c: RelayContext): Promise<Response> {
   const address = c.get('principal').address;
   const credentialId = c.req.header('X-Norm-Credential');
-  const upstreamKey = c.req.header('X-Norm-Upstream-Key');
   if (!credentialId) fail(400, 'credential_required', '缺少 X-Norm-Credential');
-  if (!upstreamKey) fail(400, 'upstream_key_required', '缺少 X-Norm-Upstream-Key：明文密钥只在请求里');
 
   const credential = await findCredential(c.env, address, credentialId);
   if (!credential) fail(404, 'credential_not_found', '凭证不存在或已撤销');
+
+  // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
+  // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。
+  const upstreamKey = await unsealUpstreamKey({
+    env: c.env,
+    address,
+    credentialId: credential.id,
+    sealed: credential.sealed_key,
+  });
 
   // 目的地只能来自凭证：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
   const baseUrl = credential.base_url;

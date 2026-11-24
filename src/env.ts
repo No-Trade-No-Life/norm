@@ -5,6 +5,8 @@ export type Env = {
   GRANT_MICROS: string;
   SIGNATURE_WINDOW_SECONDS: string;
   TRUSTED_BASE_URLS: string;
+  /** 32 字节 base64url，只由 `wrangler secret put` 写入，不进仓库、不进 D1。 */
+  NORM_MASTER_KEY: string;
   ATTEST_COMMIT: string;
   ATTEST_BUILT_AT: string;
   ATTEST_SOURCE_SHA256: string;
