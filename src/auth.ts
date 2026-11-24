@@ -4,10 +4,23 @@ import { fail } from './http';
 import { nowSeconds } from './ids';
 import { sha256Hex, signingMessage, verifySignature } from './crypto';
 import { ensurePrincipal, principalExists } from './store';
+import { principalFromConsumerKey } from './consumers';
 
 export type Principal = {
   address: string;
 };
+
+/** 一个请求只有两种身份：Bearer 消费者密钥，或 Ed25519 签名。没有 Authorization 就走签名。 */
+export async function resolvePrincipal(request: Request, env: Env): Promise<Principal> {
+  const authorization = request.headers.get('Authorization');
+  if (!authorization) return authenticate(request, env);
+
+  const [scheme, value] = authorization.trim().split(/\s+/);
+  if (scheme.toLowerCase() !== 'bearer' || !value) {
+    fail(401, 'authorization_invalid', 'Authorization 只支持 Bearer 消费者密钥');
+  }
+  return principalFromConsumerKey(env, value);
+}
 
 /**
  * 读取并校验签名请求。校验顺序是刻意的：先把便宜的检查（头部、时间窗）跑完，

@@ -24,6 +24,16 @@ gh secret set CLOUDFLARE_ACCOUNT_ID -R No-Trade-No-Life/norm   # b831a34938a7545
 
 缺这两个 secret 时 release 会**红**，而不是静默跳过——一次没上线的合并不该看起来像上线了。
 
+还有一个 Worker secret 必须单独设置（它不是仓库 secret，是 Worker 的运行期密钥）：
+
+```bash
+# 32 字节 base64url。缺失时凭证创建与转发都会 500，所以它是最先要配的东西。
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' | pnpm exec wrangler secret put NORM_MASTER_KEY --config wrangler.jsonc
+```
+
+本地开发把它写进 `.dev.vars`（已在 `.gitignore` 里）。轮换它等于让所有现有上游密钥失效：
+旧密文解不开，必须重录凭证或先跑一次重封迁移。
+
 ## 发布流程（CI 与本地一致）
 
 1. `pnpm exec wrangler d1 migrations apply norm --remote` —— 先迁移，再上传代码
@@ -53,7 +63,7 @@ Workers 运行时本身由 Cloudflare 托管——这一层不在自证范围内
 ## 冒烟
 
 ```bash
-node scripts/e2e.mjs          # 本地：假上游 + 真身份 + 本地 Worker，40 项断言
+node scripts/e2e.mjs          # 本地：假上游 + 真身份 + 本地 Worker，含消费者密钥用例
 node scripts/smoke-prod.mjs   # 线上：真签名打真域名，上游用一个故意失效的密钥（验"失败不扣费"）
 ```
 
@@ -74,6 +84,8 @@ done
 | `REQUEST_FEE_MICROS` | `500` | 每次成功转发的隔离费（微美元） |
 | `GRANT_MICROS` | `1000000` | 新地址的演示授信（微美元，即 $1） |
 | `SIGNATURE_WINDOW_SECONDS` | `120` | 签名时间窗 |
+| `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |
+| `NORM_MASTER_KEY` | 无默认 | **Worker secret**，AES-256-GCM 封装上游密钥用的 32 字节密钥 |
 
 `ATTEST_*` 由发布流程用 `--var` 覆盖，不要手改。
 
