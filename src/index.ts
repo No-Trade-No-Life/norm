@@ -1,11 +1,12 @@
 import { Hono } from 'hono';
 import type { Env } from './env';
 import { HttpError } from './http';
-import { authenticate, type Principal } from './auth';
+import { authenticate, resolvePrincipal, type Principal } from './auth';
 import { nowSeconds } from './ids';
 import { publicRoutes } from './routes/public';
 import { accountRoutes } from './routes/account';
 import { credentialRoutes } from './routes/credentials';
+import { consumerRoutes } from './routes/consumers';
 import { relayRoutes } from './routes/relay';
 
 type Variables = { principal: Principal };
@@ -29,10 +30,12 @@ app.post('/api/v1/auth/login', async (c) => {
 });
 
 /**
- * 签名是这一族的唯一入口：用一个子应用承载全部受保护路由，
- * `/v1/*` 与 `/api/v1/*` 共用同一份鉴权与同一份处理器，避免出现"某条路径忘了验签"的分支。
+ * 管理面 `/api/v1/*`：只接受 Ed25519 签名。
+ *
+ * 账户、凭证、消费者密钥都是「浏览器里的人在操作」，所以一把下游密钥不该能
+ * 凭空再铸一把下游密钥，也不该能撤销别人的凭证。
  */
-function protectedApp() {
+function signedOnly() {
   const signed = new Hono<App>();
   signed.use('*', async (c, next) => {
     c.set('principal', await authenticate(c.req.raw, c.env));
@@ -40,16 +43,31 @@ function protectedApp() {
   });
   signed.route('/account', accountRoutes);
   signed.route('/credentials', credentialRoutes);
-  // relay 自己的路径就是完整的 `/chat/completions` 与 `/responses`，
-  // 所以挂在根上：`/v1/chat/completions`、`/v1/responses`。
-  signed.route('/', relayRoutes);
+  signed.route('/consumers', consumerRoutes);
   return signed;
 }
 
-app.route('/api/v1', protectedApp());
+/**
+ * 转发面 `/v1/*`：Bearer 消费者密钥或 Ed25519 签名，二选一。
+ *
+ * 两条入口用前缀划开，而不是在同一前缀上再按路径分流——那样两个 `/*` 中间件
+ * 会互相抢同一个请求，谁先跑取决于注册顺序，而这种顺序没人看得出来。
+ *
+ * relay 自己的路径就是完整的 `/chat/completions`，挂在根上，
+ * 于是 `/v1/chat/completions` 直接落在 relayRoutes 上。
+ */
+function relayOnly() {
+  const relay = new Hono<App>();
+  relay.use('*', async (c, next) => {
+    c.set('principal', await resolvePrincipal(c.req.raw, c.env));
+    await next();
+  });
+  relay.route('/', relayRoutes);
+  return relay;
+}
 
-/** OpenAI 兼容入口：`/v1/chat/completions` 直接落在 relayRoutes 的 `/chat/completions` 上。 */
-app.route('/v1', protectedApp());
+app.route('/api/v1', signedOnly());
+app.route('/v1', relayOnly());
 
 app.notFound((c) => c.json({ error: 'not_found', message: `没有这个接口：${new URL(c.req.url).pathname}` }, 404));
 
