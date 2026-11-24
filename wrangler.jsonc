@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "norm",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-20",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // 单源部署：SPA 与 API 同域同版本，没有跨域，也没有版本错配。
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "none"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "norm",
+      "database_id": "0e9f0b7f-0e98-4451-8103-a96a17e5a197",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    // 请求隔离费：每一次真正被隔离执行的上游调用。微美元。
+    "REQUEST_FEE_MICROS": "500",
+    // 新地址的演示授信。
+    "GRANT_MICROS": "1000000",
+    // 签名时间窗。
+    "SIGNATURE_WINDOW_SECONDS": "120"
+  },
+
+  "routes": [{ "pattern": "norm.ntnl.io", "custom_domain": true }]
+}
