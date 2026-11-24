@@ -3,7 +3,8 @@ import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
-import { checkProvenance, hostOf } from '../provenance';
+import { isProtocol, isVisibility } from '../upstreams';
+import { hostOf } from '../base-urls';
 import { findCredential, listCredentials } from '../store';
 
 type Body = {
@@ -13,11 +14,26 @@ type Body = {
   key_hint?: string;
   sealed_key?: string;
   kdf?: string;
-  declared_source?: string;
+  upstream_protocol?: string;
+  upstream_visibility?: string;
 };
 
-const PROVIDERS = new Set(['openai', 'deepseek', 'anthropic', 'google', 'xai', 'moonshot', 'zhipu', 'qwen', 'self-hosted', 'other']);
-const SOURCES = new Set(['official-api-key', 'official-subscription', 'self-hosted', 'other']);
+/**
+ * `self-hosted` / `other` 只是「没有官方主机表可比对」的载体标签；
+ * 来源（官方/第三方）由 base_url 落在哪台主机上决定，用户无法声明。
+ */
+const PROVIDERS = new Set([
+  'openai',
+  'deepseek',
+  'anthropic',
+  'google',
+  'xai',
+  'moonshot',
+  'zhipu',
+  'qwen',
+  'self-hosted',
+  'other',
+]);
 const KDFS = new Set(['pbkdf2-sha256-600000+xchacha20poly1305']);
 
 export const credentialRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
@@ -27,29 +43,25 @@ credentialRoutes.get('/', async (c) => c.json({ items: await listCredentials(c.e
 credentialRoutes.post('/', async (c) => {
   const body = await c.req.json<Body>();
   const provider = body.provider ?? '';
-  const declaredSource = body.declared_source ?? '';
   const kdf = body.kdf ?? '';
+  // 两个都可选，但默认值必须是"最保守"的那个：协议默认 chat，公开性默认私有。
+  const protocol = body.upstream_protocol ?? 'openai-chat';
+  const visibility = body.upstream_visibility ?? 'private';
+
   if (!PROVIDERS.has(provider)) fail(400, 'provider_invalid', `provider 不合法：${provider}`);
-  if (!SOURCES.has(declaredSource)) fail(400, 'source_invalid', `declared_source 不合法：${declaredSource}`);
   if (!KDFS.has(kdf)) fail(400, 'kdf_invalid', 'kdf 必须是 docs/crypto.md 约定的那一串');
+  if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `upstream_protocol 只能是 openai-chat / openai-responses`);
+  if (!isVisibility(visibility)) fail(400, 'visibility_invalid', `upstream_visibility 只能是 public / private`);
   if (!body.base_url || !hostOf(body.base_url)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
   if (!body.sealed_key) fail(400, 'sealed_key_missing', '缺少密文；明文密钥不允许上传');
 
   const now = nowSeconds();
-  const provenance = checkProvenance({
-    provider,
-    baseUrl: body.base_url,
-    // 创建时服务端拿不到明文密钥，前缀信号只能留空，等第一次调用时补齐。
-    upstreamKey: '',
-    declaredSource,
-    checkedAt: now,
-  });
-
   const id = `cred_${randomToken(12)}`;
   await c.env.DB.prepare(
     `INSERT INTO credentials
-       (id, address, label, provider, base_url, key_hint, sealed_key, kdf, declared_source, public_listed, provenance, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+       (id, address, label, provider, base_url, key_hint, sealed_key, kdf,
+        upstream_protocol, upstream_visibility, public_listed, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
   )
     .bind(
       id,
@@ -60,8 +72,8 @@ credentialRoutes.post('/', async (c) => {
       body.key_hint ?? '••••',
       body.sealed_key,
       kdf,
-      declaredSource,
-      JSON.stringify(provenance),
+      protocol,
+      visibility,
       now,
     )
     .run();

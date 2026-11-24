@@ -4,6 +4,7 @@ export type Env = {
   REQUEST_FEE_MICROS: string;
   GRANT_MICROS: string;
   SIGNATURE_WINDOW_SECONDS: string;
+  TRUSTED_BASE_URLS: string;
   ATTEST_COMMIT: string;
   ATTEST_BUILT_AT: string;
   ATTEST_SOURCE_SHA256: string;

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { requestJson, publicJson } from './api';
-import type { Attestation, Credential, LedgerRow, LoginResponse, Me, ProvenanceItem, RequestRow } from './types';
+import type { Attestation, BaseUrlGroup, Credential, LedgerRow, LoginResponse, Me, RequestRow } from './types';
 
 /** 登录：签名走通一次即开户。没有 body，签的是空字节串的 sha256。 */
 export function useLogin(enabled: boolean, address: string) {
@@ -61,10 +61,10 @@ export function useLedger(enabled: boolean, page: number) {
   });
 }
 
-export function useProvenance() {
+export function useBaseUrls() {
   return useQuery({
-    queryKey: ['provenance'],
-    queryFn: () => publicJson<{ items: ProvenanceItem[] }>('/api/v1/provenance'),
+    queryKey: ['base-urls'],
+    queryFn: () => publicJson<{ items: BaseUrlGroup[] }>('/api/v1/base-urls'),
     select: (data) => data.items,
   });
 }
@@ -99,7 +99,7 @@ export function useSetVisibility() {
       }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['credentials'] });
-      void queryClient.invalidateQueries({ queryKey: ['provenance'] });
+      void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
     },
   });
 }
@@ -110,7 +110,7 @@ export function useRevokeCredential() {
     mutationFn: (id: string) => requestJson<{ id: string; revoked: boolean }>({ path: `/api/v1/credentials/${id}`, method: 'DELETE' }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['credentials'] });
-      void queryClient.invalidateQueries({ queryKey: ['provenance'] });
+      void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
       void queryClient.invalidateQueries({ queryKey: ['me'] });
     },
   });

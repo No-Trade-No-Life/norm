@@ -40,7 +40,9 @@ function protectedApp() {
   });
   signed.route('/account', accountRoutes);
   signed.route('/credentials', credentialRoutes);
-  signed.route('/chat', relayRoutes);
+  // relay 自己的路径就是完整的 `/chat/completions` 与 `/responses`，
+  // 所以挂在根上：`/v1/chat/completions`、`/v1/responses`。
+  signed.route('/', relayRoutes);
   return signed;
 }
 

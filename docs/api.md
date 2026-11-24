@@ -1,6 +1,6 @@
 # Norm API
 
-Base: `https://norm.ntnl.io`。所有 `/api/v1/*`（除 health/stats/attestation/provenance）与 `/v1/*` 都需要请求签名。
+Base: `https://norm.ntnl.io`。所有 `/api/v1/*`（除 health/stats/base-urls/attestation）与 `/v1/*` 都需要请求签名。
 
 ## 签名
 
@@ -16,7 +16,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 |---|---|---|
 | GET | `/api/v1/health` | `{ok, service, version, now}` |
 | GET | `/api/v1/stats` | `{principals, credentials, requests, spend_micros, window_hours}` |
-| GET | `/api/v1/provenance` | 公开凭证的来源与核验信号数组 |
+| GET | `/api/v1/base-urls` | 按 base_url 聚合的上游渠道（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
 ## 身份
@@ -46,24 +46,43 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 // POST /api/v1/credentials
 {
   "label": "OpenAI 个人",
-  "provider": "openai",              // openai | deepseek | anthropic | google | self-hosted | other
-  "base_url": "https://api.openai.com/v1",
+  "provider": "openai",                       // 只是个标签：openai | deepseek | anthropic | google | xai
+                                              // | moonshot | zhipu | qwen | self-hosted | other
+  "base_url": "https://api.openai.com/v1",    // 任意上游，创建后钉死，转发时不可改写
   "key_hint": "sk-…1234",
   "sealed_key": "base58 密文",
   "kdf": "pbkdf2-sha256-600000+xchacha20poly1305",
-  "declared_source": "official-api-key"
+
+  // 可选，默认最保守：openai-chat / private
+  "upstream_protocol": "openai-chat",         // openai-chat | openai-responses
+                                              // | anthropic-messages | google-gemini
+  "upstream_visibility": "private"            // public | private（上游本身是否对公众可用）
 }
 ```
 
+响应里的每条凭证还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的
+`TRUSTED_BASE_URLS` 清单里。后端只回这个事实，「官方 / 清单外」的措辞是前端的事。
+
 ## 转发（签名）
 
-`POST /v1/chat/completions` — 严格 OpenAI 兼容，支持 `stream: true`。
+客户端**只**说 OpenAI Chat，上游的方言由凭证决定、由 Norm 在边界处翻译：
+
+| 端点 | 上游路径（按 `upstream_protocol`） |
+|---|---|
+| `POST /v1/chat/completions` | `openai-chat` → `{base}/chat/completions` |
+| | `openai-responses` → `{base}/responses` |
+| | `anthropic-messages` → `{base}/v1/messages` |
+| | `google-gemini` → `{base}/v1beta/models/{model}:generateContent`（流式 `:streamGenerateContent?alt=sse`） |
+
+支持 `stream: true`；流式一律返回 OpenAI chat chunk。
 
 | 头 | 必填 | 说明 |
 |---|---|---|
-| `X-Norm-Credential` | 是 | 用于归属与来源核验的凭证 id |
+| `X-Norm-Credential` | 是 | 凭证 id，决定发往哪个上游 |
 | `X-Norm-Upstream-Key` | 是 | 上游明文密钥，仅本次请求有效 |
-| `X-Norm-Base-Url` | 否 | 覆盖凭证的 base_url（用于自部署端点） |
+
+请求头**不能**改写目的地：早期版本的 `X-Norm-Base-Url` 已删除，带上它也不会生效
+（e2e 里有专门一条断言盯着这件事）。
 
 Non-stream 响应在标准 body 之外附带 `norm` 对象：
 
@@ -71,7 +90,7 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 {
   "...": "OpenAI 响应原样",
   "norm": { "request_id": "req_…", "fee_micros": 500, "balance_micros": 999500, "latency_ms": 812,
-            "provenance": { "declared_source": "official-api-key", "verified": true, "signals": ["host","key_prefix","models_probe"] } }
+            "host": "api.openai.com" }
 }
 ```
 

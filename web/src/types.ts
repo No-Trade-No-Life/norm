@@ -17,21 +17,18 @@ export type Me = {
   created_at: number;
 };
 
-export type ProvenanceSignals = {
-  declared_source: string;
-  verified: boolean;
-  signals: string[];
-  host?: string;
-};
+/** 一次调用里关于上游的唯一事实：它落在哪台主机上。 */
+export type CallFacts = { host: string };
 
-export type ProvenanceDetail = {
-  declared_source: string;
-  verified: boolean;
-  signals: string[];
-  checks: { host: boolean; key_prefix: boolean; models_probe: boolean | null };
+/** 按 base_url 聚合的上游渠道。后端不做价值判断，trusted 只是清单命中与否。 */
+export type BaseUrlGroup = {
+  base_url: string;
   host: string;
-  checked_at: number;
-  note: string;
+  trusted: boolean;
+  credentials: number;
+  public_listed: number;
+  protocols: string[];
+  last_seen_at: number;
 };
 
 export type Credential = {
@@ -43,9 +40,11 @@ export type Credential = {
   key_hint: string;
   sealed_key: string;
   kdf: string;
-  declared_source: string;
+  upstream_protocol: UpstreamProtocol;
+  upstream_visibility: UpstreamVisibility;
   public_listed: number;
-  provenance: string;
+  /** 主机名是否在信任清单里；由后端用同一份清单算出，前端只负责措辞。 */
+  trusted: boolean;
   created_at: number;
   revoked_at: number | null;
 };
@@ -75,17 +74,6 @@ export type LedgerRow = {
   created_at: number;
 };
 
-export type ProvenanceItem = {
-  id: string;
-  label: string;
-  provider: string;
-  base_url: string;
-  key_hint: string;
-  declared_source: string;
-  provenance: ProvenanceDetail;
-  created_at: number;
-};
-
 export type Attestation = {
   service: string;
   repository: string;
@@ -101,13 +89,18 @@ export type ChatChunk = {
   id?: string;
   model?: string;
   choices?: Array<{ delta?: { content?: string; role?: string }; finish_reason?: string | null }>;
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  };
   norm?: {
     request_id: string;
     fee_micros: number;
     balance_micros: number | null;
     latency_ms: number;
-    provenance: ProvenanceSignals;
+    host: string;
   };
   error?: { message?: string } | string;
   message?: string;
@@ -126,4 +119,13 @@ export const PROVIDERS = [
   'other',
 ] as const;
 
-export const SOURCES = ['official-api-key', 'official-subscription', 'self-hosted', 'other'] as const;
+/**
+ * 上游说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
+ * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
+ */
+export const PROTOCOLS = ['openai-chat', 'openai-responses'] as const;
+export type UpstreamProtocol = (typeof PROTOCOLS)[number];
+
+/** 上游本身是否对公众可用。私有不代表掺水，只代表不对外。 */
+export const VISIBILITIES = ['public', 'private'] as const;
+export type UpstreamVisibility = (typeof VISIBILITIES)[number];
