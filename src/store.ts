@@ -27,7 +27,10 @@ export type CredentialRow = {
   revoked_at: number | null;
 };
 
-/** 地址第一次出现就开户并给演示授信。重复调用安全：只在该地址不存在时生效。 */
+/**
+ * 地址第一次出现就开户并给演示授信。三条语句在同一个 batch 里，
+ * 保证「给钱」与「记这笔钱」不会分叉；重复调用安全。
+ */
 export async function ensurePrincipal(env: Env, address: string, at: number): Promise<void> {
   const grant = grantMicros(env);
   await env.DB.batch([
@@ -44,6 +47,11 @@ export async function ensurePrincipal(env: Env, address: string, at: number): Pr
   ]);
 }
 
+export async function principalExists(env: Env, address: string): Promise<boolean> {
+  const row = await env.DB.prepare('SELECT 1 AS found FROM principals WHERE address = ?').bind(address).first<{ found: number }>();
+  return row !== null;
+}
+
 export async function findPrincipal(env: Env, address: string): Promise<PrincipalRow> {
   const row = await env.DB.prepare('SELECT * FROM principals WHERE address = ?').bind(address).first<PrincipalRow>();
   if (!row) throw new Error(`账户不存在：${address}`);
@@ -52,7 +60,7 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
 
 export async function listCredentials(env: Env, address: string): Promise<CredentialRow[]> {
   const { results } = await env.DB.prepare(
-    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC',
+    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
   )
     .bind(address)
     .all<CredentialRow>();
@@ -66,8 +74,9 @@ export async function findCredential(env: Env, address: string, id: string): Pro
 }
 
 /**
- * 扣费与记账必须在同一个事务里完成，否则账本与余额会分叉。
- * 余额不足时返回 null，调用方据此拒绝请求——不做"先欠后补"。
+ * 扣费与记账之间不能有窗口：余额的更新用一条 `UPDATE ... RETURNING` 完成，
+ * 返回值就是这笔扣费之后的余额，天然与并发隔离。
+ * 余额不足时返回 null——不做"先欠后补"。
  */
 export async function charge(
   env: Env,
@@ -77,18 +86,19 @@ export async function charge(
   at: number,
 ): Promise<number | null> {
   const updated = await env.DB.prepare(
-    'UPDATE principals SET balance_micros = balance_micros - ?, spend_micros = spend_micros + ? WHERE address = ? AND balance_micros >= ?',
+    `UPDATE principals SET balance_micros = balance_micros - ?, spend_micros = spend_micros + ?
+     WHERE address = ? AND balance_micros >= ?
+     RETURNING balance_micros`,
   )
     .bind(amountMicros, amountMicros, address, amountMicros)
-    .run();
-  if (updated.meta.changes === 0) return null;
+    .first<{ balance_micros: number }>();
+  if (!updated) return null;
 
-  const principal = await findPrincipal(env, address);
   await env.DB.prepare(
     `INSERT INTO ledger (id, address, request_id, kind, amount_micros, balance_after_micros, created_at)
      VALUES (?, ?, ?, 'charge', ?, ?, ?)`,
   )
-    .bind(randomToken(), address, requestId, -amountMicros, principal.balance_micros, at)
+    .bind(randomToken(), address, requestId, -amountMicros, updated.balance_micros, at)
     .run();
-  return principal.balance_micros;
+  return updated.balance_micros;
 }

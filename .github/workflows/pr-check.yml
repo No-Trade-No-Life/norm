@@ -1,0 +1,35 @@
+name: pr-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      # 迁移必须能在空库上跑通：schema 是这一版唯一的数据契约，别等上线才发现。
+      - name: Apply migrations on a throwaway local D1
+        run: pnpm exec wrangler d1 migrations apply norm --local --config wrangler.jsonc
+      - name: Attestation hashes are reproducible
+        run: pnpm attest

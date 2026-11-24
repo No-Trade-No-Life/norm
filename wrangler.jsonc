@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "norm",
   "main": "src/index.ts",
-  "compatibility_date": "2026-11-20",
+  "compatibility_date": "2026-10-25",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
@@ -29,7 +29,13 @@
     // 新地址的演示授信。
     "GRANT_MICROS": "1000000",
     // 签名时间窗。
-    "SIGNATURE_WINDOW_SECONDS": "120"
+    "SIGNATURE_WINDOW_SECONDS": "120",
+    // 可信发布证明：CI 在 deploy 时用 --var 覆盖，公开在 /api/v1/attestation。
+    "ATTEST_COMMIT": "dev",
+    "ATTEST_BUILT_AT": "dev",
+    "ATTEST_SOURCE_SHA256": "dev",
+    "ATTEST_ASSETS_SHA256": "dev",
+    "ATTEST_RUN_URL": "dev"
   },
 
   "routes": [{ "pattern": "norm.ntnl.io", "custom_domain": true }]

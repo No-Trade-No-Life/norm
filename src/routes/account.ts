@@ -26,7 +26,7 @@ accountRoutes.get('/me', async (c) => {
 accountRoutes.get('/usage', async (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 50), 200);
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM requests WHERE address = ? ORDER BY created_at DESC LIMIT ?',
+    'SELECT * FROM requests WHERE address = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
   )
     .bind(c.get('principal').address, limit)
     .all();
@@ -36,7 +36,7 @@ accountRoutes.get('/usage', async (c) => {
 accountRoutes.get('/ledger', async (c) => {
   const limit = Math.min(Number(c.req.query('limit') ?? 50), 200);
   const { results } = await c.env.DB.prepare(
-    'SELECT * FROM ledger WHERE address = ? ORDER BY created_at DESC LIMIT ?',
+    'SELECT * FROM ledger WHERE address = ? ORDER BY created_at DESC, rowid DESC LIMIT ?',
   )
     .bind(c.get('principal').address, limit)
     .all();
