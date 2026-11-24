@@ -24,7 +24,7 @@ publicRoutes.get('/provenance', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT id, label, provider, base_url, key_hint, declared_source, provenance, created_at
      FROM credentials WHERE public_listed = 1 AND revoked_at IS NULL
-     ORDER BY created_at DESC LIMIT 200`,
+     ORDER BY created_at DESC, rowid DESC LIMIT 200`,
   ).all<{
     id: string;
     label: string;

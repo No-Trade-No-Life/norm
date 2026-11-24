@@ -1,0 +1,96 @@
+name: release
+
+on:
+  workflow_run:
+    workflows: [pr-check]
+    types: [completed]
+    branches: [main]
+  # 手工重跑：改了 secret、或在 Actions 里重新上线一次当前 main，不用空提交。
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 两次合并先后到达时，部署要按顺序跑完，不能互相插队（D1 迁移 + Worker 上传）。
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    steps:
+      # 缺凭据时以前是「跳过并报 success」——那会让一次没上线的合并看起来像上线了。
+      # 现在它红：CI/CD 没配好，这件事本身就该被看见。
+      - name: Require a Cloudflare credential
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "$TOKEN" ] || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$ACCOUNT" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error title=部署未配置::仓库缺少:$missing。main 的改动不会上线。"
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply norm --remote --config wrangler.jsonc
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Build
+        run: pnpm build
+      # 可信发布的关键一步：上线前先算出要上线的字节，上线后同一串数字出现在 /api/v1/attestation。
+      - name: Compute attestation
+        id: attest
+        run: |
+          set -euo pipefail
+          json="$(pnpm attest)"
+          echo "source_sha256=$(printf '%s' "$json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).source_sha256))')" >> "$GITHUB_OUTPUT"
+          echo "assets_sha256=$(printf '%s' "$json" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).assets_sha256))')" >> "$GITHUB_OUTPUT"
+      - name: Deploy the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          pnpm exec wrangler deploy --config wrangler.jsonc \
+            --var ATTEST_COMMIT:"$GITHUB_SHA" \
+            --var ATTEST_BUILT_AT:"$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --var ATTEST_SOURCE_SHA256:"${{ steps.attest.outputs.source_sha256 }}" \
+            --var ATTEST_ASSETS_SHA256:"${{ steps.attest.outputs.assets_sha256 }}" \
+            --var ATTEST_RUN_URL:"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Smoke test the deployment
+        run: |
+          set -euo pipefail
+          base=https://norm.ntnl.io
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$base/")
+          test "$code" = 200 || { echo "::error::首页返回 $code"; exit 1; }
+          health=$(curl -sS --max-time 20 "$base/api/v1/health")
+          case "$health" in
+            *'"service":"norm"'*) echo "健康检查在线：$health" ;;
+            *) echo "::error::健康检查不对：$health"; exit 1 ;;
+          esac
+          # 公开接口必须匿名可读，否则「公开来源看板」与「可信发布」两页就是摆设。
+          curl -sS --max-time 20 "$base/api/v1/attestation" | grep -q '"source_sha256":"' || { echo "::error::attestation 没带上构建哈希"; exit 1; }
+      - name: Verify the deployment matches the build
+        run: |
+          set -euo pipefail
+          live=$(curl -sS --max-time 20 https://norm.ntnl.io/api/v1/attestation | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).source_sha256))')
+          built='${{ steps.attest.outputs.source_sha256 }}'
+          test "$live" = "$built" || { echo "::error::线上 source_sha256($live) 与本次构建($built) 不一致"; exit 1; }
+          echo "可信发布核对通过：$live"

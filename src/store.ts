@@ -52,7 +52,7 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
 
 export async function listCredentials(env: Env, address: string): Promise<CredentialRow[]> {
   const { results } = await env.DB.prepare(
-    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC',
+    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
   )
     .bind(address)
     .all<CredentialRow>();
