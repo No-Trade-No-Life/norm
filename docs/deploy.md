@@ -64,14 +64,14 @@ Workers 运行时本身由 Cloudflare 托管——这一层不在自证范围内
 
 ```bash
 node scripts/e2e.mjs          # 本地：假上游 + 真身份 + 本地 Worker，含消费者密钥用例
-node scripts/smoke-prod.mjs   # 线上：真签名打真域名，上游用一个故意失效的密钥（验"失败不扣费"）
+node scripts/smoke-prod.mjs   # 线上：真签名打真域名，覆盖凭证封装 / 消费者密钥 / 失败不扣费
 ```
 
 `smoke-prod.mjs` 会在线上留下一个测试账户（输出里带 `TEST_ADDRESS=`），清理：
 
 ```bash
 ADDR=<TEST_ADDRESS>
-for t in requests ledger credentials nonces principals; do
+for t in consumers requests ledger credentials nonces principals; do
   pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
     --command "DELETE FROM $t WHERE address='$ADDR'"
 done
