@@ -3,7 +3,7 @@ import { signatureWindowSeconds } from './env';
 import { fail } from './http';
 import { nowSeconds } from './ids';
 import { sha256Hex, signingMessage, verifySignature } from './crypto';
-import { ensurePrincipal } from './store';
+import { ensurePrincipal, principalExists } from './store';
 
 export type Principal = {
   address: string;
@@ -52,6 +52,7 @@ export async function authenticate(request: Request, env: Env): Promise<Principa
     fail(401, 'nonce_replayed', 'nonce 已经用过了');
   }
 
-  await ensurePrincipal(env, address, seenAt);
+  // 老地址不为每次请求付一次写入：只有第一次见到这个公钥时才落库开户。
+  if (!(await principalExists(env, address))) await ensurePrincipal(env, address, seenAt);
   return { address };
 }
