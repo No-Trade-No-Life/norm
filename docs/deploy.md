@@ -76,3 +76,44 @@ done
 | `SIGNATURE_WINDOW_SECONDS` | `120` | 签名时间窗 |
 
 `ATTEST_*` 由发布流程用 `--var` 覆盖，不要手改。
+
+## 不用点界面铸造一把最小权限 token
+
+控制台页面本身就是 API 客户端：只要浏览器里已登录 Cloudflare，就能在同源上下文里直接调
+`/api/v4/*` 铸造 token，省掉在「创建令牌」表单里逐个勾权限组的手工活。
+
+前提：Chrome 以远程调试方式运行（Cybion 托管的那份就是
+`--remote-debugging-port=9222 --user-data-dir=~/.cybion/browser`），且已登录 `dash.cloudflare.com`。
+
+1. 在 `https://dash.cloudflare.com/profile/api-tokens` 页面的执行上下文里跑：
+
+   ```js
+   await (await fetch('/api/v4/user/tokens/permission_groups?per_page=200')).json()
+   await (await fetch('/api/v4/zones?name=ntnl.io')).json()   // zone id
+   ```
+
+2. 用拿到的权限组 id 组策略（Norm 只需要四个）：
+
+   | 用途 | 权限组 |
+   |---|---|
+   | 上传 Worker | Workers Scripts Write `e086da7e2179491d91ee5f35b3ca210a` + Workers Scripts Read `1a71c399035b4950a1bd1466bbe4f420` |
+   | 迁移 D1 | D1 Write `09b2857d1c31407795e75e3fed8617a1` |
+   | 读账户信息 | Account Settings Read `c1fde68c7bcc44588cbb6ddbc16d6480` |
+   | 绑自定义域 | Workers Routes Write `28f4b596e7d643029c524985477ae49a`（zone 作用域） |
+
+3. `POST /api/v4/user/tokens`，body 里两条 policy：account 作用域放前三个，zone 作用域放 Routes。
+   响应里的 `result.value` 就是 token，**只出现这一次**。
+
+4. 立刻写进仓库 secret，然后删掉本地副本：
+
+   ```bash
+   gh secret set CLOUDFLARE_API_TOKEN -R No-Trade-No-Life/norm < /tmp/token.txt
+   gh secret set CLOUDFLARE_ACCOUNT_ID  -R No-Trade-No-Life/norm --body b831a34938a75457b5029d31cea13c25
+   rm -f /tmp/token.txt
+   ```
+
+5. 用 `user/tokens/verify` 确认状态是 `active`，再跑一次 `gh workflow run release` 验证它真能部署。
+
+已有同名 token（`norm-deploy-github-actions`）时不要重复铸造：先去
+`/profile/api-tokens` 看它是否还在、是否未过期。`wrangler login` 的 OAuth 凭据**不能**代铸 token
+（`/user/tokens` 对它返回 9109），这一步必须走浏览器里的会话。
