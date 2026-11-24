@@ -4,6 +4,7 @@ import {
   InfoIcon,
   KeyRoundIcon,
   LanguagesIcon,
+  PlugZapIcon,
   MenuIcon,
   MoonIcon,
   ReceiptTextIcon,
@@ -75,6 +76,7 @@ function SidebarBody({ collapsed, onNavigate }: { collapsed: boolean; onNavigate
       items: [
         { to: '/', labelKey: 'nav.playground', icon: <TerminalIcon /> },
         { to: '/credentials', labelKey: 'nav.credentials', icon: <KeyRoundIcon /> },
+        { to: '/consumers', labelKey: 'nav.consumers', icon: <PlugZapIcon /> },
         { to: '/usage', labelKey: 'nav.usage', icon: <ReceiptTextIcon /> },
       ],
     },

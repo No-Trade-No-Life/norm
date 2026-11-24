@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { requestJson, publicJson } from './api';
-import type { Attestation, BaseUrlGroup, Credential, LedgerRow, LoginResponse, Me, RequestRow } from './types';
+import type { Attestation, BaseUrlGroup, Consumer, Credential, LedgerRow, LoginResponse, Me, RequestRow } from './types';
 
 /** 登录：签名走通一次即开户。没有 body，签的是空字节串的 sha256。 */
 export function useLogin(enabled: boolean, address: string) {
@@ -58,6 +58,56 @@ export function useLedger(enabled: boolean, page: number) {
     retry: false,
     queryFn: () => requestJson<{ items: LedgerRow[] }>({ path: `/api/v1/account/ledger?limit=${need}` }),
     select: (data) => data.items.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE),
+  });
+}
+
+export function useConsumers(enabled: boolean) {
+  return useQuery({
+    queryKey: ['consumers'],
+    enabled,
+    retry: false,
+    queryFn: () => requestJson<{ items: Consumer[] }>({ path: '/api/v1/consumers' }),
+  });
+}
+
+export function useCreateConsumer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string }) =>
+      requestJson<{ id: string; name: string; key: string; key_hint: string }>({
+        path: '/api/v1/consumers',
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['consumers'] }),
+  });
+}
+
+/** 轮换与新建一样，明文只在响应里出现一次。 */
+export function useRotateConsumer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      requestJson<{ id: string; key: string; key_hint: string }>({ path: `/api/v1/consumers/${id}/rotate`, method: 'POST' }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['consumers'] }),
+  });
+}
+
+export function useRenameConsumer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      requestJson<{ id: string; name: string }>({ path: `/api/v1/consumers/${id}/name`, method: 'POST', body: JSON.stringify({ name }) }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['consumers'] }),
+  });
+}
+
+export function useRevokeConsumer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      requestJson<{ id: string; revoked: boolean }>({ path: `/api/v1/consumers/${id}`, method: 'DELETE' }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['consumers'] }),
   });
 }
 

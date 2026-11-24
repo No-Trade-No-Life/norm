@@ -9,6 +9,7 @@ import { useLogin } from './queries';
 import { useI18n } from './i18n';
 import { AboutPage } from './pages/about';
 import { AttestationPage } from './pages/attestation';
+import { ConsumersPage } from './pages/consumers';
 import { CredentialsPage } from './pages/credentials';
 import { PlaygroundPage } from './pages/playground';
 import { ProvenancePage } from './pages/provenance';
@@ -62,6 +63,7 @@ export function App() {
       <Routes>
         <Route path="/" element={<PlaygroundPage />} />
         <Route path="/credentials" element={<CredentialsPage />} />
+        <Route path="/consumers" element={<ConsumersPage />} />
         <Route path="/usage" element={<UsagePage />} />
         <Route path="/provenance" element={<ProvenancePage />} />
         <Route path="/attestation" element={<AttestationPage />} />

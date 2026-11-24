@@ -74,6 +74,17 @@ export type LedgerRow = {
   created_at: number;
 };
 
+/** 下游消费者：库里只有 sha256 与提示，明文只在创建/轮换那一次出现。 */
+export type Consumer = {
+  id: string;
+  address: string;
+  name: string;
+  key_hint: string;
+  created_at: number;
+  last_used_at: number | null;
+  revoked_at: number | null;
+};
+
 export type Attestation = {
   service: string;
   repository: string;
@@ -123,7 +134,7 @@ export const PROVIDERS = [
  * 上游说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
  * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
  */
-export const PROTOCOLS = ['openai-chat', 'openai-responses'] as const;
+export const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'] as const;
 export type UpstreamProtocol = (typeof PROTOCOLS)[number];
 
 /** 上游本身是否对公众可用。私有不代表掺水，只代表不对外。 */

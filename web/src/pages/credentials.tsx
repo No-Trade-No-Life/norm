@@ -1,7 +1,6 @@
 import { PlusIcon } from 'lucide-react';
 import { useState } from 'react';
 
-import { KDF_ID, keyHint, sealUpstreamKey } from '../byok';
 import { Empty, ErrorNote, PageHeader, Section, SkeletonRows } from '../components/page';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -19,7 +18,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useIdentity } from '../identity-context';
 import { useCreateCredential, useCredentials, useRevokeCredential, useSetVisibility } from '../queries';
 import { PROVIDERS, PROTOCOLS, VISIBILITIES, type Credential } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
@@ -179,44 +177,35 @@ function NewCredentialDialog({
   onCreated: () => void;
 }) {
   const { t, lang } = useI18n();
-  const { identity } = useIdentity();
   const create = useCreateCredential();
 
   const [label, setLabel] = useState('');
-  const [passphrase, setPassphrase] = useState('');
   const [upstreamKey, setUpstreamKey] = useState('');
   const [provider, setProvider] = useState<string>('openai');
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
   const [protocol, setProtocol] = useState<string>('openai-chat');
   const [visibility, setVisibility] = useState<string>('private');
-  const [sealing, setSealing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
     setLabel('');
-    setPassphrase('');
     setUpstreamKey('');
     setError(null);
   };
 
   const submit = async () => {
     setError(null);
-    if (!label.trim() || !passphrase || !upstreamKey.trim() || !baseUrl.trim()) {
+    if (!label.trim() || !upstreamKey.trim() || !baseUrl.trim()) {
       setError(t('cr.missing'));
       return;
     }
-    setSealing(true);
     try {
-      // 明文密钥只在这里出现一次：密封完立即丢弃，绝不进请求体。
-      const sealed = sealUpstreamKey(passphrase, identity.address, upstreamKey.trim());
-      const hint = keyHint(upstreamKey.trim());
+      // 明文密钥这一次经过请求体，服务端立刻用 Worker secret 封装，之后只剩提示。
       await create.mutateAsync({
         label: label.trim(),
         provider,
         base_url: baseUrl.trim(),
-        key_hint: hint,
-        sealed_key: sealed,
-        kdf: KDF_ID,
+        upstream_key: upstreamKey.trim(),
         upstream_protocol: protocol,
         upstream_visibility: visibility,
       });
@@ -224,8 +213,6 @@ function NewCredentialDialog({
       onCreated();
     } catch (caught) {
       setError((caught as Error).message);
-    } finally {
-      setSealing(false);
     }
   };
 
@@ -310,12 +297,7 @@ function NewCredentialDialog({
           <div className="flex flex-col gap-1.5">
             <Label>{t('cr.field_key')}</Label>
             <Input type="password" value={upstreamKey} onChange={(event) => setUpstreamKey(event.target.value)} autoComplete="off" spellCheck={false} />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_passphrase')}</Label>
-            <Input type="password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} autoComplete="new-password" />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_passphrase_hint')}</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_key_hint')}</p>
           </div>
 
           {error ? <ErrorNote message={error} /> : null}
@@ -325,8 +307,8 @@ function NewCredentialDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t('action.cancel')}
           </Button>
-          <Button onClick={() => void submit()} disabled={sealing || create.isPending}>
-            {sealing || create.isPending ? t('cr.creating') : t('action.create')}
+          <Button onClick={() => void submit()} disabled={create.isPending}>
+            {create.isPending ? t('cr.creating') : t('action.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

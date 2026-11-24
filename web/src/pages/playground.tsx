@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import { ApiError, signedFetch } from '../api';
-import { unsealUpstreamKey } from '../byok';
 import { Empty, ErrorNote, PageHeader } from '../components/page';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -15,7 +14,6 @@ import { Switch } from '../components/ui/switch';
 import { Textarea } from '../components/ui/textarea';
 import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
-import { forgetAll, getPassphrase, getUnlocked, rememberUnlocked } from '../secrets';
 import { latency, usd } from '../lib/format';
 import { useCredentials } from '../queries';
 import type { ChatChunk, Credential } from '../types';
@@ -34,15 +32,14 @@ const MODEL_SUGGESTIONS: Record<string, string[]> = {
 
 export function PlaygroundPage() {
   const { t } = useI18n();
-  const { identity } = useIdentity();
   const queryClient = useQueryClient();
+  const { identity } = useIdentity();
   const credentials = useCredentials(true);
 
   const [credentialId, setCredentialId] = useState('');
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [passphrase, setPassphrase] = useState('');
-  const [remember, setRemember] = useState(true);
+
   const [stream, setStream] = useState(true);
   const [output, setOutput] = useState('');
   const [meta, setMeta] = useState<NormMeta | null>(null);
@@ -56,16 +53,6 @@ export function PlaygroundPage() {
     () => list.find((item) => item.id === credentialId) ?? list[0],
     [list, credentialId],
   );
-
-  // 换身份时清空内存里的明文密钥，避免把 A 的密钥带进 B 的会话。
-  useEffect(() => {
-    forgetAll();
-    setPassphrase('');
-  }, [identity.address]);
-
-  useEffect(() => {
-    if (credential) setPassphrase(getPassphrase(credential.id));
-  }, [credential?.id]);
 
   useEffect(() => {
     if (!model && credential) setModel(MODEL_SUGGESTIONS[credential.provider]?.[0] ?? '');
@@ -88,18 +75,6 @@ export function PlaygroundPage() {
     if (!model.trim()) return setError(t('pg.need_model'));
     if (!prompt.trim()) return setError(t('pg.need_prompt'));
 
-    let upstreamKey = getUnlocked(credential.id);
-    if (!upstreamKey) {
-      if (!passphrase) return setError(t('pg.need_passphrase'));
-      try {
-        upstreamKey = unsealUpstreamKey(passphrase, identity.address, credential.sealed_key);
-        rememberUnlocked(credential.id, upstreamKey, remember ? passphrase : undefined);
-      } catch {
-        // 口令本身不上传，解不开只可能是口令错，或这条凭证不属于本机身份。
-        return setError(t('pg.passphrase_wrong'));
-      }
-    }
-
     setOutput('');
     setMeta(null);
     setRunning(true);
@@ -119,10 +94,8 @@ export function PlaygroundPage() {
         path: '/v1/chat/completions',
         method: 'POST',
         body,
-        headers: {
-          'X-Norm-Credential': credential.id,
-          'X-Norm-Upstream-Key': upstreamKey,
-        },
+        // 密钥在服务端：这里只说用哪条凭证。明文密钥从不出现在浏览器里。
+        headers: { 'X-Norm-Credential': credential.id },
         signal: controller.signal,
       });
 
@@ -161,7 +134,7 @@ export function PlaygroundPage() {
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
-  }, [credential, identity.address, model, passphrase, prompt, queryClient, remember, stream, t]);
+  }, [credential, model, prompt, queryClient, stream, t]);
 
   const suggestions = credential ? (MODEL_SUGGESTIONS[credential.provider] ?? []) : [];
 
@@ -221,21 +194,6 @@ export function PlaygroundPage() {
               ))}
             </div>
           ) : null}
-
-          <div className="flex flex-col gap-1.5">
-            <Label>{t('pg.passphrase')}</Label>
-            <Input
-              type="password"
-              value={passphrase}
-              onChange={(event) => setPassphrase(event.target.value)}
-              placeholder={t('pg.passphrase_placeholder')}
-              autoComplete="off"
-            />
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Switch checked={remember} onCheckedChange={setRemember} />
-              {t('pg.passphrase_remember')}
-            </label>
-          </div>
 
           <div className="flex flex-col gap-1.5">
             <Label>{t('pg.prompt')}</Label>
