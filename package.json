@@ -15,7 +15,8 @@
     "db:migrate:local": "wrangler d1 migrations apply norm --local --config wrangler.jsonc",
     "db:migrate": "wrangler d1 migrations apply norm --remote --config wrangler.jsonc",
     "deploy": "pnpm build && wrangler deploy --config wrangler.jsonc",
-    "attest": "node scripts/attest.mjs"
+    "attest": "node scripts/attest.mjs",
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
