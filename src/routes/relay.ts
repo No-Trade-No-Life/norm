@@ -5,6 +5,7 @@ import type { Principal } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
 import { checkProvenance } from '../provenance';
+import { refreshProvenance } from '../refresh-provenance';
 import { charge, findCredential, findPrincipal } from '../store';
 
 type ChatBody = {
@@ -72,10 +73,12 @@ relayRoutes.post('/completions', async (c) => {
   }
 
   if (body.stream) {
+    c.executionCtx.waitUntil(refreshProvenance({ env: c.env, credential, baseUrl, upstreamKey }).then(() => undefined));
     return streamRelay({ env: c.env, address, requestId, upstream, startedAt, fee, provenance, credentialId, model });
   }
 
   const payload = (await upstream.json()) as { usage?: { prompt_tokens?: number; completion_tokens?: number } };
+  const refreshed = await refreshProvenance({ env: c.env, credential, baseUrl, upstreamKey });
   const balance = await charge(c.env, address, requestId, fee, nowSeconds());
   await record(c.env, {
     requestId,
@@ -92,7 +95,7 @@ relayRoutes.post('/completions', async (c) => {
   });
   return c.json({
     ...payload,
-    norm: normMeta({ requestId, fee, balance, startedAt, provenance }),
+    norm: normMeta({ requestId, fee, balance, startedAt, provenance: refreshed }),
   });
 });
 

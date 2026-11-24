@@ -230,7 +230,27 @@ console.log('10. 账本与余额一致，且每条 charge 能回到请求');
   check('最新一条流水的 balance_after 等于当前余额', ledger.items[0].balance_after_micros === me.balance_micros, ledger.items[0]);
 }
 
-console.log('11. 公开接口不需要签名');
+console.log('11. 来源核验跟着真实调用刷新，并公开可见');
+{
+  const visPath = `/api/v1/credentials/${credentialId}/visibility`;
+  const visPayload = JSON.stringify({ public_listed: true });
+  const vis = await fetch(`${BASE}${visPath}`, {
+    method: 'POST',
+    headers: { ...sign(alice, 'POST', visPath, visPayload), 'Content-Type': 'application/json' },
+    body: visPayload,
+  });
+  check('打开公开开关', vis.status === 200, vis.status);
+
+  const listed = await (await fetch(`${BASE}/api/v1/provenance`)).json();
+  const entry = listed.items.find((row) => row.id === credentialId);
+  check('公开看板里能看到它', entry !== undefined, listed.items.length);
+  // 创建时没有明文密钥，key_prefix 无从判断；真实调用之后它才变成 true。
+  check('key_prefix 已由真实密钥补齐', entry?.provenance?.checks?.key_prefix === true, entry?.provenance?.checks);
+  check('models_probe 已探测过', entry?.provenance?.checks?.models_probe === false, entry?.provenance?.checks);
+  check('base_url 原文公开，供人自己重跑核验', entry?.base_url === `http://127.0.0.1:${UPSTREAM_PORT}/v1`, entry?.base_url);
+}
+
+console.log('12. 公开接口不需要签名');
 {
   for (const path of ['/api/v1/health', '/api/v1/stats', '/api/v1/provenance', '/api/v1/attestation']) {
     const response = await fetch(`${BASE}${path}`);
