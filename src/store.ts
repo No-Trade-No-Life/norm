@@ -1,5 +1,7 @@
 import type { Env } from './env';
+import type { UpstreamProtocol, UpstreamVisibility } from './upstreams';
 import { grantMicros } from './env';
+import { isTrusted } from './base-urls';
 import { randomToken } from './ids';
 
 export type PrincipalRow = {
@@ -11,6 +13,11 @@ export type PrincipalRow = {
   spend_micros: number;
 };
 
+export type CredentialView = CredentialRow & {
+  /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
+  trusted: boolean;
+};
+
 export type CredentialRow = {
   id: string;
   address: string;
@@ -20,9 +27,11 @@ export type CredentialRow = {
   key_hint: string;
   sealed_key: string;
   kdf: string;
-  declared_source: string;
+  // INVARIANT: 这两列只由 credentials 路由写入，写入前已校验枚举；
+  // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
+  upstream_protocol: UpstreamProtocol;
+  upstream_visibility: UpstreamVisibility;
   public_listed: number;
-  provenance: string;
   created_at: number;
   revoked_at: number | null;
 };
@@ -58,13 +67,14 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
   return row;
 }
 
-export async function listCredentials(env: Env, address: string): Promise<CredentialRow[]> {
+export async function listCredentials(env: Env, address: string): Promise<CredentialView[]> {
   const { results } = await env.DB.prepare(
     'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
   )
     .bind(address)
     .all<CredentialRow>();
-  return results;
+  // trusted 由同一份清单算出，不落库：清单改了，所有凭证的说法立刻跟着变。
+  return results.map((row) => ({ ...row, trusted: isTrusted(row.base_url, env) }));
 }
 
 export async function findCredential(env: Env, address: string, id: string): Promise<CredentialRow | null> {

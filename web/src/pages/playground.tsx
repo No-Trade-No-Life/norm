@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowUpIcon, Loader2Icon, ShieldAlertIcon, ShieldCheckIcon, SquareIcon } from 'lucide-react';
+import { ArrowUpIcon, Loader2Icon, ServerIcon, SquareIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -307,7 +307,6 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
   if (!meta) {
     return <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">{t('pg.meta_empty')}</div>;
   }
-  const verified = meta.provenance?.verified;
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1">
@@ -323,13 +322,10 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
       <span>
         {t('pg.latency')} <code className="text-foreground">{latency(meta.latency_ms)}</code>
       </span>
-      <span className={verified ? 'flex items-center gap-1 text-foreground' : 'flex items-center gap-1 text-destructive'}>
-        {verified ? <ShieldCheckIcon className="size-3.5" /> : <ShieldAlertIcon className="size-3.5" />}
-        {verified ? t('pg.verified_yes') : t('pg.verified_no')}
-      </span>
-      <span>
-        {t('pg.signals')}{' '}
-        <code className="text-foreground">{meta.provenance?.signals?.length ? meta.provenance.signals.join(' · ') : t('pg.signals_none')}</code>
+      {/* 只报事实：这次请求打到了哪台主机。是否可信交给上游渠道页的清单去说。 */}
+      <span className="flex items-center gap-1">
+        <ServerIcon className="size-3.5" />
+        {t('pg.upstream_host')} <code className="text-foreground">{meta.host}</code>
       </span>
       {meta.fee_micros === 0 ? <span>{t('pg.fee_zero_failed')}</span> : null}
     </div>

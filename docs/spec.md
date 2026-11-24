@@ -1,6 +1,6 @@
 # Norm — 无站的中转站
 
-> Serverless, 无站胜有站。BYOK + Ed25519 身份 + 逐请求隔离计费 + 可核验的上游来源 + 可信发布。
+> Serverless, 无站胜有站。BYOK + Ed25519 身份 + 逐请求隔离计费 + 按 base_url 聚合的上游渠道 + 可信发布。
 
 ## 1. 灵魂
 
@@ -15,7 +15,7 @@ Norm 不是「一台你租给我的机器」，而是**一份公开可复现的�
 | 2 | 用户 BYOK | 上游密钥只在请求里出现。仓库里没有任何上游密钥；数据库里只有客户端加密后的密文，服务端读不懂 |
 | 3 | Ed25519（base58）身份 | 公钥即地址，私钥永不离开浏览器。每个请求都要签名，服务端不签发会话、不存密码 |
 | 4 | ZDR，可信发布 | 不留请求体、不留响应体、不留上游密钥；构建产物哈希公开，任何人可 `pnpm build` 复算 |
-| 5 | 上游来源可核验 | 每个凭证都要声明来源（官方 API Key / 官方订阅 / 自部署 / 其他），平台自动做信号核验并**公开**，掺水立刻可见 |
+| 5 | 上游渠道可核验 | 后端不对上游做价值判断，只存事实：base_url（创建时钉死、转发时不可改写）、协议、是否公开可用。信任是一份 base_url 清单，命中与否由 `/api/v1/base-urls` 公开 |
 
 ## 3. 身份
 
@@ -38,7 +38,8 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 ## 4. BYOK
 
 - 添加凭证时，浏览器用口令派生密钥（PBKDF2-SHA256 60 万轮 → XChaCha20-Poly1305）加密上游密钥，
-  **只把密文**上传。服务端保存：label、provider、base_url、key_hint（前 4 后 4）、ciphertext、声明的来源。
+  **只把密文**上传。服务端保存：label、provider、base_url、key_hint（前 4 后 4）、ciphertext，
+  以及两个用户配置项（上游协议、上游是否公开可用）。
 - 真正调用模型时，用户在 Playground 里解锁，浏览器把明文密钥放进 `X-Norm-Upstream-Key` 头随请求发出。
   Worker 用完即弃，不写日志、不进 D1。
 - 结论：站点被拖库，也拿不到任何人的上游密钥。
@@ -52,25 +53,48 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 - 余额单位为微美元（integer），不用浮点。新地址自动获得 $1.00 演示授信（`GRANT_MICROS = 1000000`）。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
-## 6. 上游来源可核验
+## 6. 上游渠道
 
-每条凭证必须声明 `declared_source`：
+### 6.1 后端只存事实，判断留给清单
 
-- `official-api-key` — 官方 API Key
-- `official-subscription` — 官方订阅（如网页版/订阅制额度）
-- `self-hosted` — 自己部署的模型
-- `other` — 其他
+一个中转站可以自称「官方 Key」，没有人能证伪。Norm 的做法不是让中转站自证，而是**把可证伪的部分剥离出去**：
 
-平台在**创建时**与**每次调用前**做的自动核验信号（写入 `provenance` JSON，公开可读）：
+- 凭证创建时填写 `base_url`，之后钉死。转发只用凭证里的地址，**不读任何请求头**
+  （早期版本的 `X-Norm-Base-Url` 已删除；它一存在，「钉死」就只是句口号）。e2e 有专门一条断言盯着。
+- 后端**不做**「官方 / 第三方」这类判断。它只回三项事实：`base_url`、`upstream_protocol`、
+  `upstream_visibility`。
+- 「可信」是一份**主机名清单**（`wrangler.jsonc` 的 `TRUSTED_BASE_URLS`），精确匹配而非后缀匹配：
+  `api.openai.com.evil.tld` 与 `api.openai.com` 是两台机器。命中与否作为 `trusted` 布尔返回。
+- 因此「官方 key」退化成**前端的渲染概念**：换一份清单，同一个上游就换个说法，数据层不动。
 
-- `host`：`base_url` 的 host 是否命中官方主机表（openai.com / deepseek.com / anthropic.com / googleapis.com …）
-- `key_prefix`：密钥格式是否匹配该 provider（`sk-`、`sk-ant-` 等）
-- `models_probe`：用该密钥请求 `/models`，看返回的模型清单是否是官方集合的子集
-- `checked_at`
+### 6.2 四种上游协议
 
-`GET /api/v1/provenance` 公开列出所有打开「公开透明」开关的凭证及其核验结果。
-`ASSUMPTION`：这些是**信号**而不是证明——一个伪造的官方 base_url 也能通过 host 检查。
-所以 Norm 同时公开 base_url 原文与核验时间，让任何人都能自己重跑一次核验。
+客户端**一律**说 OpenAI Chat（`POST /v1/chat/completions`）。上游说哪种方言，是凭证的属性，
+由 Norm 在边界处翻译——所以「换一家上游」只是换一张凭证，客户端一行都不用改。
+
+| `upstream_protocol` | 上游路径 | 关键差异 |
+|---|---|---|
+| `openai-chat` | `{base}/chat/completions` | 原样透传 |
+| `openai-responses` | `{base}/responses` | 请求用 `input`；响应用 `output[].content[].text`；usage 是 `input/output_tokens` |
+| `anthropic-messages` | `{base}/v1/messages` | `x-api-key` + `anthropic-version` 头；`system` 独立字段；content blocks |
+| `google-gemini` | `{base}/v1beta/models/{model}:generateContent` | `x-goog-api-key`；`contents/parts`；流式走 `:streamGenerateContent?alt=sse` |
+
+四种都支持流式，全部被翻译成 OpenAI chat chunk，结尾统一补一条 `norm` 事件与 `data: [DONE]`。
+
+### 6.3 两件该由用户配置的事
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `upstream_protocol` | 上表四种 | 上游说哪种协议 |
+| `upstream_visibility` | `public` / `private` | 这个上游本身是否对公众可用。自部署是 `private`——那不是掺水，只是不对外 |
+
+两者都与信任无关。注意 `upstream_visibility`（上游别人能不能用）与 `public_listed`
+（我愿不愿意把这条凭证挂上看板）是**两个不同的开关**，不要混。
+
+### 6.4 公开视图
+
+`GET /api/v1/base-urls` 按 `base_url` 聚合，返回每个上游的 `host`、`trusted`、凭证数、
+公开条数、协议集合、最近添加时间。这是后端关于上游的唯一视图——没有官方/第三方，只有地址与计数。
 
 ## 7. ZDR 与可信发布
 

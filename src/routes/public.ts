@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
+import { groupByBaseUrl } from '../base-urls';
 import { nowSeconds } from '../ids';
 
 export const publicRoutes = new Hono<{ Bindings: Env }>();
@@ -19,35 +20,14 @@ publicRoutes.get('/stats', async (c) => {
   return c.json({ ...row, window_hours: null });
 });
 
-/** 公开来源看板：只列出用户主动打开「公开透明」开关的凭证。 */
-publicRoutes.get('/provenance', async (c) => {
-  const { results } = await c.env.DB.prepare(
-    `SELECT id, label, provider, base_url, key_hint, declared_source, provenance, created_at
-     FROM credentials WHERE public_listed = 1 AND revoked_at IS NULL
-     ORDER BY created_at DESC, rowid DESC LIMIT 200`,
-  ).all<{
-    id: string;
-    label: string;
-    provider: string;
-    base_url: string;
-    key_hint: string;
-    declared_source: string;
-    provenance: string;
-    created_at: number;
-  }>();
-  return c.json({
-    items: results.map((row) => ({
-      id: row.id,
-      label: row.label,
-      provider: row.provider,
-      base_url: row.base_url,
-      key_hint: row.key_hint,
-      declared_source: row.declared_source,
-      provenance: JSON.parse(row.provenance),
-      created_at: row.created_at,
-    })),
-  });
-});
+/**
+ * 上游渠道看板：按 base_url 聚合。
+ *
+ * 这里没有「官方 / 第三方」这类判断——后端只回事实与一个 `trusted` 布尔
+ * （主机名是否在 `TRUSTED_BASE_URLS` 清单里）。「官方 key」是前端按这个布尔
+ * 渲染出来的标签，属于 UI 概念，换个清单说法就变，数据层不动。
+ */
+publicRoutes.get('/base-urls', async (c) => c.json({ items: await groupByBaseUrl(c.env) }));
 
 /**
  * 可信发布证明：把「线上跑的到底是哪份代码」变成可核对的数字。

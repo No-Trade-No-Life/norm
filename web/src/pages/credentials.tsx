@@ -21,8 +21,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { useCreateCredential, useCredentials, useRevokeCredential, useSetVisibility } from '../queries';
-import { PROVIDERS, SOURCES, type Credential } from '../types';
-import { sourceLabel } from '../lib/labels';
+import { PROVIDERS, PROTOCOLS, VISIBILITIES, type Credential } from '../types';
+import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
 export function CredentialsPage() {
   const { t, lang } = useI18n();
@@ -63,8 +63,9 @@ export function CredentialsPage() {
                 <TableHead>{t('cr.col_label')}</TableHead>
                 <TableHead className="hidden xl:table-cell">{t('cr.col_provider')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('cr.col_base_url')}</TableHead>
-                <TableHead className="hidden md:table-cell">{t('cr.col_source')}</TableHead>
-                <TableHead>{t('cr.col_provenance')}</TableHead>
+                <TableHead className="hidden md:table-cell">{t('cr.col_protocol')}</TableHead>
+                <TableHead className="hidden xl:table-cell">{t('cr.col_visibility')}</TableHead>
+                <TableHead>{t('cr.col_trust')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('cr.col_hint')}</TableHead>
                 <TableHead>{t('cr.col_public')}</TableHead>
                 <TableHead className="text-right">{t('cr.col_actions')}</TableHead>
@@ -81,7 +82,7 @@ export function CredentialsPage() {
                   onRevoke={() => {
                     revoke.mutate(item.id, { onSettled: () => setConfirmId(null) });
                   }}
-                  sourceText={sourceLabel(item.declared_source, lang)}
+                  lang={lang}
                 />
               ))}
             </TableBody>
@@ -105,28 +106,20 @@ export function CredentialsPage() {
 
 function CredentialRow({
   item,
-  sourceText,
+  lang,
   confirming,
   onConfirm,
   onTogglePublic,
   onRevoke,
 }: {
   item: Credential;
-  sourceText: string;
+  lang: 'zh' | 'en';
   confirming: boolean;
   onConfirm: (value: boolean) => void;
   onTogglePublic: (value: boolean) => void;
   onRevoke: () => void;
 }) {
   const { t } = useI18n();
-
-  let provenance: { verified?: boolean; signals?: string[] } = {};
-  try {
-    provenance = JSON.parse(item.provenance) as { verified?: boolean; signals?: string[] };
-  } catch {
-    provenance = {};
-  }
-  const verified = provenance.verified === true;
 
   return (
     <TableRow>
@@ -140,12 +133,16 @@ function CredentialRow({
         </span>
       </TableCell>
       <TableCell className="hidden md:table-cell">
-        <span className="text-xs">{sourceText}</span>
+        <Badge variant="outline" className="font-normal">
+          {protocolLabel(item.upstream_protocol, lang)}
+        </Badge>
+      </TableCell>
+      <TableCell className="hidden xl:table-cell">
+        <span className="text-xs">{visibilityLabel(item.upstream_visibility, lang)}</span>
       </TableCell>
       <TableCell>
-        <Badge variant={verified ? 'secondary' : 'destructive'}>
-          {verified ? t('cr.prov_verified') : t('cr.prov_failed')}
-        </Badge>
+        {/* 落点只看主机名是否在信任清单里：清单是配置，不是判词。 */}
+        <Badge variant={item.trusted ? 'secondary' : 'outline'}>{trustLabel(item.trusted, lang)}</Badge>
       </TableCell>
       <TableCell className="hidden lg:table-cell">
         <code className="text-xs">{item.key_hint}</code>
@@ -190,7 +187,8 @@ function NewCredentialDialog({
   const [upstreamKey, setUpstreamKey] = useState('');
   const [provider, setProvider] = useState<string>('openai');
   const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
-  const [source, setSource] = useState<string>('official-api-key');
+  const [protocol, setProtocol] = useState<string>('openai-chat');
+  const [visibility, setVisibility] = useState<string>('private');
   const [sealing, setSealing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -219,7 +217,8 @@ function NewCredentialDialog({
         key_hint: hint,
         sealed_key: sealed,
         kdf: KDF_ID,
-        declared_source: source,
+        upstream_protocol: protocol,
+        upstream_visibility: visibility,
       });
       reset();
       onCreated();
@@ -261,19 +260,19 @@ function NewCredentialDialog({
               </Select>
             </div>
             <div className="flex flex-col gap-1.5">
-              <Label>{t('cr.field_source')}</Label>
+              <Label>{t('cr.field_protocol')}</Label>
               <Select
-                value={source}
-                onValueChange={(value) => setSource(String(value))}
-                items={SOURCES.map((s) => ({ value: s, label: sourceLabel(s, lang) }))}
+                value={protocol}
+                onValueChange={(value) => setProtocol(String(value))}
+                items={PROTOCOLS.map((p) => ({ value: p, label: protocolLabel(p, lang) }))}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {SOURCES.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {sourceLabel(s, lang)}
+                  {PROTOCOLS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {protocolLabel(p, lang)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -284,6 +283,28 @@ function NewCredentialDialog({
           <div className="flex flex-col gap-1.5">
             <Label>{t('cr.field_base_url')}</Label>
             <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} spellCheck={false} />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_protocol_hint')}</p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('cr.field_visibility')}</Label>
+            <Select
+              value={visibility}
+              onValueChange={(value) => setVisibility(String(value))}
+              items={VISIBILITIES.map((v) => ({ value: v, label: visibilityLabel(v, lang) }))}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {VISIBILITIES.map((v) => (
+                  <SelectItem key={v} value={v}>
+                    {visibilityLabel(v, lang)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_visibility_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
