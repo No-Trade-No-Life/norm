@@ -56,9 +56,25 @@ console.log('2. 未签名与重放');
   check('重放 401', (await fetch(`${BASE}/api/v1/account/me`, { headers })).status === 401);
 }
 
+console.log('2b. 转发面只认下游 Token：签名直连一律 401');
+{
+  const path = '/v1/chat/completions';
+  const payload = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
+  const response = await fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { ...sign('POST', path, payload), 'Content-Type': 'application/json' },
+    body: payload,
+  });
+  const body = await response.json();
+  check('签名直连 401', response.status === 401, response.status);
+  check('原因点名 consumer_key_required', body.error === 'consumer_key_required', body);
+  check('没有打上游（无 request_id）', !response.headers.has('x-norm-request-id'), [...response.headers.keys()]);
+}
+
 console.log('3. 新建上游提供商（明文密钥交给服务端封装）');
 let providerId;
 let consumerKey;
+let rotatedKey;
 {
   const path = '/api/v1/providers';
   const payload = JSON.stringify({
@@ -125,6 +141,7 @@ console.log('4. 下游消费者 Token：只记名字、只显一次、能调用�
   const rotated = await fetch(`${BASE}${rotatePath}`, { method: 'POST', headers: sign('POST', rotatePath) });
   const rotatedBody = await rotated.json();
   check('轮换给新明文', rotated.status === 200 && rotatedBody.key && rotatedBody.key !== consumerKey, rotatedBody);
+  rotatedKey = rotatedBody.key;
 
   const stale = await fetch(`${BASE}${relayPath}`, {
     method: 'POST',
@@ -140,10 +157,11 @@ console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端�
   const before = (await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json()).balance_nanos;
   const path = '/v1/chat/completions';
   const payload = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
+  // 转发面只认 Token：这一次也用轮换后的那把，签名在这里没有入口。
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: {
-      ...sign('POST', path, payload),
+      Authorization: `Bearer ${rotatedKey}`,
       'Content-Type': 'application/json',
       'X-Norm-Provider': providerId,
     },

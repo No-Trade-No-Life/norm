@@ -110,7 +110,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     address,
     providerId: provider.id,
     // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
-    consumerId: principal.consumerId ?? null,
+    consumerId: principal.consumerId,
     baseUrl,
     requestId,
     startedAt,
@@ -173,7 +173,7 @@ type Accounting = {
   env: Env;
   address: string;
   providerId: string;
-  consumerId: string | null;
+  consumerId: string;
   /** 打到的上游提供商地址：账本要能回答「这一笔打给哪台机器」。 */
   baseUrl: string;
   requestId: string;

@@ -76,6 +76,10 @@ export const COPY = {
     zh: '选上游提供商、选模型、发一句话，流式看结果。每笔调用都会带着 request_id 记账。',
     en: 'Pick a provider and a model, send a prompt, watch it stream. Every call is billed with a request_id.',
   },
+  'pg.token_note': {
+    zh: '这次调用用一把叫 playground 的下游 Token 发出 —— 推理接口只认 Token，不认签名',
+    en: 'This call uses a consumer token named playground — inference only accepts tokens, never signatures',
+  },
   'pg.provider': { zh: '上游提供商', en: 'Provider' },
   'pg.provider_empty': { zh: '还没有上游提供商', en: 'No providers yet' },
   'pg.provider_none': { zh: '先添加上游提供商', en: 'Add a provider first' },

@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './env';
 import { HttpError } from './http';
-import { authenticate, resolvePrincipal, type Principal } from './auth';
+import { authenticate, authenticateConsumer, type Identity, type Principal } from './auth';
 import { nowSeconds } from './ids';
 import { publicRoutes } from './routes/public';
 import { pricingRoutes } from './routes/pricing';
@@ -11,7 +11,7 @@ import { consumerRoutes } from './routes/consumers';
 import { modelRoutes } from './routes/models';
 import { relayRoutes } from './routes/relay';
 
-type Variables = { principal: Principal };
+type Variables = { principal: Identity };
 type App = { Bindings: Env; Variables: Variables };
 
 const app = new Hono<App>();
@@ -52,7 +52,7 @@ function signedOnly() {
 }
 
 /**
- * 转发面 `/v1/*`：Bearer 消费者密钥或 Ed25519 签名，二选一。
+ * 转发面 `/v1/*`：只接受下游消费者 Token（`sk-norm-…`），没有任何签名入口。
  *
  * 两条入口用前缀划开，而不是在同一前缀上再按路径分流——那样两个 `/*` 中间件
  * 会互相抢同一个请求，谁先跑取决于注册顺序，而这种顺序没人看得出来。
@@ -66,7 +66,7 @@ function signedOnly() {
 function relayOnly() {
   const relay = new Hono<App>();
   relay.use('*', async (c, next) => {
-    c.set('principal', await resolvePrincipal(c.req.raw, c.env));
+    c.set('principal', await authenticateConsumer(c.req.raw, c.env));
     await next();
   });
   relay.route('/models', modelRoutes);

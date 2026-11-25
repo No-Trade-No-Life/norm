@@ -1,11 +1,11 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
-import type { Principal } from '../auth';
+import type { Identity } from '../auth';
 import { findPrincipal, listProviders } from '../store';
 
-export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Principal } }>;
+export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Identity } }>;
 
-export const accountRoutes: AccountRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
+export const accountRoutes: AccountRoutes = new Hono<{ Bindings: Env; Variables: { principal: Identity } }>();
 
 accountRoutes.get('/me', async (c) => {
   const principal = await findPrincipal(c.env, c.get('principal').address);
