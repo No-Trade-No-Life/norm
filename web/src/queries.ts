@@ -174,8 +174,8 @@ export function useConsumers(enabled: boolean) {
 export function useCreateConsumer() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; provider_id: string }) =>
-      requestJson<{ id: string; name: string; provider_id: string; key: string; key_hint: string }>({
+    mutationFn: (body: { name: string }) =>
+      requestJson<{ id: string; name: string; key: string; key_hint: string }>({
         path: '/api/v1/consumers',
         method: 'POST',
         body: JSON.stringify(body),

@@ -112,11 +112,7 @@ export type Consumer = {
   id: string;
   address: string;
   name: string;
-  /** 建的时候就绑死的上游提供商：调用时一条 Bearer 就够，不用再带第二个头。 */
-  provider_id: string;
-  /** LEFT JOIN 带上来的昵称与地址；上游提供商被撤销后为 null。 */
-  provider_label: string | null;
-  provider_base_url: string | null;
+  /** 不绑定上游提供商：走哪条是每次转发自己的决定。 */
   key_hint: string;
   created_at: number;
   last_used_at: number | null;
