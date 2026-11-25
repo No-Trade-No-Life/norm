@@ -14,9 +14,9 @@ import {
   usePricing,
   useUsage,
   useUsageByConsumer,
-  useUsageByCredential,
+  useUsageByProvider,
 } from '../queries';
-import type { ConsumerUsage, LedgerRow, Pricing, CredentialUsage, RequestRow } from '../types';
+import type { ConsumerUsage, LedgerRow, Pricing, ProviderUsage, RequestRow } from '../types';
 
 /**
  * 用量与账本。这一页的顺序就是一个人核对账单的顺序：
@@ -24,7 +24,7 @@ import type { ConsumerUsage, LedgerRow, Pricing, CredentialUsage, RequestRow } f
  *   1. 余额与累计花费           —— 我欠多少、花了多少
  *   2. 三项 token 与费用构成     —— 钱花在什么上（输入 / 缓存命中 / 输出 / 服务费）
  *   3. 请求记录                 —— 逐条明细，每条都能回到一次调用
- *   4. 按钥匙 / 按上游          —— 谁花的、花在哪
+ *   4. 按钥匙 / 按 provider          —— 谁花的、花在哪
  *   5. 记账流水                 —— 余额是怎么一步步变到现在的
  *   6. 价目表                   —— 价格是公开的，谁都能自己重算一遍
  */
@@ -34,7 +34,7 @@ export function UsagePage() {
   const usage = useCursorPages<string>((cursor) => useUsage(true, cursor));
   const ledger = useCursorPages<number>((cursor) => useLedger(true, cursor));
   const byConsumer = useUsageByConsumer(true);
-  const byCredential = useUsageByCredential(true);
+  const byProvider = useUsageByProvider(true);
   const pricing = usePricing();
 
   const tokens_ = me.data?.usage;
@@ -130,7 +130,7 @@ export function UsagePage() {
         ) : usage.rows.length === 0 ? (
           <Empty className="border-0">{t('us.requests_empty')}</Empty>
         ) : (
-          <RequestTable rows={usage.rows} credentials={byCredential.data ?? []} />
+          <RequestTable rows={usage.rows} providers={byProvider.data ?? []} />
         )}
       </Section>
 
@@ -149,17 +149,17 @@ export function UsagePage() {
           )}
         </Section>
 
-        <Section title={t('us.by_credential_title')} bodyClassName="p-0">
-          {byCredential.isPending ? (
+        <Section title={t('us.by_provider_title')} bodyClassName="p-0">
+          {byProvider.isPending ? (
             <SkeletonRows rows={3} cols={4} />
-          ) : byCredential.isError ? (
+          ) : byProvider.isError ? (
             <div className="p-3">
-              <ErrorNote title={t('common.error')} message={(byCredential.error as Error).message} />
+              <ErrorNote title={t('common.error')} message={(byProvider.error as Error).message} />
             </div>
-          ) : (byCredential.data ?? []).length === 0 ? (
-            <Empty className="border-0">{t('us.by_credential_empty')}</Empty>
+          ) : (byProvider.data ?? []).length === 0 ? (
+            <Empty className="border-0">{t('us.by_provider_empty')}</Empty>
           ) : (
-            <ByCredentialTable rows={byCredential.data ?? []} />
+            <ByProviderTable rows={byProvider.data ?? []} />
           )}
         </Section>
       </div>
@@ -273,13 +273,13 @@ function TokenTriple({ input, cached, output }: { input: number; cached: number;
   );
 }
 
-function RequestTable({ rows, credentials }: { rows: RequestRow[]; credentials: CredentialUsage[] }) {
+function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: ProviderUsage[] }) {
   const { t } = useI18n();
   const labelOf = useMemo(() => {
     const table = new Map<string, string>();
-    for (const entry of credentials) if (entry.credential_id) table.set(entry.credential_id, entry.credential_label ?? '');
+    for (const entry of providers) if (entry.provider_id) table.set(entry.provider_id, entry.provider_label ?? '');
     return table;
-  }, [credentials]);
+  }, [providers]);
 
   return (
     <Table>
@@ -302,10 +302,10 @@ function RequestTable({ rows, credentials }: { rows: RequestRow[]; credentials: 
               <span className="block truncate font-mono text-xs" title={row.model}>
                 {row.model || '—'}
               </span>
-              {/* 第二行回答「打给哪台机器、走哪条上游」——账本的一半意义在这里。 */}
+              {/* 第二行回答「打给哪台机器、走哪条 provider」——账本的一半意义在这里。 */}
               <span className="block truncate text-[11px] text-muted-foreground" title={row.base_url}>
                 {safeHost(row.base_url) || '—'}
-                {row.credential_id ? ` · ${labelOf.get(row.credential_id) || shortAddress(row.credential_id)}` : ''}
+                {row.provider_id ? ` · ${labelOf.get(row.provider_id) || shortAddress(row.provider_id)}` : ''}
               </span>
             </TableCell>
             <TableCell className="hidden sm:table-cell">
@@ -365,13 +365,13 @@ function ByConsumerTable({ rows }: { rows: ConsumerUsage[] }) {
   );
 }
 
-function ByCredentialTable({ rows }: { rows: CredentialUsage[] }) {
+function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
   const { t } = useI18n();
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>{t('us.col_credential')}</TableHead>
+          <TableHead>{t('us.col_provider')}</TableHead>
           <TableHead className="w-16 text-right">{t('us.col_calls')}</TableHead>
           <TableHead className="w-28 text-right">{t('us.col_tokens')}</TableHead>
           <TableHead className="w-20 text-right">{t('us.col_fee')}</TableHead>
@@ -379,10 +379,10 @@ function ByCredentialTable({ rows }: { rows: CredentialUsage[] }) {
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={row.credential_id ?? 'none'}>
+          <TableRow key={row.provider_id ?? 'none'}>
             <TableCell className="max-w-40 truncate">
-              <span className="text-xs">{row.credential_label ?? shortAddress(row.credential_id ?? '')}</span>
-              <span className="block font-mono text-[11px] text-muted-foreground">{row.credential_id ?? '—'}</span>
+              <span className="text-xs">{row.provider_label ?? shortAddress(row.provider_id ?? '')}</span>
+              <span className="block font-mono text-[11px] text-muted-foreground">{row.provider_id ?? '—'}</span>
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{row.requests}</TableCell>
             <TableCell className="text-right">

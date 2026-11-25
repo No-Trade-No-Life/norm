@@ -8,7 +8,7 @@ import { sha256Hex, utf8 } from './crypto';
  * 下游消费者密钥：`sk-norm-` + base58(32 字节随机)。
  *
  * 与 Ed25519 身份是两种不同的东西：签名身份证明「我是谁」，并且能管理自己的资源；
- * 消费者密钥只是一条程序凭据，拿去就能消费——所以它必须自带「走哪条上游」，
+ * 消费者密钥只是一条程序凭据，拿去就能消费——所以它必须自带「走哪条 provider」，
  * 否则每次调用都要多带一个头。库里只存 sha256，拖库拿不到明文。
  *
  * 明文只在创建与轮换的那一次响应里出现，之后只有 key_hint。
@@ -31,8 +31,8 @@ export function consumerKeyHint(key: string): string {
 /**
  * Bearer 凭据 → 账户。
  *
- * 密钥只回答「谁的代码在用」。走哪条上游是转发时的决定，不写在身份里：
- * 请求带了 `X-Norm-Credential` 就用它，没带就用账户唯一的那条上游（见 store.resolveCredentialId）。
+ * 密钥只回答「谁的代码在用」。走哪条 provider 是转发时的决定，不写在身份里：
+ * 请求带了 `X-Norm-Provider` 就用它，没带就用账户唯一的那条 provider（见 store.resolveProviderId）。
  *
  * 「用过」这个事实在鉴权时就近记下：调用方不必多一个写操作分支，
  * 而页面能诚实回答「这把钥匙还在被用吗」。

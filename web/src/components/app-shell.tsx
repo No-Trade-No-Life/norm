@@ -77,7 +77,7 @@ function SidebarBody({ collapsed, onNavigate }: { collapsed: boolean; onNavigate
       labelKey: 'nav.group_main',
       items: [
         { to: '/', labelKey: 'nav.playground', icon: <TerminalIcon /> },
-        { to: '/credentials', labelKey: 'nav.credentials', icon: <KeyRoundIcon /> },
+        { to: '/providers', labelKey: 'nav.providers', icon: <KeyRoundIcon /> },
         { to: '/consumers', labelKey: 'nav.consumers', icon: <PlugZapIcon /> },
         { to: '/usage', labelKey: 'nav.usage', icon: <ReceiptTextIcon /> },
       ],

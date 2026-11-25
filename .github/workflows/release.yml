@@ -25,7 +25,7 @@ jobs:
     steps:
       # 缺凭据时以前是「跳过并报 success」——那会让一次没上线的合并看起来像上线了。
       # 现在它红：CI/CD 没配好，这件事本身就该被看见。
-      - name: Require a Cloudflare credential
+      - name: Require a Cloudflare provider
         env:
           TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

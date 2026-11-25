@@ -14,33 +14,33 @@ import { when } from '../lib/format';
 import {
   useConsumers,
   useCreateConsumer,
-  useCredentials,
+  useProviders,
   useRenameConsumer,
   useRevokeConsumer,
   useRotateConsumer,
 } from '../queries';
-import type { Consumer, Credential } from '../types';
+import type { Consumer, Provider } from '../types';
 
 /**
  * 下游消费者：给程序用的 `sk-norm-…`。
  *
- * 与「上游提供者」页的区别是「谁在说话」：那一页管资源（钱付给谁、上游在哪），
+ * 与「 provider」页的区别是「谁在说话」：那一页管资源（钱付给谁、Provider 在哪），
  * 这一页管消费（谁的代码拿着 Token 来敲门）。
  *
- * 一条 Token 在建的时候就绑死一条上游提供者，所以程序侧一次调用只要
+ * 一条 Token 在建的时候就绑死一条 provider，所以程序侧一次调用只要
  * `Authorization: Bearer sk-norm-…`——再没有第二个 Norm 专有的头。
  */
 export function ConsumersPage() {
   const { t } = useI18n();
   const consumers = useConsumers(true);
-  const credentials = useCredentials(true);
+  const providersQuery = useProviders(true);
   const revoke = useRevokeConsumer();
   const [createOpen, setCreateOpen] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Consumer | null>(null);
 
   const items = consumers.data?.items ?? [];
-  const upstreams = credentials.data?.items ?? [];
+  const providers = providersQuery.data?.items ?? [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -69,7 +69,7 @@ export function ConsumersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>{t('co.col_name')}</TableHead>
-                <TableHead className="hidden md:table-cell">{t('co.col_credential')}</TableHead>
+                <TableHead className="hidden md:table-cell">{t('co.col_provider')}</TableHead>
                 <TableHead className="hidden sm:table-cell">{t('co.col_hint')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('co.col_created')}</TableHead>
                 <TableHead className="hidden md:table-cell">{t('co.col_last_used')}</TableHead>
@@ -95,7 +95,7 @@ export function ConsumersPage() {
 
       <NewConsumerDialog
         open={createOpen}
-        upstreams={upstreams}
+        providers={providers}
         onOpenChange={setCreateOpen}
         onCreated={setRevealed}
       />
@@ -133,18 +133,18 @@ function ConsumerRow({
         {/* 窄屏没有独立的密钥列，提示要贴在名字下面，事实不能被藏起来。 */}
         <code className="mt-0.5 block font-mono text-[11px] text-muted-foreground sm:hidden">{item.key_hint}</code>
         <span className="mt-0.5 block text-[11px] text-muted-foreground md:hidden">
-          {item.credential_label ?? `${t('co.or_revoked')} ${item.credential_id}`}
+          {item.provider_label ?? `${t('co.or_revoked')} ${item.provider_id}`}
         </span>
       </TableCell>
       <TableCell className="hidden md:table-cell">
-        {item.credential_label ? (
+        {item.provider_label ? (
           <div className="flex flex-col">
-            <span className="text-xs">{item.credential_label}</span>
-            <code className="text-[11px] break-all text-muted-foreground">{item.credential_base_url}</code>
+            <span className="text-xs">{item.provider_label}</span>
+            <code className="text-[11px] break-all text-muted-foreground">{item.provider_base_url}</code>
           </div>
         ) : (
           <span className="text-xs text-muted-foreground">
-            {t('co.or_revoked')} <code className="text-[11px]">{item.credential_id}</code>
+            {t('co.or_revoked')} <code className="text-[11px]">{item.provider_id}</code>
           </span>
         )}
       </TableCell>
@@ -191,23 +191,23 @@ function ConsumerRow({
 
 function NewConsumerDialog({
   open,
-  upstreams,
+  providers,
   onOpenChange,
   onCreated,
 }: {
   open: boolean;
-  upstreams: Credential[];
+  providers: Provider[];
   onOpenChange: (value: boolean) => void;
   onCreated: (key: string) => void;
 }) {
   const { t } = useI18n();
   const create = useCreateConsumer();
   const [name, setName] = useState('');
-  const [credentialId, setCredentialId] = useState('');
+  const [providerId, setProviderId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // 默认选中第一条：绝大多数人只有一条上游，让他少点一次。
-  const selected = credentialId || upstreams[0]?.id || '';
+  // 默认选中第一条：绝大多数人只有一条 provider，让他少点一次。
+  const selected = providerId || providers[0]?.id || '';
 
   const submit = async () => {
     setError(null);
@@ -216,11 +216,11 @@ function NewConsumerDialog({
       return;
     }
     if (!selected) {
-      setError(t('co.credential_missing'));
+      setError(t('co.provider_missing'));
       return;
     }
     try {
-      const result = await create.mutateAsync({ name: name.trim(), credential_id: selected });
+      const result = await create.mutateAsync({ name: name.trim(), provider_id: selected });
       setName('');
       onOpenChange(false);
       onCreated(result.key);
@@ -243,8 +243,8 @@ function NewConsumerDialog({
           <DialogDescription>{t('co.new_desc')}</DialogDescription>
         </DialogHeader>
 
-        {upstreams.length === 0 ? (
-          <Empty className="border-0">{t('co.no_credential')}</Empty>
+        {providers.length === 0 ? (
+          <Empty className="border-0">{t('co.no_provider')}</Empty>
         ) : (
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5">
@@ -253,18 +253,18 @@ function NewConsumerDialog({
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label>{t('co.field_credential')}</Label>
-              {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条上游、打到哪台主机。 */}
+              <Label>{t('co.field_provider')}</Label>
+              {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条Provider、打到哪台主机。 */}
               <Select
                 value={selected}
-                onValueChange={(value) => setCredentialId(String(value))}
-                items={upstreams.map((item) => ({ value: item.id, label: item.label }))}
+                onValueChange={(value) => setProviderId(String(value))}
+                items={providers.map((item) => ({ value: item.id, label: item.label }))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder={t('co.field_credential_placeholder')} />
+                  <SelectValue placeholder={t('co.field_provider_placeholder')} />
                 </SelectTrigger>
                 <SelectContent>
-                  {upstreams.map((item) => (
+                  {providers.map((item) => (
                     <SelectItem key={item.id} value={item.id}>
                       {item.label}
                     </SelectItem>
@@ -272,7 +272,7 @@ function NewConsumerDialog({
                 </SelectContent>
               </Select>
               <p className="font-mono text-[11px] leading-relaxed break-all text-muted-foreground">
-                {upstreams.find((item) => item.id === selected)?.base_url ?? ''}
+                {providers.find((item) => item.id === selected)?.base_url ?? ''}
               </p>
             </div>
           </div>
@@ -284,7 +284,7 @@ function NewConsumerDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t('action.cancel')}
           </Button>
-          <Button onClick={() => void submit()} disabled={create.isPending || upstreams.length === 0}>
+          <Button onClick={() => void submit()} disabled={create.isPending || providers.length === 0}>
             {create.isPending ? t('co.creating') : t('co.create')}
           </Button>
         </DialogFooter>

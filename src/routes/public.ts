@@ -13,15 +13,15 @@ publicRoutes.get('/stats', async (c) => {
   const row = await c.env.DB.prepare(
     `SELECT
        (SELECT COUNT(*) FROM principals) AS principals,
-       (SELECT COUNT(*) FROM credentials WHERE revoked_at IS NULL) AS credentials,
+       (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL) AS providers,
        (SELECT COUNT(*) FROM requests) AS requests,
        (SELECT COALESCE(SUM(fee_micros), 0) FROM requests) AS spend_micros`,
-  ).first<{ principals: number; credentials: number; requests: number; spend_micros: number }>();
+  ).first<{ principals: number; providers: number; requests: number; spend_micros: number }>();
   return c.json({ ...row, window_hours: null });
 });
 
 /**
- * 上游渠道看板：按 base_url 聚合。
+ * provider 看板：按 base_url 聚合。
  *
  * 这里没有「官方 / 第三方」这类判断——后端只回事实与一个 `trusted` 布尔
  * （主机名是否在 `TRUSTED_BASE_URLS` 清单里）。「官方 key」是前端按这个布尔

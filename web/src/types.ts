@@ -27,27 +27,27 @@ export type Me = {
   granted_micros: number;
   spend_micros: number;
   requests: number;
-  credentials: number;
+  providers: number;
   usage: TokenTotals;
   billed: MoneyTotals;
   created_at: number;
 };
 
-/** 一次调用里关于上游的唯一事实：它落在哪台主机上。 */
+/** 一次调用里关于 provider 的唯一事实：它落在哪台主机上。 */
 export type CallFacts = { host: string };
 
-/** 按 base_url 聚合的上游渠道。后端不做价值判断，trusted 只是清单命中与否。 */
+/** 按 base_url 聚合的Provider。后端不做价值判断，trusted 只是清单命中与否。 */
 export type BaseUrlGroup = {
   base_url: string;
   host: string;
   trusted: boolean;
-  credentials: number;
+  providers: number;
   public_listed: number;
   protocols: string[];
   last_seen_at: number;
 };
 
-export type Credential = {
+export type Provider = {
   id: string;
   address: string;
   label: string;
@@ -55,8 +55,8 @@ export type Credential = {
   key_hint: string;
   sealed_key: string;
   kdf: string;
-  upstream_protocol: UpstreamProtocol;
-  upstream_visibility: UpstreamVisibility;
+  protocol: Protocol;
+  visibility: Visibility;
   public_listed: number;
   /** 主机名是否在信任清单里；由后端用同一份清单算出，前端只负责措辞。 */
   trusted: boolean;
@@ -66,13 +66,13 @@ export type Credential = {
 
 /**
  * 一条请求记录。账本要回答的四件事都在这里：
- * 打给谁（base_url / credential_id）、谁发起（consumer_id）、用了多少 token、
+ * 打给谁（base_url / provider_id）、谁发起（consumer_id）、用了多少 token、
  * 钱怎么算出来的（service_fee + token − unbilled = fee）。
  */
 export type RequestRow = {
   id: string;
   address: string;
-  credential_id: string | null;
+  provider_id: string | null;
   consumer_id: string | null;
   base_url: string;
   model: string;
@@ -106,11 +106,11 @@ export type Consumer = {
   id: string;
   address: string;
   name: string;
-  /** 建的时候就绑死的上游提供者：调用时一条 Bearer 就够，不用再带第二个头。 */
-  credential_id: string;
-  /** LEFT JOIN 带上来的昵称与地址；凭证被撤销后为 null。 */
-  credential_label: string | null;
-  credential_base_url: string | null;
+  /** 建的时候就绑死的 provider：调用时一条 Bearer 就够，不用再带第二个头。 */
+  provider_id: string;
+  /** LEFT JOIN 带上来的昵称与地址；Provider 被撤销后为 null。 */
+  provider_label: string | null;
+  provider_base_url: string | null;
   key_hint: string;
   created_at: number;
   last_used_at: number | null;
@@ -157,10 +157,10 @@ export type ConsumerUsage = {
   fee_micros: number;
 };
 
-/** 按上游提供者聚合的用量：钱花在哪个上游。 */
-export type CredentialUsage = {
-  credential_id: string | null;
-  credential_label: string | null;
+/** 按 provider 聚合的用量：钱花在哪个Provider。 */
+export type ProviderUsage = {
+  provider_id: string | null;
+  provider_label: string | null;
   requests: number;
   input_tokens: number;
   cached_tokens: number;
@@ -192,12 +192,12 @@ export type ChatChunk = {
 };
 
 /**
- * 上游说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
+ * Provider 说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
  * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
  */
 export const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'] as const;
-export type UpstreamProtocol = (typeof PROTOCOLS)[number];
+export type Protocol = (typeof PROTOCOLS)[number];
 
-/** 上游本身是否对公众可用。私有不代表掺水，只代表不对外。 */
+/** Provider 本身是否对公众可用。私有不代表掺水，只代表不对外。 */
 export const VISIBILITIES = ['public', 'private'] as const;
-export type UpstreamVisibility = (typeof VISIBILITIES)[number];
+export type Visibility = (typeof VISIBILITIES)[number];

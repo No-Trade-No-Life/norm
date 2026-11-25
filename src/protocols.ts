@@ -1,36 +1,36 @@
 /**
- * 上游渠道：只有四种协议，其余都是它们的变体。
+ * Provider：只有四种协议，其余都是它们的变体。
  *
  *   openai-chat         {base}/chat/completions
  *   openai-responses    {base}/responses
  *   anthropic-messages  {base}/v1/messages
  *   google-gemini       {base}/v1beta/models/{model}:generateContent
  *
- * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**上游**的属性，
- * 由凭证配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
- * 这样「换一家上游」只是换一张凭证，客户端一行都不用改。
+ * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**Provider**的属性，
+ * 由 provider 配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
+ * 这样「换一家 provider 」只是换一张 provider，客户端一行都不用改。
  */
-export type UpstreamProtocol =
+export type Protocol =
   | 'openai-chat'
   | 'openai-responses'
   | 'anthropic-messages'
   | 'google-gemini';
 
-export const PROTOCOLS: UpstreamProtocol[] = [
+export const PROTOCOLS: Protocol[] = [
   'openai-chat',
   'openai-responses',
   'anthropic-messages',
   'google-gemini',
 ];
 
-export function isProtocol(value: string): value is UpstreamProtocol {
+export function isProtocol(value: string): value is Protocol {
   return (PROTOCOLS as string[]).includes(value);
 }
 
-/** 上游是否对公众可用，由用户声明。私有不代表掺水，只代表不对外。 */
-export type UpstreamVisibility = 'public' | 'private';
+/** provider 是否对公众可用，由用户声明。私有不代表掺水，只代表不对外。 */
+export type Visibility = 'public' | 'private';
 
-export function isVisibility(value: string): value is UpstreamVisibility {
+export function isVisibility(value: string): value is Visibility {
   return value === 'public' || value === 'private';
 }
 
@@ -48,13 +48,13 @@ export type ChatBody = {
 };
 
 export type Adapter = {
-  /** 上游路径（已含协议自带的版本段）。{model} 会被替换。 */
+  /** 协议路径（已含协议自带的版本段）。{model} 会被替换。 */
   path: (model: string) => string;
   headers: (apiKey: string) => Record<string, string>;
   request: (body: ChatBody, model: string) => unknown;
-  /** 非流式：把上游 JSON 翻译回 OpenAI Chat 形状。 */
+  /** 非流式：把 provider JSON 翻译回 OpenAI Chat 形状。 */
   response: (json: unknown, model: string) => unknown;
-  /** 流式：把上游一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
+  /** 流式：把 provider 一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
   streamData: (data: string, model: string) => string[];
 };
 
@@ -210,14 +210,14 @@ const googleGemini: Adapter = {
   },
 };
 
-const ADAPTERS: Record<UpstreamProtocol, Adapter> = {
+const ADAPTERS: Record<Protocol, Adapter> = {
   'openai-chat': openaiChat,
   'openai-responses': openaiResponses,
   'anthropic-messages': anthropicMessages,
   'google-gemini': googleGemini,
 };
 
-export function adapterFor(protocol: UpstreamProtocol): Adapter {
+export function adapterFor(protocol: Protocol): Adapter {
   return ADAPTERS[protocol];
 }
 
@@ -225,13 +225,13 @@ export function adapterFor(protocol: UpstreamProtocol): Adapter {
  * 流式端点：只有 chat 与 gemini 的路径随 stream 变化，其余同端点不同 body。
  * gemini 的流式必须在路径上声明，否则它会返回一个大 JSON。
  */
-export function streamPathFor(protocol: UpstreamProtocol, model: string): string {
+export function streamPathFor(protocol: Protocol, model: string): string {
   return protocol === 'google-gemini'
     ? `/v1beta/models/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`
     : adapterFor(protocol).path(model);
 }
 
-export function upstreamUrlFor(protocol: UpstreamProtocol, baseUrl: string, model: string, stream: boolean): string {
+export function protocolUrlFor(protocol: Protocol, baseUrl: string, model: string, stream: boolean): string {
   const base = baseUrl.replace(/\/+$/, '');
   return `${base}${stream ? streamPathFor(protocol, model) : adapterFor(protocol).path(model)}`;
 }

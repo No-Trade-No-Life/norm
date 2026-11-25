@@ -56,16 +56,16 @@ console.log('2. 未签名与重放');
   check('重放 401', (await fetch(`${BASE}/api/v1/account/me`, { headers })).status === 401);
 }
 
-console.log('3. 新建凭证（明文密钥交给服务端封装）');
-let credentialId;
+console.log('3. 新建 provider（明文密钥交给服务端封装）');
+let providerId;
 let consumerKey;
 {
-  const path = '/api/v1/credentials';
+  const path = '/api/v1/providers';
   const payload = JSON.stringify({
     label: 'smoke',
     base_url: 'https://api.openai.com/v1',
     // 假密钥：它只会被用去打真·官方端点，用来验「失败不扣费」与「封装/解封跑得通」。
-    upstream_key: 'sk-invalid-smoke-key',
+    provider_key: 'sk-invalid-smoke-key',
   });
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -74,10 +74,10 @@ let consumerKey;
   });
   const body = await response.json();
   check('201', response.status === 201, body);
-  credentialId = body.id;
+  providerId = body.id;
 
   // 列表里只能有提示，不能有明文。
-  const listPath = '/api/v1/credentials';
+  const listPath = '/api/v1/providers';
   const list = await (await fetch(`${BASE}${listPath}`, { headers: sign('GET', listPath) })).json();
   check('列表不含明文密钥', !JSON.stringify(list).includes('sk-invalid-smoke-key'), list);
   check('列表只回提示', typeof list.items?.[0]?.key_hint === 'string', list.items?.[0]);
@@ -86,7 +86,7 @@ let consumerKey;
 console.log('4. 下游消费者 Token：只记名字、只显一次、能调用、能轮换');
 {
   const path = '/api/v1/consumers';
-  // Token 只有一个名字：走哪条上游是转发时的决定，这个账户只有一条上游，所以不必指名。
+  // Token 只有一个名字：走哪条 provider 是转发时的决定，这个账户只有一条 provider，所以不必指名。
   const payload = JSON.stringify({ name: 'smoke bot' });
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -109,17 +109,17 @@ console.log('4. 下游消费者 Token：只记名字、只显一次、能调用�
   });
   check('消费者密钥调管理面 401', escalate.status === 401, escalate.status);
 
-  // 用消费者密钥打真·官方端点（假密钥）→ 上游拒绝，但请求本身被受理了。
+  // 用消费者密钥打真·官方端点（假密钥）→ Provider 拒绝，但请求本身被受理了。
   const relayPath = '/v1/chat/completions';
   const relayBody = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
-  // 只带一个 Bearer：账户里只有一条上游，探测到的 401 必须是上游给的 401，
+  // 只带一个 Bearer：账户里只有一条 provider，探测到的 401 必须是 provider 给的 401，
   // 而不是 Norm 的 400（那说明它还在等工作要一个额外的头）。
   const viaKey = await fetch(`${BASE}${relayPath}`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${consumerKey}`, 'Content-Type': 'application/json' },
     body: relayBody,
   });
-  check('一条 Bearer 就被转发面接受（上游 401）', viaKey.status === 401, viaKey.status);
+  check('一条 Bearer 就被转发面接受（Provider 401）', viaKey.status === 401, viaKey.status);
 
   const rotatePath = `/api/v1/consumers/${body.id}/rotate`;
   const rotated = await fetch(`${BASE}${rotatePath}`, { method: 'POST', headers: sign('POST', rotatePath) });
@@ -134,7 +134,7 @@ console.log('4. 下游消费者 Token：只记名字、只显一次、能调用�
   check('旧密钥立刻失效', stale.status === 401, stale.status);
 }
 
-console.log('5. 上游拒绝时不扣费（假密钥打真·官方端点）');
+console.log('5. Provider 拒绝时不扣费（假密钥打真·官方端点）');
 {
   const path = '/v1/chat/completions';
   const payload = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
@@ -143,11 +143,11 @@ console.log('5. 上游拒绝时不扣费（假密钥打真·官方端点）');
     headers: {
       ...sign('POST', path, payload),
       'Content-Type': 'application/json',
-      'X-Norm-Credential': credentialId,
+      'X-Norm-Provider': providerId,
     },
     body: payload,
   });
-  check('上游 401 原样返回', response.status === 401, response.status);
+  check('Provider 401 原样返回', response.status === 401, response.status);
   const me = await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json();
   check('余额没被扣', me.balance_micros === 1000000, me);
   check('但留下了失败记录', me.requests === 2, me);
@@ -155,9 +155,9 @@ console.log('5. 上游拒绝时不扣费（假密钥打真·官方端点）');
 
 console.log('6. 清理');
 {
-  const path = `/api/v1/credentials/${credentialId}`;
+  const path = `/api/v1/providers/${providerId}`;
   const response = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: sign('DELETE', path) });
-  check('撤销凭证 200', response.status === 200, response.status);
+  check('撤销 provider 200', response.status === 200, response.status);
 }
 
 console.log(failures === 0 ? '\n线上冒烟全部通过' : `\n${failures} 项失败`);

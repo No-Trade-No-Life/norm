@@ -14,10 +14,10 @@ import type { BaseUrlGroup } from '../types';
 type Filter = 'all' | 'trusted' | 'untrusted';
 
 /**
- * 上游渠道看板：按 base_url 聚合。
+ * provider 看板：按 base_url 聚合。
  *
  * 这里不判「官方还是掺水」——只在端上一句事实：这个地址在不在信任清单里，
- * 以及它被多少条凭证用着、其中几条愿意挂到公开看板。判断留给读者。
+ * 以及它被多少条 provider 用着、其中几条愿意挂到公开看板。判断留给读者。
  */
 export function ProvenancePage() {
   const { t, lang } = useI18n();
@@ -87,7 +87,7 @@ export function ProvenancePage() {
               <TableRow>
                 <TableHead>{t('pv.col_trust')}</TableHead>
                 <TableHead className="min-w-32">{t('pv.col_base_url')}</TableHead>
-                <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_credentials')}</TableHead>
+                <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_providers')}</TableHead>
                 <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_public')}</TableHead>
                 <TableHead className="hidden min-w-40 md:table-cell">{t('pv.col_protocols')}</TableHead>
                 <TableHead className="hidden w-36 lg:table-cell">{t('pv.col_last_seen')}</TableHead>
@@ -119,10 +119,10 @@ function BaseUrlRow({ item, lang }: { item: BaseUrlGroup; lang: 'zh' | 'en' }) {
         <span className="block text-[11px] text-muted-foreground">{item.host}</span>
         {/* 窄屏没有独立的计数列，把两个数字贴在这里，事实不能被藏起来。 */}
         <span className="block text-[11px] text-muted-foreground sm:hidden">
-          {item.credentials} {t('pv.col_credentials')} · {item.public_listed} {t('pv.col_public')}
+          {item.providers} {t('pv.col_providers')} · {item.public_listed} {t('pv.col_public')}
         </span>
       </TableCell>
-      <TableCell className="hidden tabular-nums sm:table-cell">{item.credentials}</TableCell>
+      <TableCell className="hidden tabular-nums sm:table-cell">{item.providers}</TableCell>
       <TableCell className="hidden tabular-nums sm:table-cell">{item.public_listed}</TableCell>
       <TableCell className="hidden md:table-cell">
         <div className="flex flex-wrap gap-1">
