@@ -2,6 +2,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58 } from '@scure/base';
 
+import { errorText } from './lib/error-text';
 import { loadStoredSeed, sign } from './identity';
 
 /** docs/api.md 的错误形状：{ error, message }。 */
@@ -95,15 +96,19 @@ export async function signedFetch({ path, method = 'GET', body, headers, signal 
   });
 }
 
+/**
+ * 非 2xx 一律变成 ApiError。文案统一过 `errorText`：上游的错误体是各家方言，
+ * 里面常嵌着对象，直接当字符串用的结果就是白屏。
+ */
 async function readError(response: Response): Promise<ApiError> {
   let code = 'http_error';
   let message = `${response.status} ${response.statusText}`;
   try {
-    const data = (await response.json()) as { error?: string; message?: string };
-    if (data.error) code = data.error;
-    if (data.message) message = data.message;
+    const data = (await response.json()) as { error?: unknown };
+    if (typeof data.error === 'string' && data.error) code = data.error;
+    message = errorText(data, message);
   } catch {
-    // 保持默认文案
+    // 不是 JSON：保持默认文案
   }
   return new ApiError(response.status, code, message);
 }

@@ -14,6 +14,7 @@ import { Switch } from '../components/ui/switch';
 import { Textarea } from '../components/ui/textarea';
 import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
+import { errorText } from '../lib/error-text';
 import { latency, usd } from '../lib/format';
 import { useCredentials } from '../queries';
 import type { ChatChunk, Credential } from '../types';
@@ -86,15 +87,17 @@ export function PlaygroundPage() {
       });
 
       if (!response.ok) {
+        // 上游的错误体原样回来（这是设计：改写它只会让上游的报错更难查），
+        // 所以这里的活儿是把它压成一句话——`error` 常常是一个对象，
+        // 直接塞进 JSX 会让整页白屏，用户看到的就是「点了没反应」。
         const text = await response.text();
-        let message = `${response.status} ${response.statusText}`;
+        let parsed: unknown = text;
         try {
-          const parsed = JSON.parse(text) as { message?: string; error?: string };
-          message = parsed.message ?? parsed.error ?? message;
+          parsed = JSON.parse(text) as unknown;
         } catch {
-          if (text) message = text.slice(0, 400);
+          // 不是 JSON 就按纯文本用
         }
-        throw new ApiError(response.status, 'relay_failed', message);
+        throw new ApiError(response.status, 'relay_failed', errorText(parsed, `${response.status} ${response.statusText}`));
       }
 
       if (!stream) {
