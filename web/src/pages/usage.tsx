@@ -112,7 +112,7 @@ function Pager({
         <ChevronLeftIcon />
       </Button>
       <span className="min-w-14 text-center text-xs text-muted-foreground tabular-nums">
-        {t('us.page').replace('{page}', String(page + 1))}
+        {t('us.page', { page: page + 1 })}
       </span>
       <Button variant="ghost" size="icon-sm" disabled={!hasNext || loading} onClick={() => setPage(page + 1)} aria-label={t('action.next')}>
         <ChevronRightIcon />
@@ -191,7 +191,7 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
             <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
             <TableCell>
               <Badge variant={row.kind === 'grant' ? 'outline' : 'secondary'} className="whitespace-nowrap">
-                <span className="sm:hidden">{row.kind}</span>
+                <span className="sm:hidden">{row.kind === 'grant' ? t('us.kind_grant') : t('us.kind_charge')}</span>
                 <span className="hidden sm:inline">{row.kind === 'grant' ? t('us.ledger_grant') : t('us.ledger_charges')}</span>
               </Badge>
             </TableCell>

@@ -43,10 +43,12 @@ publicRoutes.get('/attestation', (c) =>
     source_sha256: c.env.ATTEST_SOURCE_SHA256 || null,
     assets_sha256: c.env.ATTEST_ASSETS_SHA256 || null,
     run_url: c.env.ATTEST_RUN_URL || null,
+    // 只报「是哪一条」的机器可读编号，措辞由每个客户端自己决定——
+    // 把这些句子写死在这里，英文界面就会原样显示中文。
     policy: {
-      logs: '不留请求体、不留响应体、不留上游密钥',
-      storage: 'D1 只存记账所需的最小字段（模型名、token 数、状态、延迟、费用）',
-      keys: '上游密钥只在请求头里经过，不落库；库里只有客户端加密后的密文',
+      logs: 'no-bodies',
+      storage: 'billing-fields-only',
+      keys: 'sealed-at-rest',
     },
   }),
 );

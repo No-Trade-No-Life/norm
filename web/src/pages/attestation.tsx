@@ -1,12 +1,13 @@
 import { ExternalLinkIcon } from 'lucide-react';
 
 import { ErrorNote, PageHeader, Section, SkeletonRows } from '../components/page';
+import { policyLabel } from '../lib/labels';
 import { Button } from '../components/ui/button';
 import { useI18n } from '../i18n';
 import { useAttestation } from '../queries';
 
 export function AttestationPage() {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const attestation = useAttestation();
   const data = attestation.data;
 
@@ -55,9 +56,9 @@ export function AttestationPage() {
         <div className="flex flex-col gap-4">
           <Section title={t('at.policy')} bodyClassName="p-0">
             <dl className="divide-y divide-border text-sm">
-              <Row label={t('at.policy_logs')} value={data?.policy.logs} />
-              <Row label={t('at.policy_storage')} value={data?.policy.storage} />
-              <Row label={t('at.policy_keys')} value={data?.policy.keys} />
+              <Row label={t('at.policy_logs')} value={data ? policyLabel('logs', data.policy.logs, lang) : undefined} />
+              <Row label={t('at.policy_storage')} value={data ? policyLabel('storage', data.policy.storage, lang) : undefined} />
+              <Row label={t('at.policy_keys')} value={data ? policyLabel('keys', data.policy.keys, lang) : undefined} />
             </dl>
           </Section>
 
@@ -65,9 +66,9 @@ export function AttestationPage() {
             <ol className="flex list-decimal flex-col gap-2 pl-4 text-xs leading-relaxed text-muted-foreground">
               <li>{t('at.how_1')}</li>
               <li>
-                {t('at.how_2').split('pnpm i && pnpm build')[0]}
+                {t('at.how_2').split('{cmd}')[0]}
                 <code className="rounded bg-muted px-1 py-0.5 text-foreground">pnpm i && pnpm build</code>
-                {t('at.how_2').split('pnpm i && pnpm build')[1] ?? ''}
+                {t('at.how_2').split('{cmd}')[1] ?? ''}
               </li>
               <li>{t('at.how_3')}</li>
               <li>{t('at.how_4')}</li>

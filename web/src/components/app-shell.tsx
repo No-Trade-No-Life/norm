@@ -24,13 +24,15 @@ import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
-import type { CopyKey } from '../copy';
+import type { CopyKey, Lang } from '../copy';
 import { Logo } from './logo';
 import { IdentityDialog } from './identity-dialog';
 
@@ -143,22 +145,33 @@ function TopBar() {
         <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={t('common.language')} />}>
           <LanguagesIcon />
         </DropdownMenuTrigger>
+        {/* Base UI 的分组部件必须真的待在 Group / RadioGroup 里：标签与选项直接挂在
+            Content 下会抛 MenuGroupContext is missing，菜单一开整页就崩。 */}
         <DropdownMenuContent align="end" className="min-w-36">
-          <DropdownMenuLabel>{t('common.language')}</DropdownMenuLabel>
-          <DropdownMenuCheckboxItem checked={lang === 'zh'} onCheckedChange={() => setLang('zh')}>
-            {t('common.zh')}
-          </DropdownMenuCheckboxItem>
-          <DropdownMenuCheckboxItem checked={lang === 'en'} onCheckedChange={() => setLang('en')}>
-            {t('common.en')}
-          </DropdownMenuCheckboxItem>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{t('common.language')}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={lang} onValueChange={(value) => setLang(value as Lang)}>
+              {/* 选完就收起来：这是个开关，不是一张要继续编辑的表单。 */}
+              <DropdownMenuRadioItem value="zh" closeOnClick>
+                {t('common.zh')}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="en" closeOnClick>
+                {t('common.en')}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuLabel>{t('common.theme')}</DropdownMenuLabel>
-          <DropdownMenuCheckboxItem checked={theme === 'light'} onCheckedChange={() => setTheme('light')}>
-            {t('common.light')}
-          </DropdownMenuCheckboxItem>
-          <DropdownMenuCheckboxItem checked={theme === 'dark'} onCheckedChange={() => setTheme('dark')}>
-            {t('common.dark')}
-          </DropdownMenuCheckboxItem>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>{t('common.theme')}</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(value as 'light' | 'dark')}>
+              <DropdownMenuRadioItem value="light" closeOnClick>
+                {t('common.light')}
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark" closeOnClick>
+                {t('common.dark')}
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuGroup>
         </DropdownMenuContent>
       </DropdownMenu>
       <Button variant="ghost" size="icon-sm" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={t('action.toggle_theme')}>
@@ -169,6 +182,7 @@ function TopBar() {
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   const { collapsed, mobileOpen, setMobileOpen } = useSidebar();
   const location = useLocation();
 
@@ -184,7 +198,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
       <Dialog open={mobileOpen} onOpenChange={setMobileOpen}>
         <DialogContent className="fixed top-0 left-0 h-full w-64 max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-r p-0 sm:max-w-none">
-          <DialogTitle className="sr-only">Navigation</DialogTitle>
+          <DialogTitle className="sr-only">{t('nav.title')}</DialogTitle>
           <Brand collapsed={false} />
           <SidebarBody collapsed={false} onNavigate={() => setMobileOpen(false)} />
         </DialogContent>

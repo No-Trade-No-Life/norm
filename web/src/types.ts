@@ -93,6 +93,7 @@ export type Attestation = {
   source_sha256: string | null;
   assets_sha256: string | null;
   run_url: string | null;
+  /** 机器可读的策略编号：措辞留在前端字典里，后端只报「是哪一条」。 */
   policy: { logs: string; storage: string; keys: string };
 };
 

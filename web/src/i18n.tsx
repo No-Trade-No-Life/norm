@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { translate, type CopyKey, type Lang } from './copy';
+import { translate, type CopyKey, type CopyParams, type Lang } from './copy';
 
 const LANG_KEY = 'norm.lang';
 
 type I18nValue = {
   lang: Lang;
   setLang: (lang: Lang) => void;
-  t: (key: CopyKey) => string;
+  t: (key: CopyKey, params?: CopyParams) => string;
 };
 
 const I18nContext = createContext<I18nValue | null>(null);
@@ -27,7 +27,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const setLang = useCallback((next: Lang) => setLangState(next), []);
   const value = useMemo<I18nValue>(
-    () => ({ lang, setLang, t: (key: CopyKey) => translate(lang, key) }),
+    () => ({ lang, setLang, t: (key: CopyKey, params?: CopyParams) => translate(lang, key, params) }),
     [lang, setLang],
   );
 

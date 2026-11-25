@@ -7,6 +7,7 @@ export const COPY = {
   'app.name': { zh: 'Norm', en: 'Norm' },
   'app.tagline': { zh: '无站的中转站', en: 'A relay with no site' },
 
+  'nav.title': { zh: '导航', en: 'Navigation' },
   'nav.group_main': { zh: '控制台', en: 'Console' },
   'nav.playground': { zh: 'Playground', en: 'Playground' },
   'nav.credentials': { zh: '上游提供者', en: 'Upstream providers' },
@@ -236,6 +237,8 @@ export const COPY = {
   'us.page': { zh: '第 {page} 页', en: 'Page {page}' },
   'us.page_of_hint': { zh: '每页 20 行', en: '20 rows per page' },
   'us.ledger_charges': { zh: 'charge（按次隔离费）', en: 'charge (per-request isolation fee)' },
+  'us.kind_grant': { zh: '授信', en: 'Grant' },
+  'us.kind_charge': { zh: '扣费', en: 'Charge' },
   'us.ledger_grant': { zh: 'grant（演示授信）', en: 'grant (demo credit)' },
 
   'pv.title': { zh: '来源看板', en: 'Provenance board' },
@@ -277,9 +280,12 @@ export const COPY = {
   'at.policy_logs': { zh: '日志策略', en: 'Logs' },
   'at.policy_storage': { zh: '存储策略', en: 'Storage' },
   'at.policy_keys': { zh: '密钥策略', en: 'Keys' },
+  'at.policy_logs_none': { zh: '不留请求体、不留响应体、不留上游密钥', en: 'No request bodies, no responses, no upstream keys' },
+  'at.policy_storage_billing_only': { zh: 'D1 只存记账所需的最小字段（模型名、token 数、状态、延迟、费用）', en: 'D1 keeps only the minimum billing fields (model, token counts, status, latency, fee)' },
+  'at.policy_keys_sealed': { zh: '上游密钥只在请求头里经过，不落库；库里只有客户端加密后的密文', en: 'Upstream keys only pass through request headers and are never stored; the database holds client-side ciphertext' },
   'at.how_title': { zh: '如何自己复算', en: 'How to recompute' },
   'at.how_1': { zh: '克隆仓库并切到上面这个 commit。', en: 'Clone the repository and check out the commit above.' },
-  'at.how_2': { zh: '安装依赖并构建：pnpm i && pnpm build。', en: 'Install and build: pnpm i && pnpm build.' },
+  'at.how_2': { zh: '安装依赖并构建：{cmd}。', en: 'Install and build: {cmd}.' },
   'at.how_3': { zh: '对 dist 算一次 sha256，与本页的产物哈希对比。', en: 'Hash the dist folder and compare it with the assets hash here.' },
   'at.how_4': { zh: '数字一致，说明线上跑的就是这份源码；不一致，就不要把钱和密钥交给它。', en: 'If they match, production runs exactly this source. If not, do not trust it with keys or money.' },
   'at.load_failed': { zh: '发布证明加载失败', en: 'Failed to load attestation' },
@@ -342,9 +348,18 @@ export const COPY = {
   'common.address_copied': { zh: '地址已复制', en: 'Address copied' },
 } as const;
 
+/** 占位符统一写成 `{name}`；缺的参数原样留在文案里，方便一眼看出漏传。 */
+export type CopyParams = Record<string, string | number>;
+
 export type CopyKey = keyof typeof COPY;
 export type Lang = 'zh' | 'en';
 
-export function translate(lang: Lang, key: CopyKey): string {
-  return COPY[key][lang];
+export const LANGS: readonly Lang[] = ['zh', 'en'];
+
+export function translate(lang: Lang, key: CopyKey, params?: CopyParams): string {
+  const template: string = COPY[key][lang];
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in params ? String(params[name]) : whole,
+  );
 }

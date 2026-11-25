@@ -31,6 +31,16 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | GET | `/api/v1/base-urls` | 按 base_url 聚合的上游渠道（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
+`/api/v1/attestation` 的 `policy` 只给机器可读的编号，措辞由客户端自己决定（英文界面不该显示中文句子）：
+
+| 字段 | 取值 | 含义 |
+|---|---|---|
+| `policy.logs` | `no-bodies` | 不留请求体、不留响应体、不留上游密钥 |
+| `policy.storage` | `billing-fields-only` | D1 只存记账所需的最小字段 |
+| `policy.keys` | `sealed-at-rest` | 上游密钥只在请求头经过，库里只有密文 |
+
+不在表里的取值原样显示——后端新增一条策略不会让前端白屏或吞掉信息。
+
 ## 身份
 
 | 方法 | 路径 | 说明 |
