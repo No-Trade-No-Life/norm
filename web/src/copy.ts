@@ -106,7 +106,6 @@ export const COPY = {
     en: 'The server seals each upstream key into the database with a Worker secret. Pages only ever see a hint; the key is unsealed per call and never logged or echoed.',
   },
   'cr.col_label': { zh: '标签', en: 'Label' },
-  'cr.col_provider': { zh: 'provider', en: 'Provider' },
   'cr.col_base_url': { zh: 'base_url', en: 'Base URL' },
   'cr.col_protocol': { zh: '上游协议', en: 'Upstream protocol' },
   'cr.col_visibility': { zh: '公开可用', en: 'Publicly available' },
@@ -129,8 +128,12 @@ export const COPY = {
     zh: '只存在库里的一份 AES-256-GCM 密文；拖库拿不到明文，除非连 Worker secret 一起拿走。',
     en: 'Stored as one AES-256-GCM ciphertext. A database dump yields no plaintext unless the Worker secret goes with it.',
   },
-  'cr.field_provider': { zh: 'provider', en: 'Provider' },
   'cr.field_base_url': { zh: 'base_url', en: 'Base URL' },
+  'cr.field_base_url_placeholder': { zh: '例如 https://api.openai.com/v1', en: 'e.g. https://api.openai.com/v1' },
+  'cr.field_base_url_hint': {
+    zh: '打到哪台主机就填哪个地址，创建后钉死；转发时不可改写。',
+    en: 'The endpoint Norm will call. Fixed once created — never rewritten at forward time.',
+  },
   'cr.field_protocol': { zh: '上游协议', en: 'Upstream protocol' },
   'cr.field_visibility': { zh: '上游是否公开可用', en: 'Is the upstream publicly available' },
   'cr.field_visibility_hint': {
