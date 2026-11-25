@@ -47,6 +47,12 @@ describe('mergeCatalog', () => {
     expect(rows[0].official?.match).toBe('gpt-4.1-mini');
   });
 
+  it('按时段计价的上游，锚点带低谷价', () => {
+    const rows = mergeCatalog([{ provider_id: 'p', items: [{ id: 'deepseek-flash' }] }]);
+    expect(rows[0].official).toMatchObject({ match: 'deepseek-flash', input: 300_000_000 });
+    expect(rows[0].official?.off_peak).toEqual({ input: 150_000_000, cached: 3_000_000, output: 600_000_000 });
+  });
+
   it('价目表里没有的型号，官方价是 null，不猜', () => {
     const rows = mergeCatalog([{ provider_id: 'p', items: [{ id: 'acme-secret-model' }] }]);
     expect(rows[0].official).toBeNull();

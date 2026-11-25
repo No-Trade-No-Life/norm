@@ -240,8 +240,17 @@ export type CatalogModel = {
   providers: string[];
   created?: number;
   owned_by?: string;
-  /** 官方按量付费价（纳美元 / 1M token），只作锚点；没收录就是 null。 */
-  official: { match: string; input: number; cached: number; output: number } | null;
+  /**
+   * 官方按量付费价（纳美元 / 1M token），只作锚点；没收录就是 null。
+   * `input / cached / output` 是高峰价，按时段折价的上游多一个 `off_peak`。
+   */
+  official: {
+    match: string;
+    input: number;
+    cached: number;
+    output: number;
+    off_peak?: { input: number; cached: number; output: number };
+  } | null;
 };
 
 /**

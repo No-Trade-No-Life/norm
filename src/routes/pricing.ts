@@ -15,7 +15,14 @@ pricingRoutes.get('/', (c) =>
   c.json({
     unit: 'nanos per 1M tokens',
     default: DEFAULT_RATES,
-    models: MODEL_RATES.map(({ match, input, cached, output }) => ({ match, input, cached, output })),
+    // `input / cached / output` 是高峰价；有低谷价的上游多一个 `off_peak`。
+    models: MODEL_RATES.map(({ match, input, cached, output, off_peak }) => ({
+      match,
+      input,
+      cached,
+      output,
+      ...(off_peak ? { off_peak } : {}),
+    })),
     gas_fee: {
       nanos: gasFeeNanos(c.env),
       note: '每一次真的打出去的调用固定收一笔，与 token 无关、与成败无关：它摊的是 Worker 调用与 D1 读写的固定成本。',
