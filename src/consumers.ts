@@ -31,21 +31,20 @@ export function consumerKeyHint(key: string): string {
 /**
  * Bearer 凭据 → 账户。
  *
+ * 密钥只回答「谁的代码在用」。走哪条上游是转发时的决定，不写在身份里：
+ * 请求带了 `X-Norm-Credential` 就用它，没带就用账户唯一的那条上游（见 store.resolveCredentialId）。
+ *
  * 「用过」这个事实在鉴权时就近记下：调用方不必多一个写操作分支，
  * 而页面能诚实回答「这把钥匙还在被用吗」。
  */
 export async function principalFromConsumerKey(env: Env, key: string): Promise<Principal> {
-  // 绑定的上游是这把钥匙的一部分：没有绑定的行（迁移前创建、已作废）签不出来。
-  const row = await env.DB.prepare(
-    'SELECT id, address, credential_id FROM consumers WHERE key_sha256 = ? AND revoked_at IS NULL AND credential_id IS NOT NULL',
-  )
+  const row = await env.DB.prepare('SELECT id, address FROM consumers WHERE key_sha256 = ? AND revoked_at IS NULL')
     .bind(consumerKeyHash(key))
-    .first<{ id: string; address: string; credential_id: string }>();
+    .first<{ id: string; address: string }>();
   if (!row) fail(401, 'consumer_key_invalid', '消费者密钥无效或已撤销');
 
   await env.DB.prepare('UPDATE consumers SET last_used_at = ? WHERE id = ?')
     .bind(Math.floor(Date.now() / 1000), row.id)
     .run();
-  // 一次查表同时拿到「谁的账」与「走哪条上游」：Token 就是完整的一次调用。
-  return { address: row.address, credentialId: row.credential_id };
+  return { address: row.address };
 }

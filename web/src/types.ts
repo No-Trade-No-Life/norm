@@ -78,11 +78,7 @@ export type Consumer = {
   id: string;
   address: string;
   name: string;
-  /** 建的时候就绑死的上游提供者：调用时一条 Bearer 就够，不用再带第二个头。 */
-  credential_id: string;
-  /** LEFT JOIN 带上来的昵称与地址；凭证被撤销后为 null。 */
-  credential_label: string | null;
-  credential_base_url: string | null;
+  /** 不绑定上游：走哪条上游是每次转发自己的决定。 */
   key_hint: string;
   created_at: number;
   last_used_at: number | null;

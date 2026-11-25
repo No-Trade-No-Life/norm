@@ -83,11 +83,11 @@ let consumerKey;
   check('列表只回提示', typeof list.items?.[0]?.key_hint === 'string', list.items?.[0]);
 }
 
-console.log('4. 下游消费者 Token：绑定上游、只显一次、能调用、能轮换');
+console.log('4. 下游消费者 Token：只记名字、只显一次、能调用、能轮换');
 {
   const path = '/api/v1/consumers';
-  // Token 必须指定上游：调用时不再需要 Norm 专有的头。
-  const payload = JSON.stringify({ name: 'smoke bot', credential_id: credentialId });
+  // Token 只有一个名字：走哪条上游是转发时的决定，这个账户只有一条上游，所以不必指名。
+  const payload = JSON.stringify({ name: 'smoke bot' });
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { ...sign('POST', path, payload), 'Content-Type': 'application/json' },
@@ -112,7 +112,7 @@ console.log('4. 下游消费者 Token：绑定上游、只显一次、能调用�
   // 用消费者密钥打真·官方端点（假密钥）→ 上游拒绝，但请求本身被受理了。
   const relayPath = '/v1/chat/completions';
   const relayBody = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
-  // 只带一个 Bearer：上游在建钥时绑好了，探测到的 401 必须是上游客厅的 401，
+  // 只带一个 Bearer：账户里只有一条上游，探测到的 401 必须是上游给的 401，
   // 而不是 Norm 的 400（那说明它还在等工作要一个额外的头）。
   const viaKey = await fetch(`${BASE}${relayPath}`, {
     method: 'POST',

@@ -6,13 +6,13 @@ import { sha256Hex, signingMessage, verifySignature } from './crypto';
 import { ensurePrincipal, principalExists } from './store';
 import { principalFromConsumerKey } from './consumers';
 
+/**
+ * 身份只说明「谁在说话」：签名身份（人）与消费者 Token 都一样。
+ *
+ * 「用哪条上游」不在身份里——它是每一次转发自己的选择，见 routes/relay.ts。
+ */
 export type Principal = {
   address: string;
-  /**
-   * 只有消费者密钥会填它：那条 Token 在建的时候就绑死了一条上游提供者。
-   * 签名身份（人）永远留空——它管资源，消费的时候还是拿一条 Token。
-   */
-  credentialId?: string;
 };
 
 /**

@@ -1,4 +1,5 @@
 import type { Env } from './env';
+import { fail } from './http';
 import type { UpstreamProtocol, UpstreamVisibility } from './upstreams';
 import { grantMicros } from './env';
 import { isTrusted } from './base-urls';
@@ -80,6 +81,31 @@ export async function findCredential(env: Env, address: string, id: string): Pro
   return env.DB.prepare('SELECT * FROM credentials WHERE id = ? AND address = ? AND revoked_at IS NULL')
     .bind(id, address)
     .first<CredentialRow>();
+}
+
+/**
+ * 这次转发走哪条上游。
+ *
+ * 规则只有一条，而且是「越少配置越好」的那条：头里指了名就用它；没指名时，
+ * 账户里有且只有一条上游就用那一条——于是「添一条上游、拿一条 Token」就够了，
+ * 调用方一个 Norm 专有的头都不用认识。多条时不猜：猜错等于把钱打到别的上游去，
+ * 所以宁可报错让调用方指明。
+ */
+export async function resolveCredentialId(env: Env, address: string, requested: string | null): Promise<string> {
+  const named = requested?.trim();
+  if (named) return named;
+
+  const { results } = await env.DB.prepare(
+    'SELECT id FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 2',
+  )
+    .bind(address)
+    .all<{ id: string }>();
+
+  if (results.length === 0) fail(400, 'credential_missing', '还没有上游提供者：先去「上游提供者」页添加一条');
+  if (results.length > 1) {
+    fail(409, 'credential_ambiguous', '账户里有多条上游提供者，请用 X-Norm-Credential 指名用哪一条');
+  }
+  return results[0].id;
 }
 
 /**
