@@ -164,8 +164,8 @@ export const COPY = {
     en: 'A disabled provider is skipped for relay and cannot be named with X-Norm-Provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
-    zh: '入口方言与这里选的协议同名时不转换，请求体按原始字节转发；不同的 12 格才由 Norm 翻译。',
-    en: 'When the entry dialect matches this protocol nothing is converted — the body goes out byte-for-byte. Only the other 12 cells are translated.',
+    zh: '入口方言与这里选的协议同名时不转换，请求体按原始字节转发；不同的 12 格才由 Norm 翻译。DeepSeek 选 deepseek：底层同样说 OpenAI Responses，但计价按官方高峰 / 低谷两档，低谷价只在这一条协议上生效。',
+    en: 'When the entry dialect matches this protocol nothing is converted — the body goes out byte-for-byte. Only the other 12 cells are translated. Pick deepseek for DeepSeek: the wire format is OpenAI Responses, but billing follows DeepSeek’s peak / off-peak tariffs, and the off-peak rate only applies through this protocol.',
   },
   'pr.creating': { zh: '创建中…', en: 'Creating…' },
   'pr.created': { zh: '已创建', en: 'Created' },
@@ -216,6 +216,7 @@ export const COPY = {
   'proto.openai-responses': { zh: 'OpenAI Responses', en: 'OpenAI Responses' },
   'proto.anthropic-messages': { zh: 'Anthropic Messages', en: 'Anthropic Messages' },
   'proto.google-gemini': { zh: 'Google Gemini', en: 'Google Gemini' },
+  'proto.deepseek': { zh: 'DeepSeek', en: 'DeepSeek' },
   'vis.public': { zh: '公开可用', en: 'Publicly available' },
   'vis.private': { zh: '私有', en: 'Private' },
   'trust.trusted': { zh: '信任清单内', en: 'On trust list' },
@@ -257,6 +258,10 @@ export const COPY = {
     en: 'Units: micro-USD per 1M tokens. Prices ship with the code, so a price change is a reviewable merge.',
   },
   'us.pricing_default': { zh: '兜底（未定价模型）', en: 'Fallback (unpriced model)' },
+  'us.pricing_protocol_note': {
+    zh: '{protocol}：周一至周五 {peak}（UTC）按高峰价，其余时段（含周末与法定节假日）按低谷价，低谷为高峰的一半；上表列的是高峰价。',
+    en: '{protocol}: peak rate on weekdays {peak} (UTC), off-peak everywhere else (weekends and public holidays included) at half the peak rate. The list above shows the peak rates.',
+  },
   'us.col_time': { zh: '时间', en: 'Time' },
   'us.col_model': { zh: '模型', en: 'Model' },
   'us.col_status': { zh: '状态', en: 'Status' },
@@ -300,8 +305,8 @@ export const COPY = {
   'md.col_official': { zh: '官方价 /1M', en: 'Official /1M' },
   'md.official_missing': { zh: '未收录', en: 'Not in list' },
   'md.official_hint': {
-    zh: '官方按量付费价（每百万 token，高峰时段）：输入 {input} · 缓存 {cached} · 输出 {output}。锚点规则 {match}。',
-    en: 'Official pay-as-you-go price per 1M tokens at peak: input {input} · cached {cached} · output {output}. Anchor rule: {match}.',
+    zh: '官方按量付费价（每百万 token）：输入 {input} · 缓存 {cached} · 输出 {output}。锚点规则 {match}。',
+    en: 'Official pay-as-you-go price per 1M tokens: input {input} · cached {cached} · output {output}. Anchor rule: {match}.',
   },
   'md.official_off_peak': {
     zh: '低谷价：输入 {input} · 缓存 {cached} · 输出 {output}。',

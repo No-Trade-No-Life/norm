@@ -16,10 +16,10 @@ import {
 } from '../dialects';
 import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
-import { quote, type Usage } from '../pricing';
+import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
 import { findProvider, findPrincipal, resolveProviderId, settle, type RequestRecord, type Settled } from '../store';
-import { adapterFor, protocolUrlFor, type Protocol } from '../protocols';
+import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
 
@@ -107,11 +107,13 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const protocol = provider.protocol;
   const model = entry.model ?? (typeof raw.model === 'string' ? raw.model : '');
   const stream = entry.stream ?? raw.stream === true;
-  const sameShape = entry.dialect === protocol;
 
   // 目的地只能来自上游提供商：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
   const baseUrl = provider.base_url;
   const adapter = adapterFor(protocol);
+  // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
+  // 所以 Responses 客户端打给它一样一个字节都不动。
+  const sameShape = entry.dialect === adapter.dialect;
 
   // 客户端有没有要求用量：OpenAI 兼容的流默认**不**回 usage，要它得显式 include_usage。
   const wantsUsage = obj(raw.stream_options).include_usage === true;
@@ -139,6 +141,9 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
   const startedAt = Date.now();
+  // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
+  // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
+  const rate = rateAt(protocol, model, Math.floor(startedAt / 1000));
   // Gas 是「执行一次」的价：付不起就不打上游，也就没有这次执行，不记账。
   const gasFee = gasFeeNanos(c.env);
   const account = await findPrincipal(c.env, address);
@@ -160,6 +165,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     gasFee,
     host,
     model,
+    rate,
   };
 
   let reply: Response;
@@ -201,7 +207,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   }
 
   const json = await reply.json<Record<string, unknown>>();
-  const core = readAnswer(protocol, json);
+  const core = readAnswer(adapter.dialect, json);
   const billed = await bill(accounting, core, reply.status);
   // 同格式：响应体一个字段都不动，只把 `norm` 作为附加字段挂上去。
   // 跨方言：整个响应由 renderInbound 说出入口方言。
@@ -225,6 +231,11 @@ type Accounting = {
   gasFee: number;
   host: string;
   model: string;
+  /**
+   * 这一次按哪一档计价：协议自带分时价时由请求开始的时刻定下（`rateAt`），
+   * null = 用通用价目表。存下来是因为同一笔账要算两遍（账单结论 + 记账），两遍必须同价。
+   */
+  rate: PriceAnchor | null;
   /** 首字延迟：流式里第一个文本增量到达的时刻；非流式没有这个事件，留空。 */
   firstTokenMs?: number | null;
 };
@@ -236,7 +247,7 @@ type Accounting = {
  * 三个数一起回，是因为只回一个总数就没人能自己核对了。
  */
 function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: number; unbilledNanos: number; balanceNanos: number }): NormMeta {
-  const price = quote(accounting.model, usage);
+  const price = quote(accounting.model, usage, accounting.rate);
   return {
     request_id: accounting.requestId,
     fee_nanos: billed.billedNanos,
@@ -254,7 +265,7 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
 
 /** 把一次成功的调用折成钱、记下来，返回给客户端看的账单结论。 */
 async function bill(accounting: Accounting, answer: AnswerCore, statusCode: number): Promise<NormMeta> {
-  const price = quote(accounting.model, answer.usage);
+  const price = quote(accounting.model, answer.usage, accounting.rate);
   const settled = await settle(accounting.env, recordOf(accounting, {
     answer,
     status: 'ok',
@@ -356,7 +367,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
   const finish = async (): Promise<NormMeta> => {
     const usage = sniffer.usage();
     const answer: AnswerCore = { text: '', model: accounting.model, usage, createdAt: 0 };
-    const price = quote(accounting.model, usage);
+    const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenNanos: price.total_nanos }));
     return normMeta(accounting, usage, settled);
   };
@@ -464,10 +475,10 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   const decoder = new TextDecoder();
   const emit = (chunks: string[]) => chunks.map((chunk) => encoder.encode(chunk));
   const toChat = entry === 'openai-chat';
-  const sniffer = usageSniffer(protocol);
+  const sniffer = usageSniffer(adapter.dialect);
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
-    if (accounting.firstTokenMs === undefined && carriesText(protocol, payload)) {
+    if (accounting.firstTokenMs === undefined && carriesText(adapter.dialect, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
   };
@@ -476,7 +487,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
 
   const finish = async (): Promise<NormMeta> => {
     const usage = sniffer.usage();
-    const price = quote(accounting.model, usage);
+    const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, {
       answer: { text: '', model: accounting.model, usage, createdAt: 0 },
       status: 'ok',

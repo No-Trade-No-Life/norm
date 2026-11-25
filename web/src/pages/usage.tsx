@@ -7,6 +7,7 @@ import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
 import { latency, percent, safeHost, shortAddress, signedUsd, tokens, usd, when } from '../lib/format';
+import { protocolLabel } from '../lib/labels';
 import {
   PER_PAGE,
   useLedger,
@@ -440,24 +441,43 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
   );
 }
 
-/** 价目表：纳美元 / 每百万 token。放在页面末尾，是因为它是「核对」而不是「日常」。 */
+/**
+ * 价目表：纳美元 / 每百万 token。放在页面末尾，是因为它是「核对」而不是「日常」。
+ *
+ * 平表之后跟一段协议定价模式（DeepSeek 的高峰 / 低谷）：平表列的是高峰价，
+ * 折扣只在那条协议上发生，所以折扣规则得写在能看到价的地方。
+ */
 function PricingTable({ pricing }: { pricing: Pricing }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const rows = [{ match: t('us.pricing_default'), ...pricing.default }, ...pricing.models];
+  const protocols = pricing.protocols ?? [];
   return (
-    <ul className="divide-y divide-border">
-      <li className="flex items-center justify-between px-3 py-2 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
-        <span>{t('us.col_match')}</span>
-        <span className="tabular-nums">{t('us.col_price')}</span>
-      </li>
-      {rows.map((row) => (
-        <li key={row.match} className="flex items-center justify-between gap-3 px-3 py-1.5">
-          <code className="truncate text-xs">{row.match}</code>
-          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-            {usd(row.input)} / {usd(row.cached)} / {usd(row.output)}
-          </span>
+    <div>
+      <ul className="divide-y divide-border">
+        <li className="flex items-center justify-between px-3 py-2 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
+          <span>{t('us.col_match')}</span>
+          <span className="tabular-nums">{t('us.col_price')}</span>
         </li>
+        {rows.map((row) => (
+          <li key={row.match} className="flex items-center justify-between gap-3 px-3 py-1.5">
+            <code className="truncate text-xs">{row.match}</code>
+            <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+              {usd(row.input)} / {usd(row.cached)} / {usd(row.output)}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {protocols.map((entry) => (
+        <p
+          key={entry.protocol}
+          className="border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
+        >
+          {t('us.pricing_protocol_note', {
+            protocol: protocolLabel(entry.protocol, lang),
+            peak: entry.peak_windows_utc.join(' / '),
+          })}
+        </p>
       ))}
-    </ul>
+    </div>
   );
 }

@@ -70,7 +70,12 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, gas_fee}`，单位是**纳美元 / 每百万 token** |
+| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, protocols, gas_fee}`，单位是**纳美元 / 每百万 token** |
+
+`models` 是通用平表（一个型号一个价）；`protocols` 是协议自带的定价模式——目前只有
+`deepseek`：同一批型号两档价（`peak` / `off_peak`），外加 `peak_windows_utc`、
+`peak_weekdays`（ISO：1 = 周一）与 `off_peak_days`（法定节假日）。平表里 DeepSeek 只有
+高峰价，低谷价只在那条协议上生效。
 
 ## 上游提供商（签名）
 
@@ -92,8 +97,8 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
   // 可选。protocol / visibility 的默认值取最保守的那侧；enabled 默认 true——
   // 新加的一条上游提供商就是拿来用的，禁用是用户主动做的减法。
   "protocol": "openai-chat",         // openai-chat | openai-responses
-  "protocol": "openai-chat",         // openai-chat | openai-responses
                                      // | anthropic-messages | google-gemini
+                                     // | deepseek（说 Responses，按官方时段分两档计价）
   "visibility": "private",           // public | private（上游提供商本身是否对公众可用）
   "enabled": true                   // 禁用后不参与选址，也不能被 X-Norm-Provider 指名
 }
@@ -125,9 +130,10 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 
 ## 转发（只认 Bearer 消费者密钥）
 
-四个入口，四种上游提供商，构成 4×4。**入口方言与上游提供商协议同名**：
+四个入口，五种上游提供商协议，构成 4×5。**入口方言与上游提供商协议同名**（`deepseek`
+说 Responses，所以它与 Responses 入口也是同格式直通）：
 
-| 入口 | 客户端 | 上游提供商协议 `openai-chat` | `openai-responses` | `anthropic-messages` | `google-gemini` |
+| 入口 | 客户端 | 上游提供商协议 `openai-chat` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
 |---|---|---|---|---|---|
 | `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 转换 | 转换 | 转换 |
 | `POST /v1/responses` | Codex CLI | 转换 | 直通 | 转换 | 转换 |
@@ -228,7 +234,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 
 | `upstream_protocol` | 问的上游路径 | 上游回什么 |
 |---|---|---|
-| `openai-chat` / `openai-responses` | `{base}/models` | `data[].id` + `created` + `owned_by` |
+| `openai-chat` / `openai-responses` / `deepseek` | `{base}/models` | `data[].id` + `created` + `owned_by` |
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
 | `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
 

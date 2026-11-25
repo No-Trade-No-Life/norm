@@ -171,10 +171,30 @@ export type ProviderUsage = {
 };
 
 /** 公开价目表：纳美元 / 每百万 token。 */
+/** 三项单价（纳美元 / 1M token）。 */
+export type PricingRates = { input: number; cached: number; output: number };
+
+/**
+ * 协议自带的定价模式：同一批型号两档价，按请求时刻选档（目前只有 `deepseek`）。
+ * `peak_windows_utc` 是高峰时段，`peak_weekdays` 是高峰星期（ISO：1 = 周一），
+ * `off_peak_days` 是全天按低谷的法定节假日。
+ */
+export type ProtocolPricing = {
+  protocol: Protocol;
+  kind: 'time-tiered';
+  peak_windows_utc: string[];
+  peak_weekdays: number[];
+  off_peak_days: string[];
+  models: Array<{ match: string; peak: PricingRates; off_peak?: PricingRates }>;
+};
+
+/** `/api/v1/pricing`：通用平表 + 协议自带的定价模式。 */
 export type Pricing = {
   unit: string;
-  default: { input: number; cached: number; output: number };
-  models: Array<{ match: string; input: number; cached: number; output: number }>;
+  default: PricingRates;
+  models: Array<{ match: string } & PricingRates>;
+  /** 老版本后端没有这段：读的时候当空表。 */
+  protocols?: ProtocolPricing[];
   gas_fee: { nanos: number; note: string };
 };
 
@@ -225,9 +245,16 @@ export type ChatChunk = {
 
 /**
  * 上游提供商说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
+ * `deepseek` 是说 Responses 方言、但价目按官方时段分两档的那一条厂商变体。
  * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
  */
-export const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'] as const;
+export const PROTOCOLS = [
+  'openai-chat',
+  'openai-responses',
+  'anthropic-messages',
+  'google-gemini',
+  'deepseek',
+] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
 /** 上游提供商本身是否对公众可用。私有不代表掺水，只代表不对外。 */

@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
-import { isProtocol, isVisibility } from '../protocols';
+import { PROTOCOLS, isProtocol, isVisibility } from '../protocols';
 import { hostOf } from '../base-urls';
 import { keyHintOf, sealProviderKey } from '../seal';
 import { findProvider, listProviders } from '../store';
@@ -35,7 +35,7 @@ providerRoutes.post('/', async (c) => {
   const enabled = body.enabled ?? true;
 
   if (!label) fail(400, 'label_missing', '缺少 label');
-  if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 openai-chat / openai-responses`);
+  if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
   if (!isVisibility(visibility)) fail(400, 'visibility_invalid', `visibility 只能是 public / private`);
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
   if (!body.base_url || !hostOf(body.base_url)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');

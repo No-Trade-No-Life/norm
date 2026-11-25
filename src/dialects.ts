@@ -16,9 +16,9 @@
  */
 import { fail } from './http';
 import type { Usage } from './pricing';
-import type { ChatBody, ChatMessage, Protocol } from './protocols';
+import type { ChatBody, ChatMessage, Dialect } from './protocols';
 
-export type Dialect = Protocol;
+export type { Dialect };
 
 /**
  * 从任意一种方言的响应里读出的、记账与渲染都需要的那点东西。

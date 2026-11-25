@@ -13,7 +13,12 @@
  *   input   未命中缓存的输入 token（真正要重新预填充的那部分）
  *   cached  命中缓存的输入 token（上游提供商会便宜很多）
  *   output  输出 token（最贵，逐字生成）
+ *
+ * 这张表只管**平档价**：一个型号一个价。随请求时刻变价的（DeepSeek 的高峰 / 低谷）不是
+ * 通用定价，而是某条上游协议自带的定价模式，写在 `src/deepseek.ts` 与 `protocols.ts` 的
+ * `pricing` 里；表里的 DeepSeek 条目只取它的高峰价——上界，宁高估不漏收。
  */
+import { DEEPSEEK_TARIFFS } from './deepseek';
 
 export type Rates = {
   /** 未命中的输入 token，纳美元 / 1M token。 */
@@ -24,16 +29,31 @@ export type Rates = {
   output: number;
 };
 
+/** 通用价目表的一行：一个模型名前缀，一个价。 */
 export type PriceEntry = Rates & {
   /** 模型名前缀（大小写不敏感）。最长匹配优先。 */
   match: string;
-  /**
-   * 低谷价：有的上游按时段折价（DeepSeek 的低谷价约为高峰价的一半）。
-   * `Rates` 只放**高峰价**——它是报价的上界，也是账本用的那一档；
-   * 低谷价单列在这里，页面自己决定怎么展示，`quote()` 不看它。
-   */
-  off_peak?: Rates;
 };
+
+/**
+ * 某条协议自带的官方价目：同一批型号两档价，外加「这个时刻算哪一档」。
+ *
+ * 与 `PriceEntry` 的区别就是「价随时刻变」：通用表回答不了「现在多少钱」，
+ * 所以只有真有分时计价的上游才需要它（见 `protocols.ts` 的 `Adapter.pricing`）。
+ */
+export type Tariff = {
+  /** 模型名前缀，与通用表同一套匹配规则。 */
+  match: string;
+  /** 高峰价：报价与账本的上界。 */
+  peak: Rates;
+  /** 低谷价：只有分时的协议有。 */
+  off_peak?: Rates;
+  /** 这个时刻算哪一档；不给 = 不分时，恒按 `peak`。 */
+  tier?: (utcSeconds: number) => 'peak' | 'off_peak';
+};
+
+/** 算一笔账用的那一档价（`match` 说明它是按哪条规则来的）。 */
+export type PriceAnchor = { match: string; rates: Rates };
 
 /** 没有任何一条规则命中时的兜底价。写在这里，是为了「没定价」不会变成「免费」。 */
 export const DEFAULT_RATES: Rates = { input: 500_000_000, cached: 50_000_000, output: 1_500_000_000 };
@@ -44,12 +64,10 @@ export const DEFAULT_RATES: Rates = { input: 500_000_000, cached: 50_000_000, ou
  * 价格会变，改这里就是改价；`GET /api/v1/pricing` 永远回这张表的当前值。
  */
 export const MODEL_RATES: PriceEntry[] = [
-  // DeepSeek：2026-11-25 按其官网 Model Details 核对，型号是 flash 与 v4-pro，
-  // 两个都有高峰 / 低谷两档（低谷约为高峰的一半）。这里写高峰价，低谷放进 off_peak。
-  { match: 'deepseek-v4-pro', input: 1_320_000_000, cached: 44_000_000, output: 3_960_000_000, off_peak: { input: 660_000_000, cached: 22_000_000, output: 1_980_000_000 } },
-  { match: 'deepseek-flash', input: 300_000_000, cached: 6_000_000, output: 1_200_000_000, off_peak: { input: 150_000_000, cached: 3_000_000, output: 600_000_000 } },
-  // 没点名型号的 deepseek 落到 mainstream 那档（flash 高峰价）：宁可高估，不按更便宜的一档漏收。
-  { match: 'deepseek', input: 300_000_000, cached: 6_000_000, output: 1_200_000_000, off_peak: { input: 150_000_000, cached: 3_000_000, output: 600_000_000 } },
+  // DeepSeek 分时计价（高峰 / 低谷）只在 `deepseek` 协议里生效，价目也在那张表里
+  // （`src/deepseek.ts`）。这里只取它的高峰价：把 DeepSeek 挂在通用协议上的上游
+  // 不该享受低谷折扣，宁可高估。
+  ...DEEPSEEK_TARIFFS.map(({ match, peak }) => ({ match, ...peak })),
   { match: 'gpt-4o-mini', input: 150_000_000, cached: 75_000_000, output: 600_000_000 },
   { match: 'gpt-4o', input: 2_500_000_000, cached: 1_250_000_000, output: 10_000_000_000 },
   { match: 'gpt-4.1-mini', input: 400_000_000, cached: 100_000_000, output: 1_600_000_000 },
@@ -85,25 +103,30 @@ export type Quote = {
   total_nanos: number;
 };
 
-/** 最长前缀匹配：`gpt-4o-mini` 必须赢过 `gpt-4o`，否则便宜模型按贵模型计价。 */
-export function ratesFor(model: string): { rates: Rates; match: string | null; off_peak?: Rates } {
+/**
+ * 最长前缀匹配：`gpt-4o-mini` 必须赢过 `gpt-4o`，否则便宜模型按贵模型计价。
+ *
+ * 名字常带一层提供者前缀（`deepseek/deepseek-chat`、`openai/gpt-4o-mini`）：去掉前缀再
+ * 匹配一次，否则这种写法会掉到兜底价上（贵 3 倍且没人看得出来）。通用价目表与协议自带的
+ * 分时价目表共用这一条规则，所以「哪一行命中」在两处是同一个答案。
+ */
+export function longestMatch<T extends { match: string }>(entries: readonly T[], model: string): T | null {
   const name = model.trim().toLowerCase();
-  // `deepseek/deepseek-chat`、`openai/gpt-4o-mini`：名字常带一层提供者前缀，
-  // 去掉前缀再匹配一次，否则这种写法会掉到兜底价上（贵 3 倍且没人看得出来）。
   const bare = name.slice(name.lastIndexOf('/') + 1);
 
-  let best: PriceEntry | null = null;
-  for (const entry of MODEL_RATES) {
+  let best: T | null = null;
+  for (const entry of entries) {
     if (!name.startsWith(entry.match) && !bare.startsWith(entry.match)) continue;
     if (best === null || entry.match.length > best.match.length) best = entry;
   }
-  return best
-    ? {
-        rates: { input: best.input, cached: best.cached, output: best.output },
-        match: best.match,
-        ...(best.off_peak ? { off_peak: best.off_peak } : {}),
-      }
-    : { rates: DEFAULT_RATES, match: null };
+  return best;
+}
+
+/** 通用价目表对一个型号的报价；没命中就是兜底价（`match: null`）。 */
+export function ratesFor(model: string): { rates: Rates; match: string | null } {
+  const best = longestMatch(MODEL_RATES, model);
+  if (best === null) return { rates: DEFAULT_RATES, match: null };
+  return { rates: { input: best.input, cached: best.cached, output: best.output }, match: best.match };
 }
 
 /**
@@ -123,11 +146,14 @@ const nanos = (tokens: number, rate: number): number => {
 /**
  * 把三项 token 折成一笔钱。
  *
+ * `anchor` 是这一笔按哪一档价算：协议自带分时价时由调用方在请求开始时选好档传进来
+ * （见 `protocols.ts` 的 `rateAt`），不传就走通用价目表。
+ *
  * 缓存命中永远不会多于输入总量：上游提供商的计数口径各不相同（有的把缓存算进输入，有的分开），
  * 归一化在 dialects.ts 里做，这里只负责不让一个坏数字变成一笔负账。
  */
-export function quote(model: string, usage: Usage): Quote {
-  const { rates, match } = ratesFor(model);
+export function quote(model: string, usage: Usage, anchor?: PriceAnchor | null): Quote {
+  const { rates, match } = anchor ?? ratesFor(model);
   const cached = Math.min(Math.max(usage.cached, 0), Math.max(usage.input, 0));
   const uncached = Math.max(usage.input, 0) - cached;
   const inputNanos = nanos(uncached, rates.input);
