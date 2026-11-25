@@ -136,6 +136,11 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 响应体原样返回（只多一个 `norm` 字段）。一个字段都不碰，包括 `tools`、`tool_choice`、
 `response_format` 这些我们没打算理解的字段。
 
+**唯一会改请求体的地方**：流式请求打向 `openai-chat` 上游提供商时，Norm 会补一个
+`stream_options.include_usage: true`——那种上游默认不回 token 用量，而账本就靠它算钱。
+它额外产生的那条用量帧（`choices: []`，只带 `usage`）由 Norm 吃掉：客户端没要，就不会
+突然收到一条它没预期的帧；客户端本来就要了（`include_usage: true`），就原样转发。
+
 **非对角线才过桥**：入口方言 → OpenAI Chat → 协议适配器 → 回来时渲染成入口方言。
 桥只在一侧出现，所以矩阵是 4 段入口翻译加 4 段上游提供商适配，不是 16 条路径。
 

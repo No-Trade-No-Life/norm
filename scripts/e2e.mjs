@@ -79,7 +79,13 @@ const provider = createServer((request, response) => {
     // 1) openai-chat
     if (url.pathname.endsWith('/chat/completions')) {
       if (parsed.stream) {
-        sse(response, [{ choices: [{ delta: { content: '你' } }] }, { choices: [{ delta: { content: '好' } }] }]);
+        const frames = [{ choices: [{ delta: { content: '你' } }] }, { choices: [{ delta: { content: '好' } }] }];
+        // 仿 DeepSeek：用量只在你显式 `stream_options.include_usage` 的时候才回。
+        // Norm 的账本靠它算钱，所以 Norm 必须自己会要——这一条就是那个回归。
+        if (parsed.stream_options?.include_usage) {
+          frames.push({ choices: [], usage: { prompt_tokens: 30, completion_tokens: 6, prompt_cache_hit_tokens: 20 } });
+        }
+        sse(response, frames);
         return;
       }
       response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -378,6 +384,21 @@ for (const protocol of Object.keys(expected)) {
   check(`${protocol} 结尾有 DONE`, result.text.trimEnd().endsWith('data: [DONE]'), result.text.slice(-40));
 }
 {
+  // 流式账单：用量只在被显式要求时才出现，所以 Norm 必须自己补 include_usage，
+  // 否则真实调用（DeepSeek 这类）在账本上永远是 0 / 0 / 0。
+  const normOf = (text) => {
+    const line = text.split('\n').filter((l) => l.startsWith('data: {') && l.includes('"norm"')).at(-1);
+    return JSON.parse(line.slice(6)).norm;
+  };
+  const streamed = await chat(providers['openai-chat'], { stream: true });
+  const norm = normOf(streamed.text);
+  check('流式也记下三项 token', norm?.input_tokens === 30 && norm?.cached_tokens === 20 && norm?.output_tokens === 6, norm);
+  check('流式按 token 收钱', norm?.token_nanos > 0 && norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
+  check('客户端没要用量就不给用量帧', !streamed.text.includes('"prompt_tokens_details"'), streamed.text.slice(-300));
+
+  const asked = await chat(providers['openai-chat'], { stream: true, stream_options: { include_usage: true } });
+  check('客户端要了用量就原样给他', asked.text.includes('"prompt_tokens_details"'), asked.text.slice(-400));
+
   const geminiStream = seen.find((entry) => entry.path.includes(':streamGenerateContent'));
   check('gemini 走流式端点', geminiStream.search.includes('alt=sse'), geminiStream.search);
   const responsesStream = seen.filter((entry) => entry.path.endsWith('/responses')).at(-1);
@@ -416,13 +437,17 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 {
   const me = (await call(alice, 'GET', '/api/v1/account/me')).json;
   const okCalls = 4 + 4 + 1; // 四协议各一次 + 流式各一次 + 7 里那一次
-  check('requests 含一次失败', me.requests === okCalls + 1, me);
+  const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=200')).json.items;
+  const failures = rows.filter((row) => row.status !== 'ok');
+  check('requests 计数与实际记录一致', me.requests === rows.length, { counted: me.requests, rows: rows.length });
+  check('记录里既有成功也有失败', okCalls > 0 && failures.length > 0, { okCalls, failures: failures.length });
   check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
   check('费用按 Gas + token 拆开', (me.billed?.gas_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger')).json;
   const charges = ledger.items.filter((row) => row.kind === 'charge');
-  check('charge 数 = 成功调用数 + 那次失败的 Gas', charges.length === okCalls + 1, charges.length);
+  // 失败也收 Gas（执行真的发生了），所以每一行请求都该有一条 charge。
+  check('charge 数 = 请求记录数', charges.length === rows.length, { charges: charges.length, rows: rows.length });
   check('charge 都是负数', charges.every((row) => row.amount_nanos < 0), charges.map((row) => row.amount_nanos));
   // request_id 是 UUID v7：字典序即时间序，账本按它翻页。
   check('charge 都带 UUID v7 的 request_id', charges.every((row) => UUID_V7.test(row.request_id ?? '')), charges.map((row) => row.request_id));
