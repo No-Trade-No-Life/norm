@@ -334,7 +334,6 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <ServerIcon className="size-3.5" />
         {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>
       </span>
-      {meta.fee_nanos === 0 ? <span>{t('pg.fee_zero_failed')}</span> : null}
     </div>
   );
 }

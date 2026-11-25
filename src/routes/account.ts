@@ -16,7 +16,7 @@ accountRoutes.get('/me', async (c) => {
             COALESCE(SUM(input_tokens), 0) AS input_tokens,
             COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
-            COALESCE(SUM(service_fee_nanos), 0) AS service_fee_nanos,
+            COALESCE(SUM(gas_fee_nanos), 0) AS gas_fee_nanos,
             COALESCE(SUM(token_nanos), 0) AS token_nanos,
             COALESCE(SUM(unbilled_nanos), 0) AS unbilled_nanos
      FROM requests WHERE address = ?`,
@@ -27,7 +27,7 @@ accountRoutes.get('/me', async (c) => {
       input_tokens: number;
       cached_tokens: number;
       output_tokens: number;
-      service_fee_nanos: number;
+      gas_fee_nanos: number;
       token_nanos: number;
       unbilled_nanos: number;
     }>();
@@ -45,9 +45,9 @@ accountRoutes.get('/me', async (c) => {
       cached_tokens: totals?.cached_tokens ?? 0,
       output_tokens: totals?.output_tokens ?? 0,
     },
-    // 账目构成：服务费 vs token，以及没能收上来的部分（余额不足时由站点承担）。
+    // 账目构成：Gas 费 vs token，以及没能收上来的部分（余额不足时由站点承担）。
     billed: {
-      service_fee_nanos: totals?.service_fee_nanos ?? 0,
+      gas_fee_nanos: totals?.gas_fee_nanos ?? 0,
       token_nanos: totals?.token_nanos ?? 0,
       unbilled_nanos: totals?.unbilled_nanos ?? 0,
     },

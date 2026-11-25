@@ -210,7 +210,7 @@ async function call(who, method, path, body, extra = {}) {
   } catch {
     json = text;
   }
-  return { status: response.status, json, text };
+  return { status: response.status, json, text, headers: response.headers };
 }
 
 async function createProvider(protocol, visibility = 'private') {
@@ -263,7 +263,7 @@ async function raw(method, path, body, headers = {}) {
   } catch {
     json = text;
   }
-  return { status: response.status, json, text };
+  return { status: response.status, json, text, headers: response.headers };
 }
 
 console.log('1. 开户（签名即可，无注册）');
@@ -348,10 +348,10 @@ for (const [protocol, want] of Object.entries(expected)) {
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
   const norm = result.json?.norm;
   check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
-  // 一次调用的钱 = 服务费 + 三项 token 折出来的钱；两个数都能自己核。
-  check(`${protocol} 服务费 300 纳美元`, norm?.service_fee_nanos === 300, norm);
+  // 一次调用的钱 = Gas 费 + 三项 token 折出来的钱；两个数都能自己核。
+  check(`${protocol} Gas 费 300 纳美元`, norm?.gas_fee_nanos === 300, norm);
   check(`${protocol} token 有价`, norm?.token_nanos > 0, norm);
-  check(`${protocol} 总价 = 服务费 + token`, norm?.fee_nanos === norm?.service_fee_nanos + norm?.token_nanos, norm);
+  check(`${protocol} 总价 = Gas + token`, norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${PROVIDER_PORT}`, norm);
 }
 
@@ -384,11 +384,11 @@ for (const protocol of Object.keys(expected)) {
   check('responses 流式靠 body 里的 stream', responsesStream.body.stream === true, responsesStream.body);
 }
 
-console.log('6. 上游提供商失败不扣费，但留一条诚实记录');
+console.log('6. 上游提供商失败只收 Gas，token 不计，仍留一条诚实记录');
 {
   const payload = JSON.stringify({ model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }] });
-  // 封进去的是对的密钥，这里改用一条指向死端口的上游提供商来制造「网络不可达」，
-  // 再确认失败既不扣费也没把上游提供商密钥漏进记录。
+  // 封进去的是对的密钥，这里改用一条指向死端口的上游提供商来制造「网络不可达」：
+  // 确认 Gas 照收（这次执行已经发生）、token 不计，也没把上游提供商密钥漏进记录。
   const wrong = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
     label: 'unreachable', base_url: 'http://127.0.0.1:1/v1', provider_key: 'sk-wrong-key',
   }));
@@ -397,6 +397,8 @@ console.log('6. 上游提供商失败不扣费，但留一条诚实记录');
   });
   check('上游提供商不可达 → 502', result.status === 502, result.status);
   check('失败原因说得清', result.json.error === 'provider_unreachable', result.json);
+  check('失败也扣 300 纳美元 Gas（响应头）', result.headers.get('x-norm-gas-fee-nanos') === '300', result.headers.get('x-norm-gas-fee-nanos'));
+  check('失败也回带 request_id', (result.headers.get('x-norm-request-id') ?? '').length > 0, result.headers.get('x-norm-request-id'));
   await call(alice, 'DELETE', `/api/v1/providers/${wrong.json.id}`);
 }
 
@@ -416,11 +418,11 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   const okCalls = 4 + 4 + 1; // 四协议各一次 + 流式各一次 + 7 里那一次
   check('requests 含一次失败', me.requests === okCalls + 1, me);
   check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
-  check('费用按服务费 + token 拆开', (me.billed?.service_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
+  check('费用按 Gas + token 拆开', (me.billed?.gas_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger')).json;
   const charges = ledger.items.filter((row) => row.kind === 'charge');
-  check('charge 数等于成功调用数', charges.length === okCalls, charges.length);
+  check('charge 数 = 成功调用数 + 那次失败的 Gas', charges.length === okCalls + 1, charges.length);
   check('charge 都是负数', charges.every((row) => row.amount_nanos < 0), charges.map((row) => row.amount_nanos));
   // request_id 是 UUID v7：字典序即时间序，账本按它翻页。
   check('charge 都带 UUID v7 的 request_id', charges.every((row) => UUID_V7.test(row.request_id ?? '')), charges.map((row) => row.request_id));
@@ -437,9 +439,9 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   check('请求记录里带着上游提供商地址', ok.every((row) => row.base_url === BASE_URL), ok.map((row) => row.base_url));
   check('请求记录里带着提供者 id', ok.every((row) => row.provider_id !== null), ok.map((row) => row.provider_id));
   check('请求记录里带着三项 token', ok.every((row) => 'input_tokens' in row && 'cached_tokens' in row && 'output_tokens' in row), ok[0]);
-  // 每一条都能自己核对：服务费 + token 折价 = 扣费。
-  check('每条请求的账都能对上', ok.every((row) => row.fee_nanos === row.service_fee_nanos + row.token_nanos - row.unbilled_nanos), ok[0]);
-  check('失败那条 token 与费用都是 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
+  // 每一条都能自己核对：Gas + token 折价 − 未收 = 扣费。
+  check('每条请求的账都能对上', usage.items.every((row) => row.fee_nanos === row.gas_fee_nanos + row.token_nanos - row.unbilled_nanos), usage.items[0]);
+  check('失败那条只扣 Gas、token 为 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 300 && row.gas_fee_nanos === 300 && row.token_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
 
   // 按 id 翻页：第一页最后一条之后接着往下取，不会与第一页重叠。
   const firstPage = (await call(alice, 'GET', '/api/v1/account/usage?limit=2')).json.items;
@@ -453,7 +455,7 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 
   const pricing = (await (await fetch(`${BASE}/api/v1/pricing`)).json());
   check('价目表公开可读', typeof pricing.default?.input === 'number' && Array.isArray(pricing.models), pricing);
-  check('价目表带服务费', pricing.service_fee?.nanos === 300, pricing.service_fee);
+  check('价目表带 Gas 费', pricing.gas_fee?.nanos === 300, pricing.gas_fee);
 }
 
 console.log('9. 上游提供商按 base_url 聚合；「可信」只是一份清单');
@@ -857,8 +859,8 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
     check(`${protocol} 清单是 OpenAI 形状`, result.json?.object === 'list' && Array.isArray(result.json.data), result.json);
     check(`${protocol} 模型名归一正确`, JSON.stringify(result.json?.data?.map((m) => m.id)) === JSON.stringify(ids), result.json?.data);
     check(`${protocol} 每个条目都是 model`, result.json?.data?.every((m) => m.object === 'model'), result.json?.data);
-    // 唯一不扣费的一条路：服务费与 token 都是 0，也没去读余额。
-    check(`${protocol} 清单不扣费`, result.json?.norm?.fee_nanos === 0 && result.json?.norm?.service_fee_nanos === 0, result.json?.norm);
+    // 唯一不扣费的一条路：Gas 与 token 都是 0，也没去读余额。
+    check(`${protocol} 清单不扣费`, result.json?.norm?.fee_nanos === 0 && result.json?.norm?.gas_fee_nanos === 0, result.json?.norm);
     check(`${protocol} 清单不报余额`, result.json?.norm?.balance_nanos === null, result.json?.norm);
     check(`${protocol} 清单回带 host`, result.json?.norm?.host === `127.0.0.1:${PROVIDER_PORT}`, result.json?.norm);
 

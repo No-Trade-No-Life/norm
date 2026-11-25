@@ -41,7 +41,7 @@ export type AnswerCore = {
 export type NormMeta = {
   request_id: string;
   fee_nanos: number;
-  service_fee_nanos: number;
+  gas_fee_nanos: number;
   token_nanos: number;
   input_tokens: number;
   cached_tokens: number;

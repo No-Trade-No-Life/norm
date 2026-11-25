@@ -109,7 +109,6 @@ export const COPY = {
   'pg.need_prompt': { zh: '请输入 prompt', en: 'Enter a prompt' },
   'pg.streaming': { zh: '生成中…', en: 'Streaming…' },
   'pg.failed': { zh: '请求失败', en: 'Request failed' },
-  'pg.fee_zero_failed': { zh: '失败请求不扣费，但仍记一条诚实记录。', en: 'Failed requests are not charged, but still recorded.' },
 
   'pr.title': { zh: '上游提供商', en: 'Providers' },
   'pr.desc': {
@@ -235,8 +234,8 @@ export const COPY = {
 
   'us.title': { zh: '用量与账本', en: 'Usage & Ledger' },
   'us.desc': {
-    zh: '按 Token 记账：输入、缓存命中、输出分开记，外加一次性的服务费。只存记账所需的字段，没有 prompt，也没有 completion。',
-    en: 'Billed by token: input, cache hits and output are recorded separately, plus a flat service fee. Only billing fields are stored — no prompts, no completions.',
+    zh: '按 Token 记账：输入、缓存命中、输出分开记，外加一次性的 Gas 费。只存记账所需的字段，没有 prompt，也没有 completion。',
+    en: 'Billed by token: input, cache hits and output are recorded separately, plus a flat gas fee. Only billing fields are stored — no prompts, no completions.',
   },
   'us.balance': { zh: '余额', en: 'Balance' },
   'us.spend': { zh: '累计花费', en: 'Total spend' },
@@ -246,12 +245,12 @@ export const COPY = {
   'us.tokens_cached': { zh: '缓存命中', en: 'Cache hits' },
   'us.tokens_out': { zh: '输出 Token', en: 'Output tokens' },
   'us.billed': { zh: '费用构成', en: 'What you paid for' },
-  'us.billed_service': { zh: '服务费', en: 'Service fee' },
+  'us.billed_gas': { zh: 'Gas 费', en: 'Gas fee' },
   'us.billed_tokens': { zh: 'Token 费用', en: 'Token cost' },
   'us.billed_unbilled': { zh: '未收（站点承担）', en: 'Unbilled (absorbed)' },
-  'us.service_note': {
-    zh: '每一次调用固定收一笔，摊的是 Cloudflare Serverless 侧的固定成本，与 Token 无关。',
-    en: 'A flat fee per call that covers the fixed Cloudflare Serverless cost — nothing to do with tokens.',
+  'us.gas_note': {
+    zh: '每一次真的打出去的调用固定收一笔，成功失败都收：它买的是「这次被执行」，不是答案；摊的是 Worker 调用与 D1 读写的固定成本。',
+    en: 'A flat fee on every call that actually went out, charged whether it succeeds or fails: you pay for the execution, not the answer — it covers the fixed Worker and D1 cost.',
   },
   'us.cache_share': { zh: '命中占比', en: 'Hit rate' },
   'us.requests_title': { zh: '请求记录', en: 'Request log' },
@@ -371,13 +370,13 @@ export const COPY = {
     en: 'Every provider declares its source; signals are checked and published. Signals are not proofs, so raw base_url and check time are published too.',
   },
   'ab.not_title': { zh: '这一版不做什么', en: 'What this version does not do' },
-  'ab.not_1': { zh: '不做协议转换：只做 OpenAI 兼容转发。', en: 'No protocol translation: OpenAI-compatible relay only.' },
+  'ab.not_1': { zh: '不做跨方言的工具调用：同格式直通时 tools 原样穿过，跨方言带 tools 直接 400。', en: 'No cross-dialect tool calls: tools pass through untouched on the diagonal, and a cross-dialect request with tools gets a 400.' },
   'ab.not_2': { zh: '不做多租户运营后台、限速策略与模型路由。', en: 'No multi-tenant admin console, rate limits or model routing.' },
   'ab.not_3': { zh: '不做真实支付：演示版只给 $1 授信。', en: 'No real payments: the demo grants $1.' },
   'ab.fee_title': { zh: '计费', en: 'Billing' },
   'ab.fee_body': {
-    zh: '上游提供商 token 账单由你直接付给上游提供商，Norm 只收每次 $0.0005 的请求隔离费。失败请求不扣费，但仍记一条。',
-    en: 'You pay provider token bills directly. Norm charges $0.0005 per request for isolation. Failed requests are free but still recorded.',
+    zh: '上游提供商 token 账单由你直接付给上游提供商。Norm 每次调用只收 300 纳美元（$0.0000003）的 Gas 费，外加按 Token 算的部分；Gas 成功失败都收，失败时只免 Token。',
+    en: 'You pay provider token bills directly. Norm charges a 300 nano-USD ($0.0000003) gas fee per call plus the token cost; gas is charged whether the call succeeds or fails, and only tokens are waived on failure.',
   },
 
   'common.loading': { zh: '加载中…', en: 'Loading…' },

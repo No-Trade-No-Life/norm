@@ -122,11 +122,11 @@ async function resolve(c: ModelsContext): Promise<Resolved> {
     ok: true,
     upstream,
     items: adapter.readModels(parsed),
-    // 全是 0 的账单：没有服务费（没隔离一次生成）、没有 token、也没去读余额。
+    // 全是 0 的账单：没有 Gas（没打出去一次生成）、没有 token、也没去读余额。
     norm: {
       request_id: `req_${randomToken(12)}`,
       fee_nanos: 0,
-      service_fee_nanos: 0,
+      gas_fee_nanos: 0,
       token_nanos: 0,
       input_tokens: 0,
       cached_tokens: 0,

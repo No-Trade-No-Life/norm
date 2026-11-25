@@ -66,7 +66,7 @@ export function UsagePage() {
 
   const moneyCards = useMemo(
     () => [
-      { label: t('us.billed_service'), value: usd(billed?.service_fee_nanos), note: t('us.service_note') },
+      { label: t('us.billed_gas'), value: usd(billed?.gas_fee_nanos), note: t('us.gas_note') },
       { label: t('us.billed_tokens'), value: usd(billed?.token_nanos), note: null },
       {
         label: t('us.billed_unbilled'),
@@ -96,7 +96,7 @@ export function UsagePage() {
       </div>
 
       {/* 三项 token 与两项费用并排：一眼就能看出「贵在输出」还是「贵在没命中缓存」。 */}
-      <Section title={t('us.billed')} description={t('us.service_note')}>
+      <Section title={t('us.billed')} description={t('us.gas_note')}>
         <div className="grid gap-3 sm:grid-cols-3">
           {tokenCards.map((card) => (
             <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
@@ -315,7 +315,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
             <TableCell className="hidden text-right xl:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_service')} ${usd(row.service_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
+            <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_gas')} ${usd(row.gas_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
               {usd(row.fee_nanos)}
             </TableCell>
             <TableCell className="hidden xl:table-cell">

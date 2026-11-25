@@ -72,7 +72,7 @@ describe('quote：三项 token 各自折钱', () => {
     expect(q.total_nanos).toBe(0);
   });
 
-  it('三项全为 0 就是 0 元（失败路径依赖这一点）', () => {
+  it('三项全为 0 就是 0 元（失败路径的 token 部分依赖这一点）', () => {
     expect(quote('claude-opus', { input: 0, cached: 0, output: 0 }).total_nanos).toBe(0);
   });
 });

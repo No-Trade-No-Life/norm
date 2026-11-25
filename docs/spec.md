@@ -72,14 +72,14 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 这条边界同时是权限边界：前缀把两者划开，`/api/v1/*` 只认签名（管理面），`/v1/*` 两者都认（转发面）。
 一把 Token 因此不能凭空再铸一把 Token，也撤销不了上游提供商。
 
-## 5. 计费：按 Token 记，外加一笔服务费
+## 5. 计费：按 Token 记，外加一笔 Gas 费
 
 一次调用的钱由两项相加：
 
 | 项 | 怎么算 | 为什么 |
 |---|---|---|
 | `token_nanos` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
-| `service_fee_nanos` | 每次被隔离执行的调用固定一笔（300 纳美元 = $0.0000003） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测，与 token 无关 |
+| `gas_fee_nanos` | 每一次真的打出去的调用固定一笔（300 纳美元 = $0.0000003） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测——与 token 无关，也与成败无关 |
 
 三种 token 分开记，因为它们的价不同、含义也不同：
 
@@ -98,7 +98,9 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 - 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
   微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
   新地址自动获得 $1.00 演示授信（`GRANT_NANOS = 1000000000`）。
-- 失败不扣费：上游提供商报错或不可达时 `fee_nanos = 0`，只留一条诚实的记录。
+- 失败收 Gas、不收 token：上游提供商报错或不可达时 `token_nanos = 0`，
+  `fee_nanos = gas_fee_nanos`。Gas 买的是「这次被执行」本身——上游回 500 不代表 Worker 没被调用过。
+  没打到上游的请求（体不是 JSON、余额不足）不记账也不扣，因为那没有「执行」可言。
 - 余额付不起时扣到 0，差额记在 `unbilled_nanos`（站点承担），余额永不变成负数。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
@@ -175,8 +177,9 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 选 OpenAI 形状做出口不是偏袒，是因为 `/v1/messages` 与 `:generateContent` 天生没有「列模型」
 这个方法，四家 SDK 里只有这一种形状是公共语言。
 
-它是**唯一**一条打上游却不扣费的路径：列清单不是一次模型调用，没有生成也没有 token。
-所以它不写 `requests`、不动账本，只在响应里挂一个 `fee_micros: 0` 的 `norm`——
+它是**唯一**一条打了上游却不扣 Gas 的路径：列清单不是一次生成，没有 token；它确实消耗了一次
+Worker 调用，那一笔由站点自己吃掉（SDK 常在启动时先问一次模型清单，把「能不能用」也计费不划算）。
+所以它不写 `requests`、不动账本，只在响应里挂一个 `fee_nanos: 0` 与 `gas_fee_nanos: 0` 的 `norm`——
 「这次没花钱」也是需要被如实说明的事实。
 
 ## 7. ZDR 与可信发布

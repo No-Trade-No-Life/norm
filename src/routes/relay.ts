@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import type { Env } from '../env';
-import { serviceFeeNanos } from '../env';
+import { gasFeeNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import {
@@ -17,7 +17,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { quote, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
-import { findProvider, findPrincipal, recordRequest, resolveProviderId, settle, type RequestRecord } from '../store';
+import { findProvider, findPrincipal, resolveProviderId, settle, type RequestRecord, type Settled } from '../store';
 import { adapterFor, protocolUrlFor, type Protocol } from '../protocols';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -96,10 +96,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
   const startedAt = Date.now();
-  const serviceFee = serviceFeeNanos(c.env);
+  // Gas 是「执行一次」的价：付不起就不打上游，也就没有这次执行，不记账。
+  const gasFee = gasFeeNanos(c.env);
   const account = await findPrincipal(c.env, address);
-  if (account.balance_nanos < serviceFee) {
-    fail(402, 'insufficient_balance', `余额不足：需要 ${serviceFee} 纳美元，当前 ${account.balance_nanos}`);
+  if (account.balance_nanos < gasFee) {
+    fail(402, 'insufficient_balance', `余额不足：需要 ${gasFee} 纳美元，当前 ${account.balance_nanos}`);
   }
 
   // 唯一关于上游提供商的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
@@ -113,7 +114,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     baseUrl,
     requestId,
     startedAt,
-    serviceFee,
+    gasFee,
     host,
     model,
   };
@@ -126,18 +127,27 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       body: outbound,
     });
   } catch (error) {
-    await recordFailure(accounting, 'network_error', 502);
-    return c.json({ error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` }, 502);
+    const settled = await recordFailure(accounting, 'network_error', 502);
+    return c.json(
+      { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
+      502,
+      failureHeaders(accounting.requestId, settled),
+    );
   }
 
   if (!reply.ok) {
-    // 失败不扣钱：隔离执行的成本由站点承担，用户只看到一条诚实的失败记录。
-    // 上游提供商的错误体原样返回——它不是记账数据，改写它只会让上游提供商的报错更难查。
+    // Gas 照收，token 不收：这次调用已经真的打出去了（Worker 与 D1 的成本都发生过），
+    // 上游回什么也改不了这一点；没有答案，就没有可计价的 token。
+    // 上游提供商的错误体原样返回——它不是记账数据，改写它只会让上游提供商的报错更难查；
+    // 这一笔扣了多少，挂在响应头上。
     const text = await reply.text();
-    await recordFailure(accounting, 'provider_error', reply.status);
+    const settled = await recordFailure(accounting, 'provider_error', reply.status);
     return new Response(text, {
       status: reply.status,
-      headers: { 'Content-Type': reply.headers.get('Content-Type') ?? 'application/json' },
+      headers: {
+        'Content-Type': reply.headers.get('Content-Type') ?? 'application/json',
+        ...failureHeaders(accounting.requestId, settled),
+      },
     });
   }
 
@@ -168,7 +178,8 @@ type Accounting = {
   baseUrl: string;
   requestId: string;
   startedAt: number;
-  serviceFee: number;
+  /** 这一次「执行」的价，与成败无关。 */
+  gasFee: number;
   host: string;
   model: string;
 };
@@ -176,7 +187,7 @@ type Accounting = {
 /**
  * 账单结论：总价、构成、三项 token、差多少没收到。
  *
- * `fee_nanos` 是真正扣掉的那个数，恒等于 `service_fee_nanos + token_nanos - unbilled_nanos`；
+ * `fee_nanos` 是真正扣掉的那个数，恒等于 `gas_fee_nanos + token_nanos - unbilled_nanos`；
  * 三个数一起回，是因为只回一个总数就没人能自己核对了。
  */
 function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: number; unbilledNanos: number; balanceNanos: number }): NormMeta {
@@ -184,7 +195,7 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
   return {
     request_id: accounting.requestId,
     fee_nanos: billed.billedNanos,
-    service_fee_nanos: accounting.serviceFee,
+    gas_fee_nanos: accounting.gasFee,
     token_nanos: price.total_nanos,
     input_tokens: usage.input,
     cached_tokens: usage.cached,
@@ -209,17 +220,25 @@ async function bill(accounting: Accounting, answer: AnswerCore, statusCode: numb
 }
 
 /**
- * 失败不扣钱：隔离执行的成本由站点承担，用户只看到一条诚实的失败记录。
- * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少，
- * 只是 token 与费用都是 0（上游提供商没给出答案，也就没有可计价的量）。
+ * 失败也收 Gas，只免 token：能被记成失败的调用都已经真的打出去了（一次 Worker 调用、
+ * 几次 D1 读写），那笔成本与上游回不回得出答案无关；没有答案，就没有可计价的量。
+ * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少。
  */
-async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<void> {
-  await recordRequest(accounting.env, recordOf(accounting, {
+async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<Settled> {
+  return settle(accounting.env, recordOf(accounting, {
     status,
     statusCode,
     tokenNanos: 0,
     usage: { input: 0, cached: 0, output: 0 },
   }));
+}
+
+/** 失败响应是上游的原话，账单只能挂在头上：这一次到底扣了多少 Gas。 */
+function failureHeaders(requestId: string, settled: Settled): Record<string, string> {
+  return {
+    'X-Norm-Request-Id': requestId,
+    'X-Norm-Gas-Fee-Nanos': String(settled.billedNanos),
+  };
 }
 
 function recordOf(
@@ -244,9 +263,9 @@ function recordOf(
     inputTokens: usage.input,
     cachedTokens: usage.cached,
     outputTokens: usage.output,
-    serviceFeeNanos: accounting.serviceFee,
+    gasFeeNanos: accounting.gasFee,
     tokenNanos: parts.tokenNanos,
-    // 由 settle 覆盖成「真正扣掉的」；失败路径上它保持 0。
+    // 由 settle 覆盖成「真正扣掉的」：成功是 Gas + token，失败只有 Gas。
     feeNanos: 0,
     unbilledNanos: 0,
     at: nowSeconds(),

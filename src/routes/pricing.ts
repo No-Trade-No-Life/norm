@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
+import { gasFeeNanos } from '../env';
 import { DEFAULT_RATES, MODEL_RATES } from '../pricing';
 
 /**
@@ -15,9 +16,9 @@ pricingRoutes.get('/', (c) =>
     unit: 'nanos per 1M tokens',
     default: DEFAULT_RATES,
     models: MODEL_RATES.map(({ match, input, cached, output }) => ({ match, input, cached, output })),
-    service_fee: {
-      nanos: Number(c.env.SERVICE_FEE_NANOS),
-      note: '每次被隔离执行的调用固定收一笔，与 token 无关：它摊的是 Cloudflare 侧的固定成本。',
+    gas_fee: {
+      nanos: gasFeeNanos(c.env),
+      note: '每一次真的打出去的调用固定收一笔，与 token 无关、与成败无关：它摊的是 Worker 调用与 D1 读写的固定成本。',
     },
   }),
 );

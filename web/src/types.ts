@@ -15,7 +15,7 @@ export type TokenTotals = {
 
 /** 钱的构成：一次服务费 + 三项 token 折出来的钱，以及没收上来的部分。 */
 export type MoneyTotals = {
-  service_fee_nanos: number;
+  gas_fee_nanos: number;
   token_nanos: number;
   unbilled_nanos: number;
 };
@@ -69,7 +69,7 @@ export type Provider = {
 /**
  * 一条请求记录。账本要回答的四件事都在这里：
  * 打给谁（base_url / provider_id）、谁发起（consumer_id）、用了多少 token、
- * 钱怎么算出来的（service_fee + token − unbilled = fee）。
+ * 钱怎么算出来的（gas_fee + token − unbilled = fee）。
  */
 export type RequestRow = {
   id: string;
@@ -84,7 +84,7 @@ export type RequestRow = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
-  service_fee_nanos: number;
+  gas_fee_nanos: number;
   token_nanos: number;
   fee_nanos: number;
   unbilled_nanos: number;
@@ -133,9 +133,9 @@ export type Attestation = {
 /** 一次调用的账单结论（响应里的 `norm` 字段，流式里是末帧）。 */
 export type CallBill = {
   request_id: string;
-  /** 真正从余额里扣掉的数 = service_fee + token − unbilled。 */
+  /** 真正从余额里扣掉的数 = gas_fee + token − unbilled。 */
   fee_nanos: number;
-  service_fee_nanos: number;
+  gas_fee_nanos: number;
   token_nanos: number;
   input_tokens: number;
   cached_tokens: number;
@@ -175,7 +175,7 @@ export type Pricing = {
   unit: string;
   default: { input: number; cached: number; output: number };
   models: Array<{ match: string; input: number; cached: number; output: number }>;
-  service_fee: { nanos: number; note: string };
+  gas_fee: { nanos: number; note: string };
 };
 
 /** `/v1/models` 的一个条目：四种上游的清单在服务端被归一成这一个形状。 */
@@ -196,7 +196,7 @@ export type ModelList = {
   norm?: {
     request_id: string;
     fee_nanos: number;
-    service_fee_nanos: number;
+    gas_fee_nanos: number;
     token_nanos: number;
     input_tokens: number;
     cached_tokens: number;

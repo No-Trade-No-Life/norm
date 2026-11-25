@@ -51,7 +51,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_nanos, granted_nanos, spend_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{service_fee_nanos,token_nanos,unbilled_nanos}}` |
+| GET | `/api/v1/account/me` | `{address, label, balance_nanos, granted_nanos, spend_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,token_nanos,unbilled_nanos}}` |
 | GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
 | GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 记账流水，游标是上一页最后一行的 `cursor` |
 | GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_nanos}` |
@@ -60,7 +60,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 请求记录里每一行都能自己重算一遍：
 
 ```
-fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
+fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 ```
 
 `input_tokens` **含**缓存命中，`cached_tokens` 是其中命中上游提供商缓存的量（按便宜的价算），
@@ -68,7 +68,7 @@ fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, service_fee}`，单位是**纳美元 / 每百万 token** |
+| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, gas_fee}`，单位是**纳美元 / 每百万 token** |
 
 ## 上游提供商（签名）
 
@@ -148,7 +148,7 @@ fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
 裸 data 帧）。用量一边转发一边从上游提供商的帧里嗅出来（四家的位置各不相同：chat 在末帧、
 Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Responses 在
 `response.completed`），所以**收尾帧里的 token 数就是记账用的那一份**；上游提供商一次都没给时
-三项都是 0，账单也就只有服务费。
+三项都是 0，账单也就只有 Gas 费。
 同格式直通时上游提供商的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
 唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
 
@@ -196,10 +196,15 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 ```jsonc
 {
   "...": "OpenAI 响应原样",
-  "norm": { "request_id": "req_…", "fee_nanos": 500, "balance_nanos": 999500, "latency_ms": 812,
-            "host": "api.openai.com" }
+  "norm": { "request_id": "req_…", "fee_nanos": 800, "gas_fee_nanos": 300, "token_nanos": 500,
+            "unbilled_nanos": 0, "balance_nanos": 999200, "latency_ms": 812, "host": "api.openai.com" }
 }
 ```
+
+**失败也收 Gas。** 上游提供商 4xx/5xx 或网络不可达时，响应体是上游的原话（一个字节都不改写，
+也不带 `norm`），账单挂在响应头上：`X-Norm-Request-Id` 与 `X-Norm-Gas-Fee-Nanos`（这一次真正扣掉的
+Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已经被执行过，只是没拿到答案。
+没打到上游的请求（体不是 JSON、余额不足、没配上游提供商）不记账也不扣。
 
 `/v1/chat/completions` 的流式在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}`；
 另外三条入口的流式不插（那些 SDK 按 `type` 严格分派，插一个它们不认识的事件比丢一条记账信息更糟）。
@@ -223,8 +228,9 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 `created` / `owned_by` 不是每家都给，缺了就不编——**空字段比假字段好**。模型名里可能有斜杠
 （`meta-llama/Llama-3`、`models/gemini-2.0-flash`），所以 `/v1/models/{model}` 收整段剩余路径。
 
-**这一路不扣费**：列清单不是一次模型调用，没有生成、没有 token。它不写请求记录、不动账本，
-响应里的 `norm` 明确写着 `fee_micros: 0`、`balance_micros: null`（没去读余额，所以不报一个可能过期的数）。
+**这一路不扣费**：列清单不是一次生成，没有 token；它确实消耗一次 Worker 调用，那一笔由站点自己吃掉。
+它不写请求记录、不动账本，响应里的 `norm` 明确写着 `fee_nanos: 0`、`gas_fee_nanos: 0`、
+`balance_nanos: null`（没去读余额，所以不报一个可能过期的数）。
 上游失败时它的原话原样返回，与转发同一套做法。
 
 ```bash

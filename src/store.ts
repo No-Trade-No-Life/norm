@@ -93,16 +93,9 @@ export async function findProvider(env: Env, address: string, id: string): Promi
  * 这笔钱该记下来，而账不能变成负数——差的那部分记成 `unbilled_nanos`，
  * 由站点承担，并在页面上如实显示。
  *
- * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = service_fee_nanos + token_nanos`。
- * 失败（上游提供商报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
+ * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = gas_fee_nanos + token_nanos`。
+ * 失败（上游提供商报错、网络不可达）也走这里：Gas 照收，token 那部分是 0。
  */
-export type Bill = {
-  requestId: string;
-  /** 一次性服务费，与 token 无关。 */
-  serviceFeeNanos: number;
-  /** 三项 token 折出来的钱。 */
-  tokenNanos: number;
-};
 
 export type Settled = {
   /** 真正从余额里扣掉的数。 */
@@ -126,14 +119,14 @@ export type RequestRecord = {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
-  serviceFeeNanos: number;
+  gasFeeNanos: number;
   tokenNanos: number;
   feeNanos: number;
   unbilledNanos: number;
   at: number;
 };
 
-/** 只写请求记录、不扣费：失败路径用它，代价由站点承担。 */
+/** 只写请求记录、不扣费：`settle` 三次都被并发改写时用它兜底，那一笔标成未收。 */
 export async function recordRequest(env: Env, row: RequestRecord): Promise<void> {
   await requestInsert(env, row).run();
 }
@@ -186,7 +179,7 @@ export async function resolveProviderId(env: Env, address: string, requested: st
  * 同一个账户同时打多个请求时才会撞上，最多重试 3 次。
  */
 export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
-  const due = row.serviceFeeNanos + row.tokenNanos;
+  const due = row.gasFeeNanos + row.tokenNanos;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const current = await env.DB.prepare('SELECT balance_nanos FROM principals WHERE address = ?')
@@ -234,7 +227,7 @@ function requestInsert(env: Env, row: RequestRecord) {
     `INSERT INTO requests
        (id, address, provider_id, consumer_id, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
-        service_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, created_at)
+        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
@@ -249,7 +242,7 @@ function requestInsert(env: Env, row: RequestRecord) {
     row.inputTokens,
     row.cachedTokens,
     row.outputTokens,
-    row.serviceFeeNanos,
+    row.gasFeeNanos,
     row.tokenNanos,
     row.feeNanos,
     row.unbilledNanos,
