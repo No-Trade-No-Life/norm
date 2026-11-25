@@ -288,6 +288,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
           <TableHead className="hidden w-20 text-right sm:table-cell">{t('us.col_latency')}</TableHead>
           <TableHead className="hidden w-32 text-right xl:table-cell">{t('us.col_tokens')}</TableHead>
           <TableHead className="w-[5.5rem] text-right">{t('us.col_fee')}</TableHead>
+          <TableHead className="hidden w-24 text-right sm:table-cell">{t('us.col_spend_after')}</TableHead>
           <TableHead className="hidden w-24 lg:table-cell">{t('us.col_provider_user')}</TableHead>
           <TableHead className="hidden w-24 lg:table-cell">{t('us.col_consumer_user')}</TableHead>
           <TableHead className="hidden min-w-56 xl:table-cell">{t('us.col_request_id')}</TableHead>
@@ -320,6 +321,10 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_gas')} ${usd(row.gas_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
               {usd(row.fee_nanos)}
+            </TableCell>
+            <TableCell className="hidden text-right text-xs tabular-nums text-muted-foreground sm:table-cell">
+              {/* 累计消费：每一行自带「到这里一共花了多少」，不必去别处加总。 */}
+              {usd(row.spend_after_nanos)}
             </TableCell>
             <TableCell className="hidden lg:table-cell">
               {/* 收钱的是谁：公共池时这里是站点的地址，不是调用方自己。 */}
@@ -416,7 +421,6 @@ const KIND_LABEL: Record<LedgerRow['kind'], (t: (key: never) => string) => strin
   voucher: (t) => t('us.ledger_voucher' as never),
   recharge: (t) => t('us.ledger_recharge' as never),
   withdraw: (t) => t('us.ledger_withdraw' as never),
-  charge: (t) => t('us.ledger_charges' as never),
 };
 
 function LedgerTable({ rows }: { rows: LedgerRow[] }) {
@@ -429,7 +433,6 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
           <TableHead className="w-24 sm:w-40">{t('us.col_kind')}</TableHead>
           <TableHead className="w-24 text-right">{t('us.col_amount')}</TableHead>
           <TableHead className="hidden w-28 text-right sm:table-cell">{t('us.col_balance_after')}</TableHead>
-          <TableHead className="hidden min-w-48 lg:table-cell">{t('us.col_request_id')}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -437,16 +440,14 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
           <TableRow key={row.id}>
             <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
             <TableCell>
-              <Badge variant={row.kind === 'charge' ? 'secondary' : 'outline'} className="whitespace-nowrap">
+              {/* 账本只剩进项三类：没有「扣费」那种需要压暗的行了。 */}
+              <Badge variant="outline" className="whitespace-nowrap">
                 <span className="sm:hidden">{row.kind}</span>
                 <span className="hidden sm:inline">{KIND_LABEL[row.kind](t)}</span>
               </Badge>
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{signedUsd(row.amount_nanos)}</TableCell>
             <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{usd(row.available_after_nanos)}</TableCell>
-            <TableCell className="hidden lg:table-cell">
-              <code className="text-[11px] text-muted-foreground">{row.request_id ?? '—'}</code>
-            </TableCell>
           </TableRow>
         ))}
       </TableBody>

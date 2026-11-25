@@ -102,7 +102,10 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 - 价目表写在代码里而不是部署变量里：价格是「公开可复现的转发规则」的一部分，
   改价 = 改代码 = 一次可被审查的合并；没定价的模型走兜底价，不会变成免费。
-- 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`（UUID v7），可以逐条回溯。
+- 消费的账在请求表里：每条请求带 `spend_before_nanos` / `spend_after_nanos`，
+  两者之差就是这一笔扣掉的 `fee_nanos`；累计消费 = 最后一条请求的 `spend_after_nanos`。
+- `ledger` 只记账户级的钱，纯追加：`voucher`（券）/ `recharge`（充值）/ `withdraw`（提现）。
+  于是：可用余额 = Σ `ledger.amount_nanos` − 累计消费。消费不再抄一遍进账本。
 - 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
   微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
   新地址自动获得 $1.00 演示授信（`GRANT_NANOS = 1000000000`）。

@@ -106,17 +106,24 @@ export type RequestRow = {
   token_nanos: number;
   fee_nanos: number;
   unbilled_nanos: number;
+  /** 这一笔之前 / 之后的累计消费：delta 就是 fee，最后一条的 after 就是这个账户花掉的总数。 */
+  spend_before_nanos: number;
+  spend_after_nanos: number;
   created_at: number;
 };
 
+/**
+ * 账本只记账户级的钱：券、充值、提现。
+ *
+ * 消费不在这里——每次调用花掉多少是请求自己的事，请求行带着
+ * `spend_before_nanos` / `spend_after_nanos`，那一笔的 delta 就是 fee。
+ */
 export type LedgerRow = {
   /** 翻页游标（D1 rowid）：这张表只追加，rowid 序就是时间序。 */
   cursor: number;
   id: string;
   address: string;
-  request_id: string | null;
-  /** 四种只增的变动：券、充值、提现、消费。 */
-  kind: 'voucher' | 'recharge' | 'withdraw' | 'charge';
+  kind: 'voucher' | 'recharge' | 'withdraw';
   amount_nanos: number;
   available_after_nanos: number;
   created_at: number;

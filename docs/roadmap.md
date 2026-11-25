@@ -7,7 +7,7 @@
 
 - Ed25519（base58）身份：公钥即地址，逐请求签名，nonce 防重放，无会话无密码
 - BYOK：客户端 XChaCha20-Poly1305 密封，服务端只存密文；明文密钥只走一次请求头
-- 逐请求隔离计费：`requests` + 纯追加 `ledger`，整数纳美元，失败收 Gas、token 按量
+- 逐请求隔离计费：`requests` 每笔自带累计消费前后，`ledger` 只记券/充值/提现，整数纳美元，失败收 Gas、token 按量
 - 上游提供商来源核验：`host` / `key_prefix` / `models_probe` 三路信号，公开可读
 - 转发按模型筛上游：`provider_models` 记下每条上游自己的清单，候选里跑不了这个型号的整批去掉
 - ZDR：不留请求体、响应体、上游提供商密钥；`/api/v1/attestation` 公开构建哈希

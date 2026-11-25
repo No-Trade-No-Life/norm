@@ -79,8 +79,8 @@ export async function ensurePrincipal(env: Env, address: string, at: number): Pr
   await env.DB.batch([
     env.DB.prepare('INSERT OR IGNORE INTO principals (address, created_at) VALUES (?, ?)').bind(address, at),
     env.DB.prepare(
-      `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, available_after_nanos, created_at)
-       SELECT ?, address, NULL, 'voucher', ?, ?, ? FROM principals
+      `INSERT INTO ledger (id, address, kind, amount_nanos, available_after_nanos, created_at)
+       SELECT ?, address, 'voucher', ?, ?, ? FROM principals
        WHERE address = ? AND voucher_nanos = 0`,
     ).bind(randomToken(), grant, grant, at, address),
     env.DB.prepare(
@@ -184,8 +184,8 @@ export type RequestRecord = {
 };
 
 /** 只写请求记录、不扣费：`settle` 三次都被并发改写时用它兜底，那一笔标成未收。 */
-export async function recordRequest(env: Env, row: RequestRecord): Promise<void> {
-  await requestInsert(env, row).run();
+export async function recordRequest(env: Env, row: RequestRecord, spendNanos: number): Promise<void> {
+  await requestInsert(env, row, spendNanos, spendNanos).run();
 }
 
 /**
@@ -474,14 +474,13 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
       balanceNanos: availableNanos(updated),
     };
 
-    // 流水与请求记录同批写入：这条 charge 一定能回到那次请求。
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, available_after_nanos, created_at)
-         VALUES (?, ?, ?, 'charge', ?, ?, ?)`,
-      ).bind(randomToken(), row.address, row.requestId, -billed, settled.balanceNanos, row.at),
-      requestInsert(env, { ...row, feeNanos: billed, unbilledNanos: settled.unbilledNanos }),
-    ]);
+    // 消费的账就在请求表里：这一笔之前 / 之后的累计消费 + 本笔的 fee，三者互相能验。
+    await requestInsert(
+      env,
+      { ...row, feeNanos: billed, unbilledNanos: settled.unbilledNanos },
+      current.spend_nanos,
+      updated.spend_nanos,
+    ).run();
     return settled;
   }
 
@@ -489,17 +488,18 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
   const latest = await env.DB.prepare(`SELECT ${counters} FROM principals WHERE address = ?`)
     .bind(row.address)
     .first<Counters>();
-  await recordRequest(env, { ...row, feeNanos: 0, unbilledNanos: due });
+  await recordRequest(env, { ...row, feeNanos: 0, unbilledNanos: due }, latest?.spend_nanos ?? 0);
   return { billedNanos: 0, unbilledNanos: due, balanceNanos: latest ? availableNanos(latest) : 0 };
 }
 
-function requestInsert(env: Env, row: RequestRecord) {
+function requestInsert(env: Env, row: RequestRecord, spendBeforeNanos: number, spendAfterNanos: number) {
   return env.DB.prepare(
     `INSERT INTO requests
        (id, address, provider_id, provider_user, consumer_id, consumer_user, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
-        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, first_token_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos,
+        spend_before_nanos, spend_after_nanos, first_token_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
@@ -519,6 +519,8 @@ function requestInsert(env: Env, row: RequestRecord) {
     row.tokenNanos,
     row.feeNanos,
     row.unbilledNanos,
+    spendBeforeNanos,
+    spendAfterNanos,
     row.firstTokenMs,
     row.at,
   );

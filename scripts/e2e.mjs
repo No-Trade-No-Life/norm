@@ -564,7 +564,6 @@ console.log('7. X-Norm-Base-Url 必须被忽略（否则「钉死」只是口号
 }
 
 console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、谁发起');
-const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 {
   const me = (await call(alice, 'GET', '/api/v1/account/me')).json;
   const okCalls = 4 + 4 + 1; // 四协议各一次 + 流式各一次 + 7 里那一次
@@ -576,13 +575,22 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   check('费用按 Gas + token 拆开', (me.billed?.gas_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger?limit=200')).json;
-  const charges = ledger.items.filter((row) => row.kind === 'charge');
-  // 失败也收 Gas（执行真的发生了），所以每一行请求都该有一条 charge。
-  check('charge 数 = 请求记录数', charges.length === rows.length, { charges: charges.length, rows: rows.length });
-  check('charge 都是负数', charges.every((row) => row.amount_nanos < 0), charges.map((row) => row.amount_nanos));
-  // request_id 是 UUID v7：字典序即时间序，账本按它翻页。
-  check('charge 都带 UUID v7 的 request_id', charges.every((row) => UUID_V7.test(row.request_id ?? '')), charges.map((row) => row.request_id));
+  // 消费不在账本里：一次调用花掉多少是请求自己的事，账本只记账户级的钱。
+  check('账本里没有 charge', ledger.items.every((row) => row.kind !== 'charge'), ledger.items.map((row) => row.kind));
+  check('账本不再带 request_id', ledger.items.every((row) => !('request_id' in row)), ledger.items[0]);
   check('流水带了翻页游标', typeof ledger.items[0]?.cursor === 'number', ledger.items[0]);
+  // 每条请求自己带着「这一笔之前 / 之后」的累计消费：delta 就是它扣掉的钱。
+  check(
+    '每条请求的累计消费 delta == 它扣的钱',
+    rows.every((row) => row.spend_after_nanos - row.spend_before_nanos === row.fee_nanos),
+    rows.filter((row) => row.spend_after_nanos - row.spend_before_nanos !== row.fee_nanos),
+  );
+  check('累计消费只增', rows.every((row) => row.spend_after_nanos >= row.spend_before_nanos), rows[0]);
+  // 请求按 id 倒序（UUID v7），所以第一行就是最新一条：它的 after 就是账户花掉的总数。
+  check('最新一条请求的累计消费 == 账户累计消费', rows[0].spend_after_nanos === me.spend_nanos, {
+    row: rows[0].spend_after_nanos,
+    spend: me.spend_nanos,
+  });
 
   // 余额不落库：它必须永远等于「充值 + 抵扣券 − 消费 − 提现」这一句算式。
   check(
@@ -602,19 +610,23 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
     me.voucher_nanos === 1_000_000_000 && me.recharge_nanos === 0 && me.withdraw_nanos === 0,
     { voucher: me.voucher_nanos, recharge: me.recharge_nanos, withdraw: me.withdraw_nanos },
   );
+  // 两本账各记一半：账本记进项（券 + 充值 − 提现），请求记消费，合起来才是可用余额。
   const sum = ledger.items.reduce((total, row) => total + row.amount_nanos, 0);
-  check('流水求和 == 当前余额', sum === me.balance_nanos, { sum, balance: me.balance_nanos });
-  check('最新一条流水的可用余额 == 当前余额', ledger.items[0].available_after_nanos === me.balance_nanos, ledger.items[0]);
-  // 流水 = 开户那一张券 + 每条请求一条 charge；最早那条应该正好回到券面额。
-  check('流水 = 一次开户券 + 每条请求一条 charge', ledger.items.length === rows.length + 1, {
+  check('账本求和 − 累计消费 == 当前余额', sum - me.spend_nanos === me.balance_nanos, {
+    ledger: sum,
+    spend: me.spend_nanos,
+    balance: me.balance_nanos,
+  });
+  const charged = rows.reduce((total, row) => total + row.fee_nanos, 0);
+  check('累计消费 == 请求扣费之和', me.spend_nanos === charged, { spend: me.spend_nanos, charged });
+  // 这个账户只开过一次户：账本里就那一张券。
+  check('账本只有开户那一张券', ledger.items.length === 1, {
     ledger: ledger.items.length,
-    rows: rows.length,
+    kinds: ledger.items.map((row) => row.kind),
   });
   const opening = ledger.items.at(-1);
   check('最早一条是开户那张券', opening?.kind === 'voucher' && opening?.amount_nanos === me.voucher_nanos, opening);
   check('开户那一刻的可用余额 == 券面额', opening?.available_after_nanos === opening?.amount_nanos, opening);
-  const charged = charges.reduce((total, row) => total + row.amount_nanos, 0);
-  check('累计花费 == 流水扣费之和', me.spend_nanos === -charged, { spend: me.spend_nanos, charged });
 
   const usage = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json;
   const ok = usage.items.filter((row) => row.status === 'ok');

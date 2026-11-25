@@ -103,7 +103,7 @@ accountRoutes.get('/ledger', async (c) => {
   const address = c.get('principal').address;
 
   const { results } = await c.env.DB.prepare(
-    `SELECT rowid AS cursor, id, request_id, kind, amount_nanos, available_after_nanos, created_at
+    `SELECT rowid AS cursor, id, kind, amount_nanos, available_after_nanos, created_at
      FROM ledger WHERE address = ? ${cursor ? 'AND rowid < ?' : ''}
      ORDER BY rowid DESC LIMIT ?`,
   )
