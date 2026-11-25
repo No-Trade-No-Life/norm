@@ -13,7 +13,7 @@
  */
 import type { Env } from './env';
 import { ratesFor, type Rates } from './pricing';
-import { adapterFor, type ModelInfo } from './protocols';
+import { adapterFor, tariffFor, type ModelInfo, type Protocol } from './protocols';
 import { unsealProviderKey } from './seal';
 import type { ProviderRow } from './store';
 
@@ -106,13 +106,19 @@ export function probeErrorText(probe: ModelProbe): string | null {
   return snippet ? `上游回 ${probe.status}：${snippet}` : `上游回 ${probe.status}`;
 }
 
-/** 一条上游这次回了什么（拿不到就空着，由调用方决定怎么记）。 */
-export type CatalogEntry = { provider_id: string; items: ModelInfo[] };
+/**
+ * 一条上游这次回了什么（拿不到就空着，由调用方决定怎么记）。
+ *
+ * 带着 `protocol`：官方价锚点要按「提供它的这条协议」取——同一批型号挂在不同协议上，
+ * 定价模式可能不一样（`deepseek` 分时，通用协议不分时）。
+ */
+export type CatalogEntry = { provider_id: string; protocol: Protocol; items: ModelInfo[] };
 
 /**
  * 一条模型行：名字、谁有它、以及官方按量付费价这个锚点。
  *
- * `official` 来自 `pricing.ts` 里与记账同源的那张价目表（纳美元 / 1M token）。
+ * `official` 来自与记账同源的那张价目表（纳美元 / 1M token）：协议自带定价模式时
+ * （`deepseek` 的高峰 / 低谷）用它的**高峰价**当锚点、低谷价单列；没有就用通用表。
  * 以后做定价撮合，一个上游的报价就是「这张表的 x 倍」，不必再维护第二份价格。
  * 型号没被收录时它是 null —— 不猜。
  */
@@ -120,6 +126,21 @@ export type CatalogModelRow = ModelInfo & {
   providers: string[];
   official: (Rates & { match: string; off_peak?: Rates }) | null;
 };
+
+/**
+ * 一行模型的官方价锚点：先问这条协议有没有自己的定价模式，没有才回通用表。
+ *
+ * 高峰价当锚点、低谷价单列，是因为撮合要的是**一个确定的数**：拿低谷价去乘倍数会把
+ * 折扣算两遍，而高峰价是上界，也是最容易被用户对着官网核出来的那个数。
+ */
+function anchorOf(protocol: Protocol, model: string): CatalogModelRow['official'] {
+  const tariff = tariffFor(protocol, model);
+  if (tariff) {
+    return { match: tariff.match, ...tariff.peak, ...(tariff.off_peak ? { off_peak: tariff.off_peak } : {}) };
+  }
+  const flat = ratesFor(model);
+  return flat.match === null ? null : { match: flat.match, ...flat.rates };
+}
 
 /**
  * 把几条上游的清单并成一张表：一行一个模型名，顺序按名字。
@@ -137,20 +158,22 @@ export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
     for (const item of entry.items) {
       const existing = byId.get(item.id);
       if (!existing) {
-        const anchor = ratesFor(item.id);
         byId.set(item.id, {
           id: item.id,
           providers: [entry.provider_id],
-          official:
-            anchor.match === null
-              ? null
-              : { match: anchor.match, ...anchor.rates, ...(anchor.off_peak ? { off_peak: anchor.off_peak } : {}) },
+          official: anchorOf(entry.protocol, item.id),
           ...(item.created === undefined ? {} : { created: item.created }),
           ...(item.owned_by === undefined ? {} : { owned_by: item.owned_by }),
         });
         continue;
       }
       existing.providers.push(entry.provider_id);
+      // 同一个型号被几家上游提供时，锚点以「带分时价的那一条」为准：官方价是型号的事实，
+      // 不该因为先答话的那条上游恰好挂在通用协议上，就把低谷价藏起来。
+      if (!existing.official?.off_peak) {
+        const anchor = anchorOf(entry.protocol, item.id);
+        if (anchor?.off_peak) existing.official = anchor;
+      }
       if (existing.created === undefined && item.created !== undefined) existing.created = item.created;
       if (existing.owned_by === undefined && item.owned_by !== undefined) existing.owned_by = item.owned_by;
     }

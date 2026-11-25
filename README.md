@@ -83,8 +83,9 @@ pnpm attest         # 算出 source_sha256 / assets_sha256，与 /api/v1/attesta
 ## 设计上的取舍
 
 - **全连接，只有对角线不翻译。** 四条入口方言（OpenAI Chat / Responses、Anthropic Messages、
-  Google Gemini）× 四种上游提供商协议，16 格全通：4 格同格式直通（请求体按原始字节发出去、
-  响应体原样回来），其余 12 格过 OpenAI Chat 这座桥做转换。唯一不做的是**跨方言的工具调用**：
+  Google Gemini）× 五种上游提供商协议（四种方言 + `deepseek`：说 Responses，但价目按官方
+  时段分两档），20 格全通：5 格同格式直通（请求体按原始字节发出去、响应体原样回来），
+  其余 15 格过 OpenAI Chat 这座桥做转换。唯一不做的是**跨方言的工具调用**：
   三家的 `tools` 形状不同，硬拼一个「尽力而为」的映射只会在客户端以为有 function calling 时
   收到一段散文，所以跨方言带 `tools` 直接 400。协议转换是 Norm 自己的事——`-LB` 一族照样能接，
   只是不再是接入的前提。

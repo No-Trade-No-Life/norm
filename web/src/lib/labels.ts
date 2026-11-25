@@ -6,6 +6,7 @@ const PROTOCOL_KEYS: Record<string, CopyKey> = {
   'openai-responses': 'proto.openai-responses',
   'anthropic-messages': 'proto.anthropic-messages',
   'google-gemini': 'proto.google-gemini',
+  deepseek: 'proto.deepseek',
 };
 
 const VISIBILITY_KEYS: Record<string, CopyKey> = {

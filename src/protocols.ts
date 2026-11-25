@@ -1,26 +1,37 @@
 /**
- * 上游提供商：只有四种协议，其余都是它们的变体。
+ * 上游提供商：四种方言，外加一种带自己定价的厂商变体。
  *
  *   openai-chat         {base}/chat/completions
  *   openai-responses    {base}/responses
  *   anthropic-messages  {base}/v1/messages
  *   google-gemini       {base}/v1beta/models/{model}:generateContent
+ *   deepseek            {base}/responses（说 Responses 方言，但价目按时段分两档）
  *
  * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**上游提供商**的属性，
  * 由上游提供商配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
  * 这样「换一家上游提供商」只是换一张上游提供商，客户端一行都不用改。
+ *
+ * 一条协议除了「说什么方言」，还可以带「怎么计价」：DeepSeek 的官方价随请求时刻分
+ * 高峰 / 低谷两档，那是这一家上游的定价模式，不属于通用价目表。所以协议值分两层——
+ * `Dialect` 是线缆上的形状，`Protocol` 是方言加上可选的定价模式。
  */
-export type Protocol =
+import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
+import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
+
+export type Dialect =
   | 'openai-chat'
   | 'openai-responses'
   | 'anthropic-messages'
   | 'google-gemini';
+
+export type Protocol = Dialect | 'deepseek';
 
 export const PROTOCOLS: Protocol[] = [
   'openai-chat',
   'openai-responses',
   'anthropic-messages',
   'google-gemini',
+  'deepseek',
 ];
 
 export function isProtocol(value: string): value is Protocol {
@@ -50,7 +61,7 @@ export type ChatBody = {
 /**
  * 模型清单的规范形式。
  *
- * 与 ChatBody 同一条思路：它是一份**中间物**，不是任何一家的方言。四种上游各自
+ * 与 ChatBody 同一条思路：它是一份**中间物**，不是任何一家的方言。四种方言各自
  * 用完全不同的字段说同一件事（`data[].id` / `models[].name` / `id`），这里只把
  * 「叫什么、谁给的、什么时候有的」抽出来。真正的形状由出口决定。
  */
@@ -60,7 +71,34 @@ export type ModelInfo = {
   owned_by?: string;
 };
 
+/**
+ * 一条协议自带的定价模式。`GET /api/v1/pricing` 原样回出去，让人能核对
+ * 「这个时刻为什么是这个价」。
+ */
+export type PricingMode = {
+  /** `time-tiered`：同一批型号两档价，按请求时刻选档。 */
+  kind: 'time-tiered';
+  /** 高峰时段（UTC，半开区间）。 */
+  peak_windows_utc: string[];
+  /** 高峰只落在这些星期（ISO：1 = 周一 … 7 = 周日）。 */
+  peak_weekdays: number[];
+  /** 这些日期整天按低谷（法定节假日，UTC 日历日）。 */
+  off_peak_days: string[];
+};
+
+/** 协议自带的价目与它的选档规则。 */
+export type ProtocolPricing = {
+  mode: PricingMode;
+  /** 整张价目：模型名前缀 → 两档价，匹配规则与通用表同一套。 */
+  tariffs: Tariff[];
+};
+
 export type Adapter = {
+  /**
+   * 这条协议的上游说的是哪种方言。读用量、嗅流、渲染都按它，不按 `protocol` 的字面——
+   * `deepseek` 说 Responses，它的请求与账单都该按 Responses 读。
+   */
+  dialect: Dialect;
   /** 协议路径（已含协议自带的版本段）。{model} 会被替换。 */
   path: (model: string) => string;
   headers: (apiKey: string) => Record<string, string>;
@@ -73,6 +111,11 @@ export type Adapter = {
   modelsPath: () => string;
   /** 把上游的模型清单翻译成规范形式；形状不认识就当空清单，不猜。 */
   readModels: (json: unknown) => ModelInfo[];
+  /**
+   * 这条协议自带的定价（整张表）。不写 = 没有自定义定价，账本用 `pricing.ts` 的通用表。
+   * 只有按时刻变价的厂商才需要它。
+   */
+  pricing?: ProtocolPricing;
 };
 
 const recordOf = (value: unknown): Record<string, unknown> =>
@@ -118,6 +161,7 @@ function turns(messages: ChatMessage[] = []): ChatMessage[] {
 
 /** —— openai-chat：原样透传，不做任何翻译 —— */
 const openaiChat: Adapter = {
+  dialect: 'openai-chat',
   path: () => '/chat/completions',
   headers: (key) => ({ Authorization: `Bearer ${key}` }),
   request: (body) => body,
@@ -129,6 +173,7 @@ const openaiChat: Adapter = {
 
 /** —— openai-responses：input/output 与 chat 的 message 形状不同 —— */
 const openaiResponses: Adapter = {
+  dialect: 'openai-responses',
   path: () => '/responses',
   headers: (key) => ({ Authorization: `Bearer ${key}` }),
   request: (body, model) => ({
@@ -169,8 +214,30 @@ const openaiResponses: Adapter = {
   readModels: readOpenAiModels,
 };
 
+/**
+ * —— deepseek：说 Responses 方言，但价目按时段分两档 ——
+ *
+ * 除了计价一个字节都不特殊：路径、请求、响应、清单全部来自 `openaiResponses`。
+ * 单独成一条协议而不是给 `openai-responses` 加个开关，是因为定价模式是这条上游契约的
+ * 一部分——配置上游时就选定了「按 DeepSeek 官方时段计费」，不是逐次请求的开关。
+ * 基址填 `https://api.deepseek.com`（与 DeepSeek LB 的 upstream_base 同一个）。
+ */
+const deepseek: Adapter = {
+  ...openaiResponses,
+  pricing: {
+    mode: {
+      kind: 'time-tiered',
+      peak_windows_utc: DEEPSEEK_PEAK_WINDOWS_UTC,
+      peak_weekdays: DEEPSEEK_PEAK_WEEKDAYS,
+      off_peak_days: DEEPSEEK_HOLIDAYS,
+    },
+    tariffs: DEEPSEEK_TARIFFS,
+  },
+};
+
 /** —— anthropic-messages：content blocks、system 独立字段、x-api-key 头 —— */
 const anthropicMessages: Adapter = {
+  dialect: 'anthropic-messages',
   path: () => '/v1/messages',
   headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
   request: (body, model) => ({
@@ -222,6 +289,7 @@ const anthropicMessages: Adapter = {
 
 /** —— google-gemini：contents/parts，密钥走查询参数或 x-goog-api-key —— */
 const googleGemini: Adapter = {
+  dialect: 'google-gemini',
   path: (model) => `/v1beta/models/${encodeURIComponent(model)}:generateContent`,
   headers: (key) => ({ 'x-goog-api-key': key }),
   request: (body, model) => ({
@@ -284,10 +352,30 @@ const ADAPTERS: Record<Protocol, Adapter> = {
   'openai-responses': openaiResponses,
   'anthropic-messages': anthropicMessages,
   'google-gemini': googleGemini,
+  deepseek,
 };
 
 export function adapterFor(protocol: Protocol): Adapter {
   return ADAPTERS[protocol];
+}
+
+/** 这条协议对这个型号的官方价目；null = 这条协议没有自定义定价。 */
+export function tariffFor(protocol: Protocol, model: string): Tariff | null {
+  const tariffs = adapterFor(protocol).pricing?.tariffs;
+  return tariffs ? longestMatch(tariffs, model) : null;
+}
+
+/**
+ * 请求开始时该按哪一档计价；null = 这条协议不分时，账本用通用价目表。
+ *
+ * 档位按**请求开始的时刻**定一次（与 DeepSeek LB 同一口径）：一个请求跨过档位边界时
+ * 按它的起点算，不按收尾算。调用方要把结果存下来、算账时复用，别在收尾时重算一遍。
+ */
+export function rateAt(protocol: Protocol, model: string, utcSeconds: number): PriceAnchor | null {
+  const tariff = tariffFor(protocol, model);
+  if (tariff === null) return null;
+  const offPeak = tariff.tier?.(utcSeconds) === 'off_peak';
+  return { match: tariff.match, rates: (offPeak ? tariff.off_peak : undefined) ?? tariff.peak };
 }
 
 /**

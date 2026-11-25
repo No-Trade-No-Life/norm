@@ -85,7 +85,7 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
       latency_ms: probe.ok ? probe.latency_ms : null,
       error: probeErrorText(probe),
     });
-    if (probe.ok) merged.push({ provider_id: provider.id, items: probe.items });
+    if (probe.ok) merged.push({ provider_id: provider.id, protocol: provider.protocol, items: probe.items });
   });
 
   const items = mergeCatalog(merged);
