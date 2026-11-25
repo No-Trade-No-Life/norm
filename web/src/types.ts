@@ -237,3 +237,41 @@ export type Protocol = (typeof PROTOCOLS)[number];
 /** 上游提供商本身是否对公众可用。私有不代表掺水，只代表不对外。 */
 export const VISIBILITIES = ['public', 'private'] as const;
 export type Visibility = (typeof VISIBILITIES)[number];
+
+/** 管理面看到的模型：一行一个模型名，providers 是提供它的上游提供商 id。 */
+export type CatalogModel = {
+  id: string;
+  providers: string[];
+  created?: number;
+  owned_by?: string;
+  /** 官方按量付费价（纳美元 / 1M token），只作锚点；没收录就是 null。 */
+  official: { match: string; input: number; cached: number; output: number } | null;
+};
+
+/**
+ * 一次探测的结果，按上游提供商记。
+ * probed 为 false 时 ok 是 null：没问，不等于失败。
+ */
+export type CatalogProvider = {
+  id: string;
+  label: string;
+  base_url: string;
+  host: string;
+  protocol: Protocol;
+  visibility: Visibility;
+  public_listed: number;
+  trusted: boolean;
+  enabled: number;
+  probed: boolean;
+  ok: boolean | null;
+  count: number;
+  latency_ms: number | null;
+  error: string | null;
+};
+
+/** 账户的模型总表：所有启用中的上游提供商各自回了什么，并成一张表。 */
+export type ModelCatalog = {
+  fetched_at: number;
+  providers: CatalogProvider[];
+  models: CatalogModel[];
+};

@@ -8,6 +8,7 @@ import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
 import { providerRoutes } from './routes/providers';
 import { consumerRoutes } from './routes/consumers';
+import { modelCatalogRoutes } from './routes/model-catalog';
 import { modelRoutes } from './routes/models';
 import { relayRoutes } from './routes/relay';
 
@@ -47,6 +48,8 @@ function signedOnly() {
   });
   signed.route('/account', accountRoutes);
   signed.route('/providers', providerRoutes);
+  // 模型总表：账户现在到底能调哪些模型，由管理面回答（不带下游 Token）。
+  signed.route('/models', modelCatalogRoutes);
   signed.route('/consumers', consumerRoutes);
   return signed;
 }

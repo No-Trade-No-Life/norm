@@ -4,16 +4,16 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { randomToken } from '../ids';
-import { unsealProviderKey } from '../seal';
+import { probeProviderModels, type ModelProbe } from '../models';
 import { findProvider, resolveProviderId } from '../store';
-import { adapterFor, type ModelInfo } from '../protocols';
+import { type ModelInfo } from '../protocols';
 
 type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
 
 /**
  * 模型清单：`GET /v1/models` 与 `GET /v1/models/:model`。
  *
- * 这是转发面的一部分（签名或消费者密钥都认），因为「这个上游有哪些模型」只有拿着
+ * 这是转发面的一部分（只认消费者密钥），因为「这个上游有哪些模型」只有拿着
  * 那把上游密钥的人才知道，而密钥在服务端。它也是**唯一**一条打上游却不扣费的路径：
  * 列清单不是一次模型调用，没有生成也没有 token，所以既不写 `requests` 也不动账本，
  * 只在响应里挂一张「全是 0」的账单，让客户端知道这次确实没花钱。
@@ -21,6 +21,9 @@ type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal 
  * 出口只有一种方言：OpenAI 的 `/models`。四种上游的清单形状互不相干，统一在这里
  * 归一成 `{object:"list", data:[{id, object:"model", …}]}`——各家 SDK 里只有它
  * 是通用形状（`/v1/messages` 那种入口天生没有列模型的方法）。
+ *
+ * 一次只回答一条上游。账户的**全部**模型在哪里看：`/api/v1/models` 把每条的答案
+ * 并成一张表（见 `model-catalog.ts`），两个面共用同一段探测（`src/models.ts`）。
  */
 export const modelRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
@@ -58,13 +61,13 @@ function modelShape(item: ModelInfo): Record<string, unknown> {
 
 type Resolved =
   | { ok: false; upstream: Response }
-  | { ok: true; upstream: Response; items: ModelInfo[]; norm: Record<string, unknown> };
+  | { ok: true; items: ModelInfo[]; norm: Record<string, unknown> };
 
 /**
  * 认人 → 认上游 → 现解密钥 → 打上游的清单端点。
  *
  * 上游失败时把它的原话原样交回（与转发同一套做法）：改写上游的报错只会让
- * 「为什么列不出来」更难查。唯一的例外是网络不可达，那没有上游原话可交。
+ * 「为什么列不出来」更难查。
  */
 async function resolve(c: ModelsContext): Promise<Resolved> {
   const address = c.get('principal').address;
@@ -74,54 +77,25 @@ async function resolve(c: ModelsContext): Promise<Resolved> {
   if (!provider) fail(404, 'provider_not_found', 'Provider 不存在或已撤销');
   if (provider.enabled === 0) fail(409, 'provider_disabled', '上游提供商已禁用：到「上游提供商」页启用它，或改用另一条');
 
-  const upstreamKey = await unsealProviderKey({
-    env: c.env,
-    address,
-    providerId: provider.id,
-    sealed: provider.sealed_key,
-  });
-
-  const adapter = adapterFor(provider.protocol);
-  const baseUrl = provider.base_url.replace(/\/+$/, '');
-  const host = hostOf(baseUrl);
   const startedAt = Date.now();
+  const probe: ModelProbe = await probeProviderModels({ env: c.env, address, provider });
 
-  let upstream: Response;
-  try {
-    upstream = await fetch(`${baseUrl}${adapter.modelsPath()}`, {
-      method: 'GET',
-      headers: { Accept: 'application/json', ...adapter.headers(upstreamKey) },
-    });
-  } catch (error) {
+  if (!probe.ok) {
+    // 本站自己的问题（密钥解不开）没有上游原话可交，只能自己说清楚。
+    if (probe.kind === 'local') fail(500, 'provider_key_unreadable', probe.message);
+    if (probe.kind === 'unreachable') return { ok: false, upstream: c.json({ error: 'upstream_unreachable', message: probe.message }, 502) };
     return {
       ok: false,
-      upstream: c.json({ error: 'upstream_unreachable', message: `上游不可达：${(error as Error).message}` }, 502),
-    };
-  }
-
-  if (!upstream.ok) {
-    const text = await upstream.text();
-    return {
-      ok: false,
-      upstream: new Response(text, {
-        status: upstream.status,
-        headers: { 'Content-Type': upstream.headers.get('Content-Type') ?? 'application/json' },
+      upstream: new Response(probe.body, {
+        status: probe.status,
+        headers: { 'Content-Type': probe.content_type },
       }),
     };
   }
 
-  // 清单不是生成，没人读它、也没人改写它：形状不认识就当空清单，不猜。
-  let parsed: unknown;
-  try {
-    parsed = await upstream.json();
-  } catch {
-    parsed = {};
-  }
-
   return {
     ok: true,
-    upstream,
-    items: adapter.readModels(parsed),
+    items: probe.items,
     // 全是 0 的账单：没有 Gas（没打出去一次生成）、没有 token、也没去读余额。
     norm: {
       request_id: `req_${randomToken(12)}`,
@@ -134,7 +108,7 @@ async function resolve(c: ModelsContext): Promise<Resolved> {
       unbilled_nanos: 0,
       balance_nanos: null,
       latency_ms: Date.now() - startedAt,
-      host,
+      host: hostOf(provider.base_url),
     },
   };
 }
