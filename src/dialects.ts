@@ -1,22 +1,23 @@
 /**
  * 四条方言，两侧同名。
  *
- * Norm 的转发是 4×4 的：客户端用哪种方言说话（入口）× 上游提供商说哪种协议（上游提供商）。
- * 因为两侧用的是同一套名字，「入口方言 === 上游提供商协议」就是一句字符串相等——
- * 而那 4 格**不转换**：请求体原样发出去，响应体原样还回来，一个字段都不碰。
+ * Norm 的转发是 4×4 的：客户端用哪种方言说话（入口）× 上游提供商说哪种方言（`adapter.dialect`）。
+ * 因为两侧用的是同一套名字，「入口方言 === 上游方言」就是一句字符串相等——而那 4 格
+ * **不转换**：请求体原样发出去，响应体原样还回来，一个字段都不碰。
  *
  * 只有其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 协议适配器（见
- * providers.ts，它只管 ChatBody 到四种上游提供商）→ 回来时再渲染成入口方言。
- * 桥只在这一侧出现，所以「4 入口 × 4 上游提供商」不是 16 条路径，而是 4 段入口翻译
- * 加 4 段上游提供商适配，互不相干。
+ * protocols.ts，它只管 ChatBody 到四种上游方言）→ 回来时再渲染成入口方言。
+ * 桥只在这一侧出现，所以「4 入口 × 4 上游」不是 16 条路径，而是 4 段入口翻译
+ * 加 4 段上游适配，互不相干。
  *
- * 不做的事：**跨方言的工具调用**。同格式直通时 tools 免费穿过（我们不碰它），
- * 但跨方言时三家的 tools 形状各不相同，硬拼一个「尽力而为」的映射，只会在客户端
- * 以为有 function calling 时收到一段散文。所以跨方言带 tools 的请求在这里就拒绝。
+ * 工具调用同样过桥：四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果的形状各不相同，
+ * 规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 protocols.ts 的
+ * `ChatTool` / `ChatToolCall`）。入口读进来、出口说回去，带工具的请求因此可以落在任何一条
+ * 方言的上游上。同格式直通时仍然一个字节都不碰——那条路上的 `tools` 是客户端自己的事。
  */
 import { fail } from './http';
+import { toolArguments, type ChatBody, type ChatMessage, type ChatTool, type ChatToolCall, type ChatToolChoice, type Dialect, type StreamEvent } from './protocols';
 import type { Usage } from './pricing';
-import type { ChatBody, ChatMessage, Dialect } from './protocols';
 
 export type { Dialect };
 
@@ -29,9 +30,13 @@ export type { Dialect };
  *   output  输出 token
  * 四家的口径各不相同（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的
  * `prompt_tokens` 含），归一化只发生在下面四个 extract 里，别处不再判断方言。
+ *
+ * `toolCalls` 是这次回答里发起的工具调用（可能为空）：它与文本一样是「回答」，所以
+ * 记账的那一份与渲染给客户端的那一份都从这里读，不各读一遍。
  */
 export type AnswerCore = {
   text: string;
+  toolCalls: ChatToolCall[];
   model: string;
   usage: Usage;
   createdAt: number;
@@ -60,6 +65,8 @@ export type RawUsage = Record<string, unknown>;
 
 const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
 const obj = (value: unknown): RawUsage => (value !== null && typeof value === 'object' ? (value as RawUsage) : {});
+const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 type Raw = Record<string, unknown>;
 
@@ -71,10 +78,10 @@ function flatten(content: unknown): string {
   return content
     .map((part) => {
       if (typeof part === 'string') return part;
-      const text = (part as { text?: unknown } | null)?.text;
-      return typeof text === 'string' ? text : '';
+      const value = (part as { text?: unknown } | null)?.text;
+      return typeof value === 'string' ? value : '';
     })
-    .filter((text) => text.length > 0)
+    .filter((value) => value.length > 0)
     .join('\n');
 }
 
@@ -82,51 +89,257 @@ function textField(body: Raw, field: string): string {
   return flatten(body[field]);
 }
 
-function rejectTools(dialect: Dialect, body: Raw): void {
-  for (const field of ['tools', 'tool_choice', 'functions', 'function_call']) {
-    const value = body[field];
-    if (value === undefined || value === null) continue;
-    if (Array.isArray(value) && value.length === 0) continue;
-    fail(400, 'tools_unsupported', `跨方言不翻译工具调用（${dialect} 入口的 ${field}）；同格式调用或 /v1/chat/completions 不受影响`);
-  }
-}
+/** 工具的 arguments：上游给的是 JSON 原文就用它，给的是对象就序列化——桥只搬原文。 */
+const argumentsOf = (value: unknown): string =>
+  typeof value === 'string' ? value : JSON.stringify(value ?? {});
 
 /* ── 入口 → 规范形式（OpenAI Chat） ───────────────────────────────── */
 
-function chatFromChat(raw: Raw): ChatMessage[] {
-  return (Array.isArray(raw.messages) ? raw.messages : []) as ChatMessage[];
+/**
+ * 一份工具声明，两种写法都读：`{name, description, parameters}` 是规范形式与 Responses，
+ * `{type:'function', function:{…}}` 是 Chat，老客户端的 `functions` 又少了外面那层。
+ * 读不出名字的（Gemini 的服务端工具、Anthropic 的 web_search）一律不带——翻译不了就不装懂。
+ */
+function flatTool(entry: unknown): ChatTool[] {
+  const tool = obj(entry);
+  const fn = obj(tool.function ?? tool);
+  const name = text(fn.name);
+  if (!name) return [];
+  return [
+    {
+      name,
+      ...(text(fn.description) ? { description: text(fn.description) } : {}),
+      ...(fn.parameters === undefined ? {} : { parameters: fn.parameters }),
+    },
+  ];
 }
 
-/** Anthropic Messages：system 是独立字段，messages 里只有 user / assistant。 */
-function chatFromAnthropic(raw: Raw): ChatMessage[] {
-  const turns = (Array.isArray(raw.messages) ? raw.messages : []).map((entry) => {
-    const message = entry as { role?: string; content?: unknown };
-    return { role: message.role === 'assistant' ? 'assistant' : 'user', content: flatten(message.content) };
+function chatFromChat(raw: Raw): ChatMessage[] {
+  return list(raw.messages).map((entry) => {
+    const message = obj(entry);
+    const role = text(message.role) || 'user';
+    if (role === 'tool') {
+      return { role: 'tool', tool_call_id: text(message.tool_call_id), content: message.content };
+    }
+    const calls = list(message.tool_calls).flatMap((item) => {
+      const call = obj(item);
+      const fn = obj(call.function ?? call);
+      const name = text(fn.name);
+      if (!name) return [];
+      return [{ id: text(call.id) || `call_${name}`, name, arguments: argumentsOf(fn.arguments) }];
+    });
+    return {
+      role,
+      content: message.content,
+      ...(calls.length > 0 ? { tool_calls: calls } : {}),
+    };
   });
+}
+
+/**
+ * Anthropic Messages：system 是独立字段，messages 里只有 user / assistant。
+ * 一条 user 消息里可以同时有 `tool_result` 与文本：拆成「若干条工具结果 + 一条 user」，
+ * 因为规范形式里工具结果是自己的角色（与 Chat 一致）。
+ */
+function chatFromAnthropic(raw: Raw): ChatMessage[] {
+  const turns: ChatMessage[] = [];
+  for (const entry of list(raw.messages)) {
+    const message = obj(entry);
+    const role = message.role === 'assistant' ? 'assistant' : 'user';
+    const blocks = Array.isArray(message.content) ? message.content : [{ type: 'text', text: message.content }];
+    const texts: string[] = [];
+    const calls: ChatToolCall[] = [];
+    const results: ChatMessage[] = [];
+    for (const item of blocks) {
+      const block = obj(item);
+      const type = text(block.type);
+      if (type === 'tool_use') {
+        calls.push({
+          id: text(block.id),
+          name: text(block.name),
+          arguments: argumentsOf(block.input),
+        });
+      } else if (type === 'tool_result') {
+        results.push({ role: 'tool', tool_call_id: text(block.tool_use_id), content: flatten(block.content) });
+      } else if (type === 'text') {
+        const value = text(block.text);
+        if (value.length > 0) texts.push(value);
+      }
+    }
+    if (role === 'assistant') {
+      if (texts.length > 0 || calls.length > 0) {
+        turns.push({
+          role: 'assistant',
+          content: texts.join('\n'),
+          ...(calls.length > 0 ? { tool_calls: calls } : {}),
+        });
+      }
+      continue;
+    }
+    turns.push(...results);
+    if (texts.length > 0) turns.push({ role: 'user', content: texts.join('\n') });
+  }
   const system = textField(raw, 'system');
   return system ? [{ role: 'system', content: system }, ...turns] : turns;
 }
 
-/** OpenAI Responses：`instructions` 是 system，`input` 可以是一句话或条目数组。 */
+/**
+ * OpenAI Responses：`instructions` 是 system，`input` 是一串条目。
+ * 工具调用与工具结果是两类独立条目（`function_call` / `function_call_output`），
+ * 连续的几个调用要折回同一条 assistant——否则一轮并行调用会变成好几轮。
+ */
 function chatFromResponses(raw: Raw): ChatMessage[] {
-  const input = Array.isArray(raw.input)
-    ? raw.input.map((entry) => {
-        const item = entry as { role?: string; content?: unknown };
-        return { role: item.role === 'assistant' ? 'assistant' : 'user', content: flatten(item.content) };
-      })
-    : [{ role: 'user', content: flatten(raw.input) }];
+  const turnList: ChatMessage[] = [];
+  const items = Array.isArray(raw.input) ? raw.input : [{ role: 'user', content: raw.input }];
+  for (const entry of items) {
+    const item = obj(entry);
+    const type = text(item.type);
+    if (type === 'function_call') {
+      const call: ChatToolCall = {
+        id: text(item.call_id) || text(item.id) || `call_${text(item.name)}`,
+        name: text(item.name),
+        arguments: argumentsOf(item.arguments),
+      };
+      const last = turnList[turnList.length - 1];
+      if (last && last.role === 'assistant') {
+        last.tool_calls = [...(last.tool_calls ?? []), call];
+      } else {
+        turnList.push({ role: 'assistant', content: '', tool_calls: [call] });
+      }
+      continue;
+    }
+    if (type === 'function_call_output') {
+      turnList.push({ role: 'tool', tool_call_id: text(item.call_id), content: flatten(item.output) });
+      continue;
+    }
+    // `message` 条目与「只给 role/content」的老写法都当普通消息；reasoning 之类的跳过。
+    if (type === 'message' || item.role !== undefined) {
+      turnList.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: flatten(item.content) });
+    }
+  }
   const instructions = textField(raw, 'instructions');
-  return instructions ? [{ role: 'system', content: instructions }, ...input] : input;
+  return instructions ? [{ role: 'system', content: instructions }, ...turnList] : turnList;
 }
 
-/** Gemini：contents / parts，system 走 systemInstruction，模型在路径上。 */
+/**
+ * Gemini：contents / parts，system 走 systemInstruction，模型在路径上。
+ *
+ * 它没有调用 id：`functionCall` 只给名字，结果回来时也只带名字。所以这里按**出现的顺序**
+ * 编号，并记下「名字 → 还没被结果认领的 id」，遇到 `functionResponse` 时取最早那个。
+ * 少了这张表，并行调用同一个函数的两次结果就会互相认错。
+ */
 function chatFromGemini(raw: Raw): ChatMessage[] {
-  const turns = (Array.isArray(raw.contents) ? raw.contents : []).map((entry) => {
-    const content = entry as { role?: string; parts?: unknown };
-    return { role: content.role === 'model' ? 'assistant' : 'user', content: flatten(content.parts) };
-  });
-  const system = flatten((raw.systemInstruction as { parts?: unknown } | undefined)?.parts);
+  const turns: ChatMessage[] = [];
+  const pending = new Map<string, string[]>();
+  let seq = 0;
+  for (const entry of list(raw.contents)) {
+    const content = obj(entry);
+    const role = content.role === 'model' ? 'assistant' : 'user';
+    const texts: string[] = [];
+    const calls: ChatToolCall[] = [];
+    const results: ChatMessage[] = [];
+    for (const item of list(content.parts)) {
+      const part = obj(item);
+      if (part.functionCall) {
+        const call = obj(part.functionCall);
+        const name = text(call.name);
+        seq += 1;
+        const id = `call_${seq}`;
+        const ids = pending.get(name);
+        if (ids) ids.push(id);
+        else pending.set(name, [id]);
+        calls.push({ id, name, arguments: argumentsOf(call.args) });
+      } else if (part.functionResponse) {
+        const response = obj(part.functionResponse);
+        const name = text(response.name);
+        const id = pending.get(name)?.shift() ?? `call_${name}`;
+        results.push({ role: 'tool', tool_call_id: id, content: JSON.stringify(response.response ?? '') });
+      } else if (text(part.text).length > 0) {
+        texts.push(text(part.text));
+      }
+    }
+    if (role === 'assistant') {
+      if (texts.length > 0 || calls.length > 0) {
+        turns.push({
+          role: 'assistant',
+          content: texts.join('\n'),
+          ...(calls.length > 0 ? { tool_calls: calls } : {}),
+        });
+      }
+      continue;
+    }
+    turns.push(...results);
+    if (texts.length > 0) turns.push({ role: 'user', content: texts.join('\n') });
+  }
+  const system = flatten(obj(raw.systemInstruction).parts);
   return system ? [{ role: 'system', content: system }, ...turns] : turns;
+}
+
+/** 入口侧的「工具」：声明 + 客户端想要的使用方式，四家读成同样两份东西。 */
+type ParsedTools = { tools: ChatTool[]; choice?: ChatToolChoice };
+
+function choiceFromChat(raw: Raw): ChatToolChoice | undefined {
+  const value = raw.tool_choice ?? raw.function_call;
+  if (value === 'auto' || value === 'none') return { mode: value };
+  if (value === 'required' || value === 'any') return { mode: 'required' };
+  const choice = obj(value);
+  const name = text(obj(choice.function).name) || text(choice.name);
+  return name ? { mode: 'tool', name } : undefined;
+}
+
+function toolsFromChat(raw: Raw): ParsedTools {
+  const tools = [...list(raw.tools), ...list(raw.functions)].flatMap(flatTool);
+  const choice = choiceFromChat(raw);
+  return { tools, ...(choice ? { choice } : {}) };
+}
+
+function toolsFromResponses(raw: Raw): ParsedTools {
+  // Responses 的声明是扁平的，但 `type` 必须写出来；不是 function 的（内置工具）跳过。
+  const tools = list(raw.tools).flatMap((entry) => (text(obj(entry).type) === 'function' ? flatTool(entry) : []));
+  const value = raw.tool_choice;
+  let choice: ChatToolChoice | undefined;
+  if (value === 'auto' || value === 'none' || value === 'required') {
+    choice = { mode: value };
+  } else {
+    const picked = obj(value);
+    const name = text(picked.name) || text(obj(picked.function).name);
+    if (name) choice = { mode: 'tool', name };
+  }
+  return { tools, ...(choice ? { choice } : {}) };
+}
+
+function toolsFromAnthropic(raw: Raw): ParsedTools {
+  const tools = list(raw.tools).flatMap((entry) => {
+    const tool = obj(entry);
+    const name = text(tool.name);
+    if (!name) return [];
+    return [
+      {
+        name,
+        ...(text(tool.description) ? { description: text(tool.description) } : {}),
+        ...(tool.input_schema === undefined ? {} : { parameters: tool.input_schema }),
+      },
+    ];
+  });
+  const picked = obj(raw.tool_choice);
+  const type = text(picked.type);
+  let choice: ChatToolChoice | undefined;
+  if (type === 'any') choice = { mode: 'required' };
+  else if (type === 'auto' || type === 'none') choice = { mode: type };
+  else if (type === 'tool' && text(picked.name)) choice = { mode: 'tool', name: text(picked.name) };
+  return { tools, ...(choice ? { choice } : {}) };
+}
+
+function toolsFromGemini(raw: Raw): ParsedTools {
+  const tools = list(raw.tools).flatMap((entry) => list(obj(entry).functionDeclarations)).flatMap(flatTool);
+  const config = obj(obj(raw.toolConfig).functionCallingConfig);
+  const allowed = list(config.allowedFunctionNames).map(text);
+  const only = allowed[0];
+  let choice: ChatToolChoice | undefined;
+  if (text(config.mode) === 'NONE') choice = { mode: 'none' };
+  else if (text(config.mode) === 'AUTO') choice = { mode: 'auto' };
+  else if (text(config.mode) === 'ANY') choice = only ? { mode: 'tool', name: only } : { mode: 'required' };
+  return { tools, ...(choice ? { choice } : {}) };
 }
 
 const PARSE: Record<Dialect, (raw: Raw, model: string) => ChatMessage[]> = {
@@ -136,6 +349,13 @@ const PARSE: Record<Dialect, (raw: Raw, model: string) => ChatMessage[]> = {
   'google-gemini': chatFromGemini,
 };
 
+const TOOLS: Record<Dialect, (raw: Raw) => ParsedTools> = {
+  'openai-chat': toolsFromChat,
+  'openai-responses': toolsFromResponses,
+  'anthropic-messages': toolsFromAnthropic,
+  'google-gemini': toolsFromGemini,
+};
+
 /**
  * 只用在**跨方言**那 12 格上；同格式直通时这个函数不会被调用。
  *
@@ -143,20 +363,20 @@ const PARSE: Record<Dialect, (raw: Raw, model: string) => ChatMessage[]> = {
  * （`:streamGenerateContent`），body 里没有这个字段，从 body 读会把它抹成 false。
  */
 export function parseInbound(dialect: Dialect, raw: Raw, model: string, stream: boolean): ChatBody {
-  rejectTools(dialect, raw);
   const maxTokens =
     dialect === 'anthropic-messages' ? raw.max_tokens : dialect === 'google-gemini' ? (raw.generationConfig as { maxOutputTokens?: unknown } | undefined)?.maxOutputTokens : raw.max_output_tokens;
+  const { tools, choice } = TOOLS[dialect](raw);
   return {
     model,
     messages: PARSE[dialect](raw, model),
     stream,
     ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
+    ...(tools.length > 0 ? { tools } : {}),
+    ...(choice ? { tool_choice: choice } : {}),
   };
 }
 
 /* ── 响应 → AnswerCore（记账与渲染都要的中间物，不是方言） ──────────── */
-
-const text = (value: unknown): string => (typeof value === 'string' ? value : '');
 
 /**
  * OpenAI chat / responses：`prompt_tokens` / `input_tokens` **含**缓存命中的部分，
@@ -197,10 +417,22 @@ function geminiUsage(raw: RawUsage): Usage {
   };
 }
 
+/** Chat 的 `message.tool_calls`；Responses 的扁平条目也认（`{name, arguments}`）。 */
+function toolCallsFromChat(message: Raw | undefined): ChatToolCall[] {
+  return list(message?.tool_calls).flatMap((entry) => {
+    const call = obj(entry);
+    const fn = obj(call.function ?? call);
+    const name = text(fn.name);
+    if (!name) return [];
+    return [{ id: text(call.id) || `call_${name}`, name, arguments: argumentsOf(fn.arguments) }];
+  });
+}
+
 const extractChat = (json: Raw): AnswerCore => {
-  const choice = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { message?: { content?: unknown } } | undefined;
+  const choice = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { message?: Raw } | undefined;
   return {
     text: flatten(choice?.message?.content),
+    toolCalls: toolCallsFromChat(choice?.message),
     model: text(json.model),
     usage: chatUsage(obj(json.usage)),
     createdAt: num(json.created),
@@ -208,9 +440,20 @@ const extractChat = (json: Raw): AnswerCore => {
 };
 
 const extractResponses = (json: Raw): AnswerCore => {
-  const output = Array.isArray(json.output) ? json.output : [];
+  const output = list(json.output);
   return {
-    text: output.map((item) => flatten((item as { content?: unknown }).content)).filter(Boolean).join('\n'),
+    text: output.map((item) => flatten(obj(item).content)).filter(Boolean).join('\n'),
+    toolCalls: output.flatMap((entry) => {
+      const item = obj(entry);
+      if (text(item.type) !== 'function_call') return [];
+      return [
+        {
+          id: text(item.call_id) || text(item.id) || `call_${text(item.name)}`,
+          name: text(item.name),
+          arguments: argumentsOf(item.arguments),
+        },
+      ];
+    }),
     model: text(json.model),
     usage: chatUsage(obj(json.usage)),
     createdAt: num(json.created_at),
@@ -218,8 +461,14 @@ const extractResponses = (json: Raw): AnswerCore => {
 };
 
 const extractAnthropic = (json: Raw): AnswerCore => {
+  const blocks = list(json.content);
   return {
-    text: (Array.isArray(json.content) ? json.content : []).map((block) => text((block as { text?: unknown }).text)).join(''),
+    text: blocks.map((block) => text(obj(block).text)).join(''),
+    toolCalls: blocks.flatMap((entry) => {
+      const block = obj(entry);
+      if (text(block.type) !== 'tool_use') return [];
+      return [{ id: text(block.id), name: text(block.name), arguments: JSON.stringify(block.input ?? {}) }];
+    }),
     model: text(json.model),
     usage: anthropicUsage(obj(json.usage)),
     createdAt: 0,
@@ -227,9 +476,16 @@ const extractAnthropic = (json: Raw): AnswerCore => {
 };
 
 const extractGemini = (json: Raw): AnswerCore => {
-  const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+  const candidates = list(json.candidates);
+  const parts = candidates.flatMap((candidate) => list(obj(obj(candidate).content).parts));
   return {
-    text: candidates.map((candidate) => flatten((candidate as { content?: { parts?: unknown } }).content?.parts)).filter(Boolean).join('\n'),
+    text: parts.map((part) => text(obj(part).text)).filter(Boolean).join('\n'),
+    toolCalls: parts.flatMap((entry) => {
+      const part = obj(entry);
+      if (!part.functionCall) return [];
+      const call = obj(part.functionCall);
+      return [{ id: `call_${text(call.name)}`, name: text(call.name), arguments: argumentsOf(call.args) }];
+    }),
     model: text(json.modelVersion),
     usage: geminiUsage(obj(json.usageMetadata)),
     createdAt: 0,
@@ -250,11 +506,17 @@ export function readAnswer(dialect: Dialect, json: Raw): AnswerCore {
 /* ── 规范形式 → 出口方言（只用在跨方言那 12 格） ───────────────────── */
 
 /**
- * 协议适配器已经把响应翻译成 OpenAI Chat 形状，这里再落到客户端要的方言。
+ * 协议适配器已经把响应读成 AnswerCore，这里再落到客户端要的方言。
  * `norm` 只加在顶层：它是附加字段，按已知字段反序列化的客户端会忽略它。
+ *
+ * 工具调用按各家的形状渲染：Chat 套 `function`，Anthropic 是 `tool_use` 块加
+ * `stop_reason: 'tool_use'`，Responses 是独立的 `function_call` 条目，Gemini 是
+ * `functionCall` part。`finish_reason` / `stop_reason` 也要跟着改——模型是在等工具，
+ * 不是在说完话。
  */
 export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMeta): unknown {
   const { input, cached, output } = answer.usage;
+  const calls = answer.toolCalls;
 
   if (dialect === 'openai-chat') {
     return {
@@ -262,7 +524,26 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: answer.model,
-      choices: [{ index: 0, message: { role: 'assistant', content: answer.text }, finish_reason: 'stop' }],
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            // 有工具调用时 content 是 null（OpenAI 自己的形状）；没有工具就是寻常的文本。
+            content: answer.text.length > 0 || calls.length === 0 ? answer.text : null,
+            ...(calls.length > 0
+              ? {
+                  tool_calls: calls.map((call) => ({
+                    id: call.id,
+                    type: 'function',
+                    function: { name: call.name, arguments: call.arguments },
+                  })),
+                }
+              : {}),
+          },
+          finish_reason: calls.length > 0 ? 'tool_calls' : 'stop',
+        },
+      ],
       // prompt_tokens 含缓存命中的那部分，与 OpenAI 自己的口径一致；命中数单列。
       usage: {
         prompt_tokens: input,
@@ -280,8 +561,11 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       type: 'message',
       role: 'assistant',
       model: answer.model,
-      content: [{ type: 'text', text: answer.text }],
-      stop_reason: 'end_turn',
+      content: [
+        ...(answer.text.length > 0 || calls.length === 0 ? [{ type: 'text', text: answer.text }] : []),
+        ...calls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: toolArguments(call) })),
+      ],
+      stop_reason: calls.length > 0 ? 'tool_use' : 'end_turn',
       stop_sequence: null,
       // Anthropic 的 input_tokens 不含缓存读，所以这里回的是扣掉命中的那部分。
       usage: { input_tokens: input - cached, output_tokens: output, cache_read_input_tokens: cached },
@@ -297,13 +581,25 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       status: 'completed',
       model: answer.model,
       output: [
-        {
-          id: `msg_${norm.request_id}`,
-          type: 'message',
+        ...(answer.text.length > 0 || calls.length === 0
+          ? [
+              {
+                id: `msg_${norm.request_id}`,
+                type: 'message',
+                status: 'completed',
+                role: 'assistant',
+                content: [{ type: 'output_text', text: answer.text }],
+              },
+            ]
+          : []),
+        ...calls.map((call, index) => ({
+          id: `fc_${norm.request_id}_${index + 1}`,
+          type: 'function_call',
           status: 'completed',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: answer.text }],
-        },
+          call_id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+        })),
       ],
       usage: {
         input_tokens: input,
@@ -316,7 +612,22 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
   }
 
   return {
-    candidates: [{ content: { role: 'model', parts: [{ text: answer.text }] }, finishReason: 'STOP', index: 0 }],
+    candidates: [
+      {
+        content: {
+          role: 'model',
+          parts:
+            calls.length === 0
+              ? [{ text: answer.text }]
+              : [
+                  ...(answer.text.length > 0 ? [{ text: answer.text }] : []),
+                  ...calls.map((call) => ({ functionCall: { name: call.name, args: toolArguments(call) } })),
+                ],
+        },
+        finishReason: 'STOP',
+        index: 0,
+      },
+    ],
     usageMetadata: {
       promptTokenCount: input,
       cachedContentTokenCount: cached,
@@ -335,7 +646,11 @@ export type StreamEmitter = {
   head(): string[];
   /** 每个文本增量。 */
   delta(text: string): string[];
-  /** 收尾：停止标记与用量。此时才知道最终 token 数。 */
+  /** 一次工具调用开始（此时只知道 id 与名字）。`index` 是上游给的序号。 */
+  toolStart(index: number, call: { id: string; name: string }): string[];
+  /** 参数的增量片段（JSON 原文）。 */
+  toolArgs(index: number, args: string): string[];
+  /** 收尾：停止标记、还没说完的工具调用与用量。此时才知道最终 token 数。 */
   tail(answer: AnswerCore): string[];
 };
 
@@ -347,10 +662,27 @@ const bare = (data: unknown): string => `data: ${JSON.stringify(data)}\n\n`;
 function chatEmitter(id: string, model: string): StreamEmitter {
   const chunk = (delta: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
     JSON.stringify({ id, object: 'chat.completion.chunk', model, choices: [{ index: 0, delta, ...extra }] });
+  /** 上游序号 → Chat 的 `tool_calls[].index`：Chat 要的是从 0 开始、按出现顺序的编号。 */
+  const slots = new Map<number, number>();
+  const slotOf = (index: number): number => {
+    const known = slots.get(index);
+    if (known !== undefined) return known;
+    const next = slots.size;
+    slots.set(index, next);
+    return next;
+  };
   return {
     head: () => [`data: ${chunk({ role: 'assistant', content: '' })}\n\n`],
     delta: (text) => [`data: ${chunk({ content: text })}\n\n`],
-    tail: () => [`data: ${chunk({}, { finish_reason: 'stop' })}\n\n`],
+    toolStart: (index, call) => [
+      `data: ${chunk({
+        tool_calls: [{ index: slotOf(index), id: call.id, type: 'function', function: { name: call.name, arguments: '' } }],
+      })}\n\n`,
+    ],
+    toolArgs: (index, args) => [
+      `data: ${chunk({ tool_calls: [{ index: slotOf(index), function: { arguments: args } }] })}\n\n`,
+    ],
+    tail: (answer) => [`data: ${chunk({}, { finish_reason: answer.toolCalls.length > 0 ? 'tool_calls' : 'stop' })}\n\n`],
   };
 }
 
@@ -358,7 +690,33 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
   const itemId = `msg_${id}`;
   const createdAt = Math.floor(Date.now() / 1000);
   let text = '';
+  let textOpen = true;
+  let callSeq = 0;
+  const calls = new Map<number, { at: number; itemId: string; callId: string; name: string; args: string }>();
   const message = (status: string, content: unknown[]) => ({ id: itemId, type: 'message', status, role: 'assistant', content });
+  /** 文本 item 必须先 done 才能开下一条：Responses 的输出是一条条排下去的。 */
+  const closeText = (): string[] => {
+    if (!textOpen) return [];
+    textOpen = false;
+    return [
+      named('response.output_text.done', { type: 'response.output_text.done', item_id: itemId, output_index: 0, content_index: 0, text }),
+      named('response.content_part.done', { type: 'response.content_part.done', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text } }),
+      named('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: message('completed', [{ type: 'output_text', text }]) }),
+    ];
+  };
+  const closeCall = (call: { at: number; itemId: string; callId: string; name: string; args: string }): string[] => [
+    named('response.function_call_arguments.done', {
+      type: 'response.function_call_arguments.done',
+      item_id: call.itemId,
+      output_index: call.at,
+      arguments: call.args,
+    }),
+    named('response.output_item.done', {
+      type: 'response.output_item.done',
+      output_index: call.at,
+      item: { id: call.itemId, type: 'function_call', status: 'completed', call_id: call.callId, name: call.name, arguments: call.args },
+    }),
+  ];
 
   return {
     head: () => [
@@ -370,32 +728,84 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
       text += delta;
       return [named('response.output_text.delta', { type: 'response.output_text.delta', item_id: itemId, output_index: 0, content_index: 0, delta })];
     },
-    tail: (answer) => [
-      named('response.output_text.done', { type: 'response.output_text.done', item_id: itemId, output_index: 0, content_index: 0, text }),
-      named('response.content_part.done', { type: 'response.content_part.done', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text } }),
-      named('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: message('completed', [{ type: 'output_text', text }]) }),
-      named('response.completed', {
-        type: 'response.completed',
-        response: {
-          id,
-          object: 'response',
-          created_at: createdAt,
-          status: 'completed',
-          model: answer.model,
-          output: [message('completed', [{ type: 'output_text', text }])],
-          usage: {
-            input_tokens: answer.usage.input,
-            input_tokens_details: { cached_tokens: answer.usage.cached },
-            output_tokens: answer.usage.output,
-            total_tokens: answer.usage.input + answer.usage.output,
+    toolStart: (index, call) => {
+      callSeq += 1;
+      const at = callSeq;
+      const entry = { at, itemId: `fc_${id}_${at}`, callId: call.id, name: call.name, args: '' };
+      calls.set(index, entry);
+      return [
+        ...closeText(),
+        named('response.output_item.added', {
+          type: 'response.output_item.added',
+          output_index: at,
+          item: { id: entry.itemId, type: 'function_call', status: 'in_progress', call_id: call.id, name: call.name, arguments: '' },
+        }),
+      ];
+    },
+    toolArgs: (index, args) => {
+      const entry = calls.get(index);
+      if (!entry) return [];
+      entry.args += args;
+      return [
+        named('response.function_call_arguments.delta', {
+          type: 'response.function_call_arguments.delta',
+          item_id: entry.itemId,
+          output_index: entry.at,
+          delta: args,
+        }),
+      ];
+    },
+    tail: (answer) => {
+      const chunks = [...closeText()];
+      for (const entry of calls.values()) chunks.push(...closeCall(entry));
+      chunks.push(
+        named('response.completed', {
+          type: 'response.completed',
+          response: {
+            id,
+            object: 'response',
+            created_at: createdAt,
+            status: 'completed',
+            model: answer.model,
+            output: [
+              ...(answer.text.length > 0 || answer.toolCalls.length === 0
+                ? [message('completed', [{ type: 'output_text', text }])]
+                : []),
+              ...answer.toolCalls.map((call, index) => ({
+                id: `fc_${id}_${index + 1}`,
+                type: 'function_call',
+                status: 'completed',
+                call_id: call.id,
+                name: call.name,
+                arguments: call.arguments,
+              })),
+            ],
+            usage: {
+              input_tokens: answer.usage.input,
+              input_tokens_details: { cached_tokens: answer.usage.cached },
+              output_tokens: answer.usage.output,
+              total_tokens: answer.usage.input + answer.usage.output,
+            },
           },
-        },
-      }),
-    ],
+        }),
+      );
+      return chunks;
+    },
   };
 }
 
 function anthropicEmitter(id: string, model: string): StreamEmitter {
+  /** 已经开到第几个内容块（0 是文本块），以及当前还开着的那一个。 */
+  let block = 0;
+  let open: number | null = 0;
+  const blockOf = new Map<number, number>();
+  const closeOpen = (): string[] => {
+    if (open === null) return [];
+    const index = open;
+    open = null;
+    return [named('content_block_stop', { type: 'content_block_stop', index })];
+  };
+
   return {
     head: () => [
       named('message_start', {
@@ -405,11 +815,31 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
       named('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
     ],
     delta: (text) => [named('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })],
+    toolStart: (index, call) => {
+      const chunks = closeOpen();
+      block += 1;
+      blockOf.set(index, block);
+      open = block;
+      chunks.push(
+        named('content_block_start', {
+          type: 'content_block_start',
+          index: block,
+          content_block: { type: 'tool_use', id: call.id, name: call.name, input: {} },
+        }),
+      );
+      return chunks;
+    },
+    toolArgs: (index, args) => {
+      const at = blockOf.get(index);
+      return at === undefined
+        ? []
+        : [named('content_block_delta', { type: 'content_block_delta', index: at, delta: { type: 'input_json_delta', partial_json: args } })];
+    },
     tail: (answer) => [
-      named('content_block_stop', { type: 'content_block_stop', index: 0 }),
+      ...closeOpen(),
       named('message_delta', {
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        delta: { stop_reason: answer.toolCalls.length > 0 ? 'tool_use' : 'end_turn', stop_sequence: null },
         usage: {
           output_tokens: answer.usage.output,
           input_tokens: answer.usage.input - answer.usage.cached,
@@ -425,10 +855,22 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
   return {
     head: () => [],
     delta: (text) => [bare({ candidates: [{ content: { role: 'model', parts: [{ text }] }, index: 0 }], modelVersion: model })],
+    // Gemini 的流没有增量工具帧：参数攒到收尾，与这一段文本一起给出去。
+    toolStart: () => [],
+    toolArgs: () => [],
     tail: (answer) =>
       [
         bare({
-          candidates: [{ content: { role: 'model', parts: [] }, finishReason: 'STOP', index: 0 }],
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: answer.toolCalls.map((call) => ({ functionCall: { name: call.name, args: toolArguments(call) } })),
+              },
+              finishReason: 'STOP',
+              index: 0,
+            },
+          ],
           usageMetadata: {
             promptTokenCount: answer.usage.input,
             cachedContentTokenCount: answer.usage.cached,
@@ -444,13 +886,14 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
 /* ── 首字：哪一帧才算「开始说话了」 ───────────────────────────────── */
 
 /**
- * 这一帧里有没有真正的文本增量。
+ * 这一帧里有没有真正的输出增量：文本、思考，或者一次工具调用的开头。
  *
  * 首字延迟不能按「第一帧到达」算：OpenAI chat 的第一帧通常只有一个空的
  * `delta.role`，DeepSeek 的推理模型还会先吐 `reasoning_content`——它们都还没开始
- * 「说话」，但都比真正的第一个字早得多。所以按各家自己的文本字段来判断。
+ * 「说话」，但都比真正的第一个字早得多。工具调用同样是上游在产字：只回一句
+ * 「我要调工具」的回答，首字也不能记成空。
  */
-export function carriesText(dialect: Dialect, data: string): boolean {
+export function carriesOutput(dialect: Dialect, data: string): boolean {
   if (data.length === 0 || data === '[DONE]') return false;
   let json: Raw;
   try {
@@ -464,29 +907,33 @@ export function carriesText(dialect: Dialect, data: string): boolean {
   if (dialect === 'openai-chat') {
     const delta = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { delta?: Raw } | undefined;
     const body = obj(delta?.delta);
-    // `reasoning_content` 是 DeepSeek 推理模型的「思考」增量，它同样是上游真的在产字。
-    return nonEmpty(body.content) || nonEmpty(body.reasoning_content);
+    return nonEmpty(body.content) || nonEmpty(body.reasoning_content) || list(body.tool_calls).length > 0;
   }
 
   if (dialect === 'openai-responses') {
     const type = typeof json.type === 'string' ? json.type : '';
+    if (type === 'response.output_item.added') return text(obj(json.item).type) === 'function_call';
     return (
-      (type === 'response.output_text.delta' || type === 'response.reasoning_summary_text.delta') &&
+      (type === 'response.output_text.delta' ||
+        type === 'response.reasoning_summary_text.delta' ||
+        type === 'response.function_call_arguments.delta') &&
       nonEmpty(json.delta)
     );
   }
 
   if (dialect === 'anthropic-messages') {
     const type = typeof json.type === 'string' ? json.type : '';
+    if (type === 'content_block_start') return text(obj(json.content_block).type) === 'tool_use';
     if (type !== 'content_block_delta') return false;
-    return nonEmpty(obj(json.delta).text) || nonEmpty(obj(json.delta).thinking);
+    const delta = obj(json.delta);
+    return nonEmpty(delta.text) || nonEmpty(delta.thinking) || nonEmpty(delta.partial_json);
   }
 
-  // gemini：裸 data 帧，文本在 candidates[].content.parts[].text
+  // gemini：裸 data 帧，文本与工具调用都在 candidates[].content.parts[] 里。
   const candidates = Array.isArray(json.candidates) ? json.candidates : [];
   return candidates.some((candidate) => {
-    const parts = (candidate as { content?: { parts?: unknown } }).content?.parts;
-    return Array.isArray(parts) && parts.some((part) => nonEmpty((part as { text?: unknown }).text));
+    const parts = obj(candidate).content as { parts?: unknown } | undefined;
+    return list(parts?.parts).some((part) => nonEmpty(obj(part).text) || obj(part).functionCall !== undefined);
   });
 }
 

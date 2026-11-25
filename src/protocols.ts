@@ -1,5 +1,5 @@
 /**
- * 上游提供商：四种方言，外加一种带自己定价的厂商变体。
+ * 上游提供商：四种方言，外加两种带自己契约的厂商变体。
  *
  *   openai-chat         {base}/chat/completions
  *   openai-responses    {base}/responses
@@ -9,13 +9,12 @@
  *   opencode-go         {base}/openai/v1/chat/completions（OpenCode Go 订阅的推理面，
  *                       基址官方钉死，且每个请求必须带 x-opencode-session）
  *
- * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**上游提供商**的属性，
- * 由上游提供商配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
- * 这样「换一家上游提供商」只是换一张上游提供商，客户端一行都不用改。
+ * 方言只有四种（见 `Dialect`）；协议是「方言 + 这一家的契约」。六条协议落在四格方言上——
+ * `deepseek` 说 Responses、`opencode-go` 说 Chat——所以翻译层只按方言分发，永远不按协议名。
+ * 一条协议在这一层只回答三件事：路径（含版本段）、请求体怎么写、上游的流怎么读。
  *
- * 一条协议除了「说什么方言」，还可以带「怎么计价」：DeepSeek 的官方价随请求时刻分
- * 高峰 / 低谷两档，那是这一家上游的定价模式，不属于通用价目表。所以协议值分两层——
- * `Dialect` 是线缆上的形状，`Protocol` 是方言加上可选的定价模式。
+ * 响应体不在这里翻译：非流式由 `dialects.readAnswer` 直接读四种方言，流式由
+ * `streamEvents` 拆成规范事件。**翻译只有这一条路**——再来一条，迟早会分叉。
  */
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
@@ -49,9 +48,43 @@ export function isVisibility(value: string): value is Visibility {
   return value === 'public' || value === 'private';
 }
 
+/**
+ * 规范形式里的一次工具调用。
+ *
+ * `arguments` 一直是**上游给的那段 JSON 原文**：需要对象的那两家（Anthropic / Gemini）
+ * 自己 parse，桥不替它猜形状、也不把别人的对象重新序列化一遍。
+ */
+export type ChatToolCall = {
+  id: string;
+  name: string;
+  arguments: string;
+};
+
+/** 规范形式里的一份工具声明：扁平，与 Chat 那层 `function` 包装无关。 */
+export type ChatTool = {
+  name: string;
+  description?: string;
+  parameters?: unknown;
+};
+
+/**
+ * 客户端想让模型怎么用工具。
+ *
+ * 四家的说法：Chat 是 `auto | none | required` 加一个 `{type:'function'}`；Responses 一样但
+ * 少了 `function` 那层；Anthropic 是 `auto | any | tool`；Gemini 是 `AUTO | NONE | ANY`
+ * 加允许名单。归一成三种意图 + 点名一个，出口再各自说回去。
+ */
+export type ChatToolChoice =
+  | { mode: 'auto' | 'none' | 'required' }
+  | { mode: 'tool'; name: string };
+
 export type ChatMessage = {
   role?: string;
   content?: unknown;
+  /** assistant 发出的工具调用；这时 `content` 通常是空的。 */
+  tool_calls?: ChatToolCall[];
+  /** role === 'tool' 时，这条结果对应前面哪一次调用。 */
+  tool_call_id?: string;
   [key: string]: unknown;
 };
 
@@ -59,8 +92,23 @@ export type ChatBody = {
   model?: string;
   stream?: boolean;
   messages?: ChatMessage[];
+  tools?: ChatTool[];
+  tool_choice?: ChatToolChoice;
   [key: string]: unknown;
 };
+
+/**
+ * 流式的规范形式：一段流里只会有这三种事件。
+ *
+ * `index` 是**上游**给这次调用的序号（Chat 的 `tool_calls[].index`、Responses 的
+ * `output_index`、Anthropic 的 content block index，Gemini 没有就按到达顺序编）。入口
+ * emitter 自己把它映射成客户端要的编号。参数是增量的：`tool_start` 只带 id 与名字，
+ * `tool_args` 一段一段地来——Gemini 没有增量，整段参数一次给完。
+ */
+export type StreamEvent =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool_start'; index: number; id: string; name: string }
+  | { kind: 'tool_args'; index: number; args: string };
 
 /**
  * 模型清单的规范形式。
@@ -133,11 +181,10 @@ export type Adapter = {
    * 只声明要哪个头，值由 `sessions.ts` 从请求派生——协议不碰派生规则。
    */
   session_header?: string;
+  /** 规范形式 → 这条方言的请求体。 */
   request: (body: ChatBody, model: string) => unknown;
-  /** 非流式：把上游提供商 JSON 翻译回 OpenAI Chat 形状。 */
-  response: (json: unknown, model: string) => unknown;
-  /** 流式：把上游提供商一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
-  streamData: (data: string, model: string) => string[];
+  /** 流式：把上游一条 SSE 的 data 拆成规范事件；认不出的帧就是空数组。 */
+  streamEvents: (data: string) => StreamEvent[];
   /** 列模型的上游路径（已含协议自带的版本段）。 */
   modelsPath: () => string;
   /** 把上游的模型清单翻译成规范形式；形状不认识就当空清单，不猜。 */
@@ -176,8 +223,12 @@ function readOpenAiModels(json: unknown): ModelInfo[] {
   });
 }
 
-const enc = (text: string) => ({ role: 'assistant', content: text });
-const textOf = (content: unknown): string => (typeof content === 'string' ? content : JSON.stringify(content ?? ''));
+const textOf = (content: unknown): string => {
+  if (typeof content === 'string') return content;
+  // null / undefined 是「没有文本」（带工具调用的 assistant 就是这样），不是字符串 "null"。
+  if (content === undefined || content === null) return '';
+  return JSON.stringify(content);
+};
 
 function systemPrompt(messages: ChatMessage[] = []): string {
   return messages
@@ -190,56 +241,156 @@ function turns(messages: ChatMessage[] = []): ChatMessage[] {
   return messages.filter((m) => m.role !== 'system');
 }
 
-/** —— openai-chat：原样透传，不做任何翻译 —— */
+/* ── 工具调用：规范形式 ↔ 四家线缆形状，唯一的换算处 ────────────────
+ *
+ * 规范形式是**扁平**的：工具是 `{name, description, parameters}`，调用是
+ * `{id, name, arguments}`，结果是一条 `role='tool'` 的消息。四家只有 OpenAI Chat 把函数
+ * 套在 `function` 里、把结果单列成 `role='tool'`；其余三家的差异全部收在下面。
+ */
+
+/** 参数的 JSON 原文读成对象。读不懂就给空对象——对象是那两家唯一接受的形状。 */
+export function toolArguments(call: ChatToolCall): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(call.arguments);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 参数 Schema 的缺省：Anthropic 与 Gemini 都要求这个字段在，空对象是最保守的那个。 */
+function parametersOf(tool: ChatTool): unknown {
+  return tool.parameters ?? { type: 'object', properties: {} };
+}
+
+/** Gemini 的 `functionResponse.response` 必须是对象：结果本来就是 JSON 就原样给，否则包一层。 */
+function responseOf(content: unknown): Record<string, unknown> {
+  const raw = typeof content === 'string' ? content : JSON.stringify(content ?? '');
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // 不是 JSON：下面包一层。
+  }
+  return { result: raw };
+}
+
+/** 同角色相邻轮合并成一轮：Anthropic 要求 user / assistant 交替，Gemini 也不接受并排两条。 */
+type Turn<T> = { role: string; blocks: T[] };
+function pushBlocks<T>(turns: Turn<T>[], role: string, blocks: T[]): void {
+  if (blocks.length === 0) return;
+  const last = turns[turns.length - 1];
+  if (last && last.role === role) last.blocks.push(...blocks);
+  else turns.push({ role, blocks: [...blocks] });
+}
+
+/* ── openai-chat：函数套在 `function` 里，工具结果单列一条消息 ─────── */
+
+function chatWireTool(tool: ChatTool): unknown {
+  return {
+    type: 'function',
+    function: {
+      name: tool.name,
+      ...(tool.description ? { description: tool.description } : {}),
+      parameters: parametersOf(tool),
+    },
+  };
+}
+
+function chatWireChoice(choice: ChatToolChoice): unknown {
+  return choice.mode === 'tool' ? { type: 'function', function: { name: choice.name } } : choice.mode;
+}
+
+function chatWireMessage(message: ChatMessage): unknown {
+  if (message.role === 'tool') {
+    return { role: 'tool', tool_call_id: message.tool_call_id ?? '', content: textOf(message.content) };
+  }
+  const calls = message.tool_calls ?? [];
+  if (message.role === 'assistant' && calls.length > 0) {
+    return {
+      role: 'assistant',
+      content: textOf(message.content),
+      tool_calls: calls.map((call) => ({
+        id: call.id,
+        type: 'function',
+        function: { name: call.name, arguments: call.arguments },
+      })),
+    };
+  }
+  return { role: message.role ?? 'user', content: textOf(message.content) };
+}
+
+/** —— openai-chat：说 Chat 方言，也把规范形式说成 Chat 的线缆形状 —— */
 const openaiChat: Adapter = {
   dialect: 'openai-chat',
   path: () => '/chat/completions',
   headers: (key) => ({ Authorization: `Bearer ${key}` }),
-  request: (body) => body,
-  response: (json) => json,
-  streamData: (data) => [data],
+  request: (body, model) => ({
+    model,
+    messages: (body.messages ?? []).map(chatWireMessage),
+    stream: body.stream === true,
+    ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
+    ...(body.tools?.length ? { tools: body.tools.map(chatWireTool) } : {}),
+    // 没带工具却带 tool_choice 是自相矛盾的：上游会当作 400，这里就不发。
+    ...(body.tools?.length && body.tool_choice ? { tool_choice: chatWireChoice(body.tool_choice) } : {}),
+  }),
+  streamEvents: chatStreamEvents,
   modelsPath: () => '/models',
   readModels: readOpenAiModels,
 };
+
+/* ── openai-responses：工具调用与结果是两类独立条目，工具声明是扁平的 ── */
+
+/** 一条 chat 消息摊成 Responses 的条目：assistant 的文本与每个调用各占一条。 */
+function responseItems(message: ChatMessage): unknown[] {
+  if (message.role === 'tool') {
+    return [{ type: 'function_call_output', call_id: message.tool_call_id ?? '', output: textOf(message.content) }];
+  }
+  if (message.role !== 'assistant') return [{ role: 'user', content: textOf(message.content) }];
+  const items: unknown[] = [];
+  const text = textOf(message.content);
+  if (text.length > 0) items.push({ role: 'assistant', content: text });
+  for (const call of message.tool_calls ?? []) {
+    items.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments });
+  }
+  return items;
+}
+
+function responseChoice(choice: ChatToolChoice): unknown {
+  return choice.mode === 'tool' ? { type: 'function', name: choice.name } : choice.mode;
+}
 
 /** —— openai-responses：input/output 与 chat 的 message 形状不同 —— */
 const openaiResponses: Adapter = {
   dialect: 'openai-responses',
   path: () => '/responses',
   headers: (key) => ({ Authorization: `Bearer ${key}` }),
-  request: (body, model) => ({
-    model,
-    input: (body.messages ?? []).map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: textOf(m.content) })),
-    stream: body.stream === true,
-  }),
-  response: (json, model) => {
-    const payload = json as { id?: string; output?: Array<{ content?: Array<{ text?: string }> }>; usage?: Record<string, number> };
-    const text = (payload.output ?? [])
-      .flatMap((item) => item.content ?? [])
-      .map((part) => part.text ?? '')
-      .join('');
+  request: (body, model) => {
+    const system = systemPrompt(body.messages);
     return {
-      id: payload.id ?? `resp_${Date.now()}`,
-      object: 'chat.completion',
       model,
-      choices: [{ index: 0, message: enc(text), finish_reason: 'stop' }],
-      usage: {
-        prompt_tokens: payload.usage?.input_tokens ?? 0,
-        completion_tokens: payload.usage?.output_tokens ?? 0,
-      },
+      ...(system ? { instructions: system } : {}),
+      input: turns(body.messages).flatMap(responseItems),
+      stream: body.stream === true,
+      ...(body.max_tokens === undefined ? {} : { max_output_tokens: body.max_tokens }),
+      ...(body.tools?.length
+        ? {
+            tools: body.tools.map((tool) => ({
+              type: 'function',
+              name: tool.name,
+              ...(tool.description ? { description: tool.description } : {}),
+              parameters: parametersOf(tool),
+            })),
+          }
+        : {}),
+      ...(body.tools?.length && body.tool_choice ? { tool_choice: responseChoice(body.tool_choice) } : {}),
     };
   },
-  streamData: (data, model) => {
-    let event: { type?: string; delta?: string; delta_text?: string } = {};
-    try {
-      event = JSON.parse(data);
-    } catch {
-      return [];
-    }
-    const delta = event.delta ?? event.delta_text;
-    if (event.type !== 'response.output_text.delta' || typeof delta !== 'string') return [];
-    return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: delta } }] })];
-  },
+  streamEvents: responsesStreamEvents,
   // Responses 与 Chat 是同一台机器上的两条路，清单就是同一个 /models。
   modelsPath: () => '/models',
   readModels: readOpenAiModels,
@@ -248,7 +399,8 @@ const openaiResponses: Adapter = {
 /**
  * —— deepseek：说 Responses 方言，但价目按时段分两档 ——
  *
- * 除了计价一个字节都不特殊：路径、请求、响应、清单全部来自 `openaiResponses`。
+ * 除了计价一个字节都不特殊：路径、请求、流、清单全部来自 `openaiResponses`——包括工具的
+ * 形状，因为 DeepSeek 的 Responses 接口收的就是 Responses 的那一套。
  * 单独成一条协议而不是给 `openai-responses` 加个开关，是因为定价模式是这条上游契约的
  * 一部分——配置上游时就选定了「按 DeepSeek 官方时段计费」，不是逐次请求的开关。
  * 基址填 `https://api.deepseek.com`（与 DeepSeek LB 的 upstream_base 同一个）。
@@ -287,46 +439,60 @@ const opencodeGo: Adapter = {
   session_header: SESSION_HEADER,
 };
 
-/** —— anthropic-messages：content blocks、system 独立字段、x-api-key 头 —— */
+/* ── anthropic-messages：content blocks、system 独立字段、x-api-key 头 ── */
+
+function anthropicChoice(choice: ChatToolChoice): unknown {
+  if (choice.mode === 'tool') return { type: 'tool', name: choice.name };
+  // Anthropic 把「必须调一个」叫 any，Chat 叫 required。
+  return { type: choice.mode === 'required' ? 'any' : choice.mode };
+}
+
 const anthropicMessages: Adapter = {
   dialect: 'anthropic-messages',
   path: () => '/v1/messages',
   headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01' }),
-  request: (body, model) => ({
-    model,
-    max_tokens: (body.max_tokens as number | undefined) ?? 1024,
-    system: systemPrompt(body.messages) || undefined,
-    messages: turns(body.messages).map((m) => ({
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: textOf(m.content),
-    })),
-    stream: body.stream === true,
-  }),
-  response: (json, model) => {
-    const payload = json as { id?: string; content?: Array<{ text?: string }>; usage?: Record<string, number> };
-    const text = (payload.content ?? []).map((block) => block.text ?? '').join('');
+  request: (body, model) => {
+    const turnsOut: Turn<unknown>[] = [];
+    for (const message of turns(body.messages)) {
+      if (message.role === 'tool') {
+        // 工具结果是一条 user 轮里的 tool_result 块；连着几条结果会被 pushBlocks 并进同一轮。
+        pushBlocks(turnsOut, 'user', [
+          { type: 'tool_result', tool_use_id: message.tool_call_id ?? '', content: textOf(message.content) },
+        ]);
+        continue;
+      }
+      if (message.role === 'assistant') {
+        const blocks: unknown[] = [];
+        const text = textOf(message.content);
+        if (text.length > 0) blocks.push({ type: 'text', text });
+        for (const call of message.tool_calls ?? []) {
+          blocks.push({ type: 'tool_use', id: call.id, name: call.name, input: toolArguments(call) });
+        }
+        // 空字符串的文本块是合法的，空 content 数组不是。
+        pushBlocks(turnsOut, 'assistant', blocks.length > 0 ? blocks : [{ type: 'text', text: '' }]);
+        continue;
+      }
+      pushBlocks(turnsOut, 'user', [{ type: 'text', text: textOf(message.content) }]);
+    }
     return {
-      id: payload.id ?? `msg_${Date.now()}`,
-      object: 'chat.completion',
       model,
-      choices: [{ index: 0, message: enc(text), finish_reason: 'stop' }],
-      usage: {
-        prompt_tokens: payload.usage?.input_tokens ?? 0,
-        completion_tokens: payload.usage?.output_tokens ?? 0,
-      },
+      max_tokens: (body.max_tokens as number | undefined) ?? 1024,
+      system: systemPrompt(body.messages) || undefined,
+      messages: turnsOut.map((turn) => ({ role: turn.role, content: turn.blocks })),
+      stream: body.stream === true,
+      ...(body.tools?.length
+        ? {
+            tools: body.tools.map((tool) => ({
+              name: tool.name,
+              ...(tool.description ? { description: tool.description } : {}),
+              input_schema: parametersOf(tool),
+            })),
+          }
+        : {}),
+      ...(body.tools?.length && body.tool_choice ? { tool_choice: anthropicChoice(body.tool_choice) } : {}),
     };
   },
-  streamData: (data, model) => {
-    let event: { type?: string; delta?: { type?: string; text?: string } } = {};
-    try {
-      event = JSON.parse(data);
-    } catch {
-      return [];
-    }
-    const text = event.type === 'content_block_delta' ? event.delta?.text : undefined;
-    if (typeof text !== 'string') return [];
-    return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: text } }] })];
-  },
+  streamEvents: anthropicStreamEvents,
   modelsPath: () => '/v1/models',
   // Anthropic 的清单是 `{data:[{id, display_name, created_at}]}`，没有 owned_by。
   readModels: (json) =>
@@ -339,54 +505,74 @@ const anthropicMessages: Adapter = {
     }),
 };
 
-/** —— google-gemini：contents/parts，密钥走查询参数或 x-goog-api-key —— */
+/* ── google-gemini：contents/parts，工具靠**函数名**对齐（它没有调用 id） ── */
+
+function geminiChoice(choice: ChatToolChoice): unknown {
+  if (choice.mode === 'tool') return { mode: 'ANY', allowedFunctionNames: [choice.name] };
+  if (choice.mode === 'required') return { mode: 'ANY' };
+  return { mode: choice.mode === 'none' ? 'NONE' : 'AUTO' };
+}
+
 const googleGemini: Adapter = {
   dialect: 'google-gemini',
   path: (model) => `/v1beta/models/${encodeURIComponent(model)}:generateContent`,
   headers: (key) => ({ 'x-goog-api-key': key }),
-  request: (body, model) => ({
-    // 流式端点由 path 决定（:streamGenerateContent?alt=sse），body 形状相同。
-    contents: turns(body.messages).map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: textOf(m.content) }],
-    })),
-    systemInstruction: systemPrompt(body.messages) ? { parts: [{ text: systemPrompt(body.messages) }] } : undefined,
-    generationConfig: body.max_tokens ? { maxOutputTokens: body.max_tokens } : undefined,
-  }),
-  response: (json, model) => {
-    const payload = json as {
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      usageMetadata?: Record<string, number>;
-    };
-    const text = (payload.candidates ?? [])
-      .flatMap((candidate) => candidate.content?.parts ?? [])
-      .map((part) => part.text ?? '')
-      .join('');
-    return {
-      id: `gem_${Date.now()}`,
-      object: 'chat.completion',
-      model,
-      choices: [{ index: 0, message: enc(text), finish_reason: 'stop' }],
-      usage: {
-        prompt_tokens: payload.usageMetadata?.promptTokenCount ?? 0,
-        completion_tokens: payload.usageMetadata?.candidatesTokenCount ?? 0,
-      },
-    };
-  },
-  streamData: (data, model) => {
-    let event: { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> } = {};
-    try {
-      event = JSON.parse(data);
-    } catch {
-      return [];
+  request: (body, model) => {
+    const turnsOut: Turn<unknown>[] = [];
+    // 结果在 Gemini 里只说得出函数名：把 id → name 从前面 assistant 的调用里抄下来，
+    // 遇到 role='tool' 时按 id 找回名字。少了这张表，工具结果就会被挂到不存在的函数上。
+    const names = new Map<string, string>();
+    for (const message of turns(body.messages)) {
+      if (message.role === 'tool') {
+        pushBlocks(turnsOut, 'user', [
+          {
+            functionResponse: {
+              name: names.get(message.tool_call_id ?? '') ?? 'tool',
+              response: responseOf(message.content),
+            },
+          },
+        ]);
+        continue;
+      }
+      if (message.role === 'assistant') {
+        const parts: unknown[] = [];
+        const text = textOf(message.content);
+        if (text.length > 0) parts.push({ text });
+        for (const call of message.tool_calls ?? []) {
+          names.set(call.id, call.name);
+          parts.push({ functionCall: { name: call.name, args: toolArguments(call) } });
+        }
+        pushBlocks(turnsOut, 'model', parts);
+        continue;
+      }
+      pushBlocks(turnsOut, 'user', [{ text: textOf(message.content) }]);
     }
-    const text = (event.candidates ?? [])
-      .flatMap((candidate) => candidate.content?.parts ?? [])
-      .map((part) => part.text ?? '')
-      .join('');
-    if (text.length === 0) return [];
-    return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: text } }] })];
+    const system = systemPrompt(body.messages);
+    const tools = body.tools ?? [];
+    return {
+      // 流式端点由 path 决定（:streamGenerateContent?alt=sse），body 形状相同。
+      contents: turnsOut.map((turn) => ({ role: turn.role, parts: turn.blocks })),
+      systemInstruction: system ? { parts: [{ text: system }] } : undefined,
+      generationConfig: body.max_tokens ? { maxOutputTokens: body.max_tokens } : undefined,
+      ...(tools.length
+        ? {
+            tools: [
+              {
+                functionDeclarations: tools.map((tool) => ({
+                  name: tool.name,
+                  ...(tool.description ? { description: tool.description } : {}),
+                  parameters: parametersOf(tool),
+                })),
+              },
+            ],
+          }
+        : {}),
+      ...(tools.length && body.tool_choice
+        ? { toolConfig: { functionCallingConfig: geminiChoice(body.tool_choice) } }
+        : {}),
+    };
   },
+  streamEvents: geminiStreamEvents,
   modelsPath: () => '/v1beta/models',
   // Gemini 的清单是 `{models:[{name:"models/gemini-2.0-flash", ...}]}`：
   // 名字里的 `models/` 是它的命名空间前缀，剥掉它才是调用时要的模型名。
@@ -398,6 +584,113 @@ const googleGemini: Adapter = {
       return [{ id: name }];
     }),
 };
+
+/* ── 流式：上游帧 → 规范事件 ─────────────────────────────────────── */
+
+/** 一帧 SSE 的 data；`[DONE]`、空的、不是 JSON 的都当没有。 */
+function frameOf(data: string): Record<string, unknown> | null {
+  if (data.length === 0 || data === '[DONE]') return null;
+  try {
+    const parsed: unknown = JSON.parse(data);
+    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** OpenAI Chat 形状的流（`opencode-go` 与 `openai-chat` 共用同一份读法）。 */
+function chatStreamEvents(data: string): StreamEvent[] {
+  const frame = frameOf(data);
+  if (!frame) return [];
+  const events: StreamEvent[] = [];
+  for (const choice of listOf(frame.choices)) {
+    const delta = recordOf(recordOf(choice).delta);
+    const text = stringOf(delta.content);
+    if (text.length > 0) events.push({ kind: 'text', text });
+    for (const entry of listOf(delta.tool_calls)) {
+      const call = recordOf(entry);
+      const index = typeof call.index === 'number' ? call.index : 0;
+      const fn = recordOf(call.function);
+      const id = stringOf(call.id);
+      const name = stringOf(fn.name);
+      // 第一帧给 id 与名字，之后只剩参数片段：缺哪个就不写哪个，下游按 index 合并。
+      if (id.length > 0 || name.length > 0) {
+        events.push({ kind: 'tool_start', index, id: id || `call_${index}`, name });
+      }
+      const args = stringOf(fn.arguments);
+      if (args.length > 0) events.push({ kind: 'tool_args', index, args });
+    }
+  }
+  return events;
+}
+
+/** Responses：工具调用是一条独立的 output item，参数走自己的增量事件。 */
+function responsesStreamEvents(data: string): StreamEvent[] {
+  const frame = frameOf(data);
+  if (!frame) return [];
+  const type = stringOf(frame.type);
+  const index = typeof frame.output_index === 'number' ? frame.output_index : 0;
+  if (type === 'response.output_item.added') {
+    const item = recordOf(frame.item);
+    if (stringOf(item.type) !== 'function_call') return [];
+    return [{ kind: 'tool_start', index, id: stringOf(item.call_id) || stringOf(item.id), name: stringOf(item.name) }];
+  }
+  if (type === 'response.function_call_arguments.delta') {
+    const args = stringOf(frame.delta);
+    return args.length > 0 ? [{ kind: 'tool_args', index, args }] : [];
+  }
+  if (type === 'response.output_text.delta') {
+    // 有的中转把文本放在 `delta_text` 里（旧的字段名），两种都认。
+    const text = stringOf(frame.delta) || stringOf(frame.delta_text);
+    return text.length > 0 ? [{ kind: 'text', text }] : [];
+  }
+  return [];
+}
+
+/** Anthropic：tool_use 块开始给 id 与名字，参数是 `input_json_delta` 的片段。 */
+function anthropicStreamEvents(data: string): StreamEvent[] {
+  const frame = frameOf(data);
+  if (!frame) return [];
+  const type = stringOf(frame.type);
+  const index = typeof frame.index === 'number' ? frame.index : 0;
+  if (type === 'content_block_start') {
+    const block = recordOf(frame.content_block);
+    if (stringOf(block.type) !== 'tool_use') return [];
+    return [{ kind: 'tool_start', index, id: stringOf(block.id), name: stringOf(block.name) }];
+  }
+  if (type === 'content_block_delta') {
+    const delta = recordOf(frame.delta);
+    if (stringOf(delta.type) === 'input_json_delta') {
+      const args = stringOf(delta.partial_json);
+      return args.length > 0 ? [{ kind: 'tool_args', index, args }] : [];
+    }
+    const text = stringOf(delta.text);
+    return text.length > 0 ? [{ kind: 'text', text }] : [];
+  }
+  return [];
+}
+
+/** Gemini：没有增量，一次 functionCall 就把名字与整段参数都给全了。 */
+function geminiStreamEvents(data: string): StreamEvent[] {
+  const frame = frameOf(data);
+  if (!frame) return [];
+  const events: StreamEvent[] = [];
+  for (const candidate of listOf(frame.candidates)) {
+    for (const part of listOf(recordOf(recordOf(candidate).content).parts)) {
+      const piece = recordOf(part);
+      const text = stringOf(piece.text);
+      if (text.length > 0) events.push({ kind: 'text', text });
+      if (piece.functionCall) {
+        const call = recordOf(piece.functionCall);
+        // Gemini 不给调用 id，也没有分片：按到达顺序编号，参数一次给完。
+        const index = events.filter((event) => event.kind === 'tool_start').length;
+        events.push({ kind: 'tool_start', index, id: `call_${index + 1}`, name: stringOf(call.name) });
+        events.push({ kind: 'tool_args', index, args: JSON.stringify(call.args ?? {}) });
+      }
+    }
+  }
+  return events;
+}
 
 const ADAPTERS: Record<Protocol, Adapter> = {
   'openai-chat': openaiChat,

@@ -1,5 +1,5 @@
 import type { Env } from './env';
-import type { Protocol, Visibility } from './protocols';
+import { type Protocol, type Visibility } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
@@ -314,6 +314,7 @@ export async function forgetAffinity(env: Env, address: string, hash: string): P
   await env.DB.prepare('DELETE FROM affinities WHERE affinity_hash = ? AND address = ?').bind(hash, address).run();
 }
 
+/** 一条同方言的上游都没有：带工具的请求在这里说清楚，而不是打出去再被拒。 */
 /** 一条能跑这个型号的上游都没有：说清楚，别把请求丢给明知道没有它的上游。 */
 function failModelNotServed(model: string): never {
   fail(
