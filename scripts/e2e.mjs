@@ -105,6 +105,8 @@ const provider = createServer((request, response) => {
         sse(response, [
           { type: 'response.output_text.delta', delta: '你' },
           { type: 'response.output_text.delta', delta: '好' },
+          // 用量只在收尾事件里出现：账本要靠它，而它藏在 response.usage 里。
+          { type: 'response.completed', response: { usage: { input_tokens: 40, output_tokens: 5 } } },
         ]);
         return;
       }
@@ -124,9 +126,10 @@ const provider = createServer((request, response) => {
     if (url.pathname.endsWith('/v1/messages')) {
       if (parsed.stream) {
         sse(response, [
-          { type: 'message_start' },
+          { type: 'message_start', message: { usage: { input_tokens: 25, cache_read_input_tokens: 10, output_tokens: 1 } } },
           { type: 'content_block_delta', delta: { type: 'text_delta', text: '你' } },
           { type: 'content_block_delta', delta: { type: 'text_delta', text: '好' } },
+          { type: 'message_delta', usage: { output_tokens: 7 } },
         ]);
         return;
       }
@@ -147,7 +150,7 @@ const provider = createServer((request, response) => {
     if (url.pathname.includes(':streamGenerateContent')) {
       sse(response, [
         { candidates: [{ content: { parts: [{ text: '你' }] } }] },
-        { candidates: [{ content: { parts: [{ text: '好' }] } }] },
+        { candidates: [{ content: { parts: [{ text: '好' }] } }], usageMetadata: { promptTokenCount: 18, cachedContentTokenCount: 12, candidatesTokenCount: 4 } },
       ]);
       return;
     }
@@ -398,6 +401,26 @@ for (const protocol of Object.keys(expected)) {
 
   const asked = await chat(providers['openai-chat'], { stream: true, stream_options: { include_usage: true } });
   check('客户端要了用量就原样给他', asked.text.includes('"prompt_tokens_details"'), asked.text.slice(-400));
+
+  // 同格式直通：入口 openai-responses、上游也是 openai-responses。这条路以前一个字节
+  // 不改地转发，却忘了顺手读用量——于是账本上只剩 Gas。这一条钉住它。
+  {
+    const payload = JSON.stringify({ model: 'gpt-test', input: 'hi', stream: true });
+    const signed = sign(alice, 'POST', '/v1/responses', payload);
+    const response = await fetch(`${BASE}/v1/responses`, {
+      method: 'POST',
+      headers: { ...signed, 'Content-Type': 'application/json', 'X-Norm-Provider': providers['openai-responses'] },
+      body: payload,
+    });
+    const text = await response.text();
+    const requestId = response.headers.get('X-Norm-Request-Id');
+    check('同格式 responses 流 200', response.status === 200, text.slice(0, 200));
+    check('同格式 responses 流原样转发', text.includes('"response.completed"'), text.slice(-200));
+    const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json.items;
+    const row = rows.find((item) => item.id === requestId);
+    check('同格式 responses 流记下三项 token', row?.input_tokens === 40 && row?.output_tokens === 5, row);
+    check('同格式 responses 流也收了 token 的钱', (row?.fee_nanos ?? 0) > (row?.gas_fee_nanos ?? 0), row);
+  }
 
   const geminiStream = seen.find((entry) => entry.path.includes(':streamGenerateContent'));
   check('gemini 走流式端点', geminiStream.search.includes('alt=sse'), geminiStream.search);

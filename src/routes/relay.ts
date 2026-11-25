@@ -354,6 +354,17 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 
       if (value) {
         if (!injectNorm) {
+          // 字节一个都不改（这几条路的客户端是第三方 SDK），但要把用量读出来：
+          // 不读，responses / anthropic / gemini 的流式调用在账本上就是 0 / 0 / 0。
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() ?? '';
+          for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (payload.length === 0 || payload === '[DONE]') continue;
+            sniffer.push(payload);
+          }
           controller.enqueue(value);
         } else {
           buffer += decoder.decode(value, { stream: true });
@@ -396,6 +407,9 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
         }
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
       } else {
+        // 上游有时不补换行，最后一段留在 buffer 里——它可能就是那条 response.completed。
+        const rest = buffer.startsWith('data:') ? buffer.slice(5).trim() : '';
+        if (rest.length > 0 && rest !== '[DONE]') sniffer.push(rest);
         await finish();
       }
       controller.close();
