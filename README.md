@@ -12,7 +12,7 @@
 
 Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一个 D1。它不持有任何上游密钥，
 不签发会话，不存请求内容。用户用自己的上游密钥（BYOK）调用，身份是自己持有的 Ed25519 密钥，
-每一条被隔离执行的请求都单独计费，每一个凭证的来源都公开可核验。
+每一条被隔离执行的请求都单独计费，每一个上游提供者的来源都公开可核验。
 
 「中转站可信」在 Norm 里不是一个承诺，而是一个**可以自己跑一遍的构建**。
 
@@ -24,7 +24,7 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 | **BYOK** | 上游密钥只在请求头里经过。库里只有客户端加密后的密文，服务端读不懂 |
 | **Ed25519（base58）身份** | 公钥即地址，私钥永不离开浏览器。逐请求签名，无注册、无密码、无 cookie 会话 |
 | **ZDR + 可信发布** | 不留请求体、响应体、上游密钥；构建哈希公开，任何人可 `pnpm build` 复算 |
-| **上游来源可核验** | 每个凭证必须声明来源，平台自动核验并**公开**，掺水立刻可见 |
+| **上游来源可核验** | 每个上游提供者必须声明来源，平台自动核验并**公开**，掺水立刻可见 |
 
 完整规格见 [`docs/spec.md`](docs/spec.md)，接口见 [`docs/api.md`](docs/api.md)，
 密码学契约见 [`docs/crypto.md`](docs/crypto.md)，路线图见 [`docs/roadmap.md`](docs/roadmap.md)。
@@ -32,7 +32,7 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 ## 用起来
 
 打开 <https://norm.ntnl.io>，浏览器会为你生成一把 Ed25519 密钥——**地址就是你的账号**，第一次签名即开户，
-自动获得一笔演示授信。然后到「凭证」页加一个上游密钥（用口令在本地加密后上传），
+自动获得一笔演示授信。然后到「上游提供者」页加一把上游密钥（服务端用 Worker secret 封装），
 回到 Playground 发一次请求，底部会显示这次调用的扣费、余额、延迟与来源核验结论。
 
 作为 OpenAI 兼容端点接进自己的工具：
@@ -44,8 +44,7 @@ curl https://norm.ntnl.io/v1/chat/completions \
   -H "X-Norm-Timestamp: <unix 秒>" \
   -H "X-Norm-Nonce: <一次性随机串>" \
   -H "X-Norm-Signature: <签名>" \
-  -H "X-Norm-Credential: <凭证 id>" \
-  -H "X-Norm-Upstream-Key: <上游明文密钥>" \
+  -H "X-Norm-Credential: <上游提供者 id>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
 ```

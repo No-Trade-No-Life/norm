@@ -6,7 +6,7 @@ Base: `https://norm.ntnl.io`。
 
 | 前缀 | 接受什么 | 用来干什么 |
 |---|---|---|
-| `/api/v1/*` | **只**接受 Ed25519 请求签名 | 账户、凭证、消费者密钥：都是「浏览器里的人在操作」 |
+| `/api/v1/*` | **只**接受 Ed25519 请求签名 | 账户、上游提供者、下游消费者密钥：都是「浏览器里的人在操作」 |
 | `/v1/*` | 签名**或** `Authorization: Bearer sk-norm-…` | 转发：程序拿消费者密钥就能调用 |
 
 公开接口（`health` / `stats` / `base-urls` / `attestation`）两种都不需要。
@@ -42,11 +42,11 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | GET | `/api/v1/account/usage?limit=50` | 请求记录（不含内容） |
 | GET | `/api/v1/account/ledger?limit=50` | 记账流水 |
 
-## 凭证（签名）
+## 上游提供者（签名）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/credentials` | 本人凭证（含密文与 hint，不含明文密钥） |
+| GET | `/api/v1/credentials` | 本人的上游提供者（含密文与 hint，不含明文密钥） |
 | POST | `/api/v1/credentials` | 新建，body 见下 |
 | POST | `/api/v1/credentials/:id/visibility` | `{public_listed: bool}` |
 | DELETE | `/api/v1/credentials/:id` | 撤销 |
@@ -114,7 +114,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 头 | 必填 | 说明 |
 |---|---|---|
-| `X-Norm-Credential` | 是 | 凭证 id，决定发往哪个上游（上游密钥由服务端解密，客户端不接触） |
+| `X-Norm-Credential` | 是 | 上游提供者 id，决定发往哪个上游（上游密钥由服务端解密，客户端不接触） |
 | `Authorization: Bearer sk-norm-…` | 三选一 | OpenAI SDK 的形状 |
 | `x-api-key: sk-norm-…` | 三选一 | Anthropic SDK / Claude Code 的形状 |
 | `x-goog-api-key: sk-norm-…` | 三选一 | Google SDK 的形状 |
