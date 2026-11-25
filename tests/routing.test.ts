@@ -6,7 +6,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { affinityFresh, affinityHash, affinityKeyOf, narrowToOwned, pickByRendezvous } from '../src/routing';
+import {
+  affinityFresh,
+  affinityHash,
+  affinityKeyOf,
+  narrowToOwned,
+  narrowToServingModel,
+  pickByRendezvous,
+} from '../src/routing';
 
 const headers = (pairs: Record<string, string>) => ({
   get: (name: string) => pairs[name] ?? null,
@@ -118,5 +125,38 @@ describe('pickByRendezvous', () => {
 
   it('单条候选就是它自己', () => {
     expect(pickByRendezvous([pooled], 'anything')).toBe(pooled);
+  });
+});
+
+/**
+ * 按模型筛候选：模型是硬约束，自有优先是偏好。三条处境必须能分开——
+ * 有它 / 抓过清单但没它 / 清单从没抓过。
+ */
+describe('narrowToServingModel', () => {
+  const p1 = { id: 'p-1' };
+  const p2 = { id: 'p-2' };
+  const ids = (...values: string[]) => new Set(values);
+
+  it('清单里有它的，就只留它', () => {
+    const out = narrowToServingModel([p1, p2], { known: ids('p-1', 'p-2'), serving: ids('p-2') });
+    expect(out).toEqual([p2]);
+  });
+
+  it('清单抓过、里面没有它 → 这条这次不参与（不是优先级低，是跑不了）', () => {
+    const out = narrowToServingModel([p1, p2], { known: ids('p-1', 'p-2'), serving: ids('p-2') });
+    expect(out.map((candidate) => candidate.id)).not.toContain('p-1');
+  });
+
+  it('清单从没抓过的留着：没有证据不等于有证据说没有', () => {
+    const out = narrowToServingModel([p1, p2], { known: ids('p-1'), serving: ids() });
+    expect(out).toEqual([p2]);
+  });
+
+  it('抓过清单的一条都不认它 → 空，由调用方说出「没有上游提供这个模型」', () => {
+    expect(narrowToServingModel([p1, p2], { known: ids('p-1', 'p-2'), serving: ids() })).toEqual([]);
+  });
+
+  it('全都还没抓过清单时原样留下（新加的上游不该被一张空表判死刑）', () => {
+    expect(narrowToServingModel([p1, p2], { known: ids(), serving: ids() })).toEqual([p1, p2]);
   });
 });

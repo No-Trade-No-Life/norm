@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeCatalog } from '../src/models';
+import { isModelNotServed, mergeCatalog } from '../src/models';
 
 /**
  * 合并规则是这张表的全部逻辑：同名就是同一条、谁有它记成一列、官方价按提供它的
@@ -91,5 +91,42 @@ describe('mergeCatalog', () => {
   it('空清单就是空表', () => {
     expect(mergeCatalog([])).toEqual([]);
     expect(mergeCatalog([{ provider_id: 'p', protocol: 'openai-chat', items: [] }])).toEqual([]);
+  });
+});
+
+/**
+ * 「上游是不是在说我没有这个型号」：只认 400 / 404，且必须点名这次的模型。
+ *
+ * 这条判定会删掉 `provider_models` 里的一行，所以宁可少认：把一次参数错误当成
+ * 「它没有这个型号」，等于让一个坏请求把一条好上游从路由里删掉。
+ */
+describe('isModelNotServed', () => {
+  const deepseekSaid =
+    '{"message":"The supported API model names are deepseek-flash, deepseek-v4-pro, but you passed deepseek-v4.1-flash.","type":"invalid_request_error"}';
+
+  it('上游点名了这次的模型 → 它就是在说「我没有这个」', () => {
+    expect(isModelNotServed(400, deepseekSaid, 'deepseek-v4.1-flash')).toBe(true);
+  });
+
+  it('有的实现用 404 表示没有这个型号', () => {
+    expect(isModelNotServed(404, '{"error":"model deepseek-x not found"}', 'deepseek-x')).toBe(true);
+  });
+
+  it('400 但没点名这次的模型（参数写错）→ 不动清单', () => {
+    expect(isModelNotServed(400, '{"error":"messages is required"}', 'deepseek-x')).toBe(false);
+  });
+
+  it('点名了但整句不提 model（内容审核）→ 不动清单', () => {
+    expect(isModelNotServed(400, '{"error":"content rejected: deepseek-x"}', 'deepseek-x')).toBe(false);
+  });
+
+  it('401 / 402 / 403 / 429 / 5xx 一律不算：那不是「没有这个型号」', () => {
+    for (const status of [401, 402, 403, 429, 500, 503]) {
+      expect(isModelNotServed(status, 'model deepseek-x not allowed', 'deepseek-x')).toBe(false);
+    }
+  });
+
+  it('没有模型名就没什么可判的', () => {
+    expect(isModelNotServed(400, 'model required', '')).toBe(false);
   });
 });

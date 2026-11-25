@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { nowSeconds } from '../ids';
-import { mergeCatalog, probeErrorText, probeProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
+import { mergeCatalog, probeErrorText, syncProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
 import type { ModelInfo, Protocol, Visibility } from '../protocols';
 import { listProviders, type ProviderScope, type ProviderView } from '../store';
 
@@ -15,6 +15,8 @@ import { listProviders, type ProviderScope, type ProviderView } from '../store';
  * 一份，同名模型合成一行，并记下它是被哪几条上游提供的。
  *
  * 三个决定：
+ *   - 读到就写回：这张表同时也是转发的依据（`provider_models`），所以「看一眼总表」
+ *     顺手把路由用的事实刷新了。探测失败的那几条不动它原来的快照。
  *   - 只问启用中的上游：禁用意味着「不参与选址」，一个调不动的名字不该出现在「可用」里。
  *     禁用的那几条仍然出现在 `providers` 里，标着 `probed: false`，不假装问过。
  *   - 一条上游一次问一句，问不到就如实记下它的答复（`ok: false` + `error`），
@@ -64,7 +66,7 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
 
   const probes = await Promise.all(
     // 解封用的是持有者地址：池子那条的密文绑在站点名下，用调用方地址解不开。
-    asked.map((provider) => probeProviderModels({ env: c.env, address: provider.address, provider })),
+    asked.map((provider) => syncProviderModels({ env: c.env, address: provider.address, provider })),
   );
 
   // 同一台主机上的两条上游（两个 key）常常是一模一样的清单：按模型名合并，
