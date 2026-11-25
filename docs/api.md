@@ -98,7 +98,8 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 {
   "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
   "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后不可改写。
-                                            // deepseek 的基址由协议给定，不能也不用填
+                                            // deepseek / opencode-go 的基址由协议给定，
+                                            // 不能也不用填
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
   // 可选。protocol / visibility 的默认值取最保守的那侧；enabled 默认 true——
@@ -106,6 +107,8 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
   "protocol": "openai-chat",         // openai-chat | openai-responses
                                      // | anthropic-messages | google-gemini
                                      // | deepseek（说 Responses，按官方时段分两档计价）
+                                     // | opencode-go（说 Chat，基址是 OpenCode Go 官方推理面，
+                                     //    每个请求自动带 x-opencode-session）
   "visibility": "private",           // public | private（上游提供商本身是否对公众可用）
   "scope": "private",                // private | pool（pool = 进公共池，全站兜底用它；
                                      // 只有 POOL_ADMIN_ADDRESSES 里的地址能写 pool）
@@ -139,10 +142,10 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 
 ## 转发（只认 Bearer 消费者密钥）
 
-四个入口，五种上游提供商协议，构成 4×5。**入口方言与上游提供商协议同名**（`deepseek`
-说 Responses，所以它与 Responses 入口也是同格式直通）：
+四个入口，六种上游提供商协议，构成 4×6。**比的是线缆上的方言**（`deepseek` 说 Responses、
+`opencode-go` 说 Chat，所以它们各自与同方言的入口是直通）：
 
-| 入口 | 客户端 | 上游提供商协议 `openai-chat` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
+| 入口 | 客户端 | 上游提供商协议 `openai-chat` / `opencode-go` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
 |---|---|---|---|---|---|
 | `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 转换 | 转换 | 转换 |
 | `POST /v1/responses` | Codex CLI | 转换 | 直通 | 转换 | 转换 |
@@ -153,7 +156,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 响应体原样返回（只多一个 `norm` 字段）。一个字段都不碰，包括 `tools`、`tool_choice`、
 `response_format` 这些我们没打算理解的字段。
 
-**唯一会改请求体的地方**：流式请求打向 `openai-chat` 上游提供商时，Norm 会补一个
+**唯一会改请求体的地方**：流式请求打向 chat 方言的上游（`openai-chat` 与 `opencode-go`）时，Norm 会补一个
 `stream_options.include_usage: true`——那种上游默认不回 token 用量，而账本就靠它算钱。
 它额外产生的那条用量帧（`choices: []`，只带 `usage`）由 Norm 吃掉：客户端没要，就不会
 突然收到一条它没预期的帧；客户端本来就要了（`include_usage: true`），就原样转发。
@@ -245,6 +248,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 | `upstream_protocol` | 问的上游路径 | 上游回什么 |
 |---|---|---|
 | `openai-chat` / `openai-responses` / `deepseek` | `{base}/models` | `data[].id` + `created` + `owned_by` |
+| `opencode-go` | `{base}/openai/v1/models` | `data[].id` + `created` + `owned_by` |
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
 | `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
 

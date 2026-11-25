@@ -232,6 +232,7 @@ export const COPY = {
   'proto.anthropic-messages': { zh: 'Anthropic Messages', en: 'Anthropic Messages' },
   'proto.google-gemini': { zh: 'Google Gemini', en: 'Google Gemini' },
   'proto.deepseek': { zh: 'DeepSeek', en: 'DeepSeek' },
+  'proto.opencode-go': { zh: 'OpenCode Go', en: 'OpenCode Go' },
   'vis.public': { zh: '公开可用', en: 'Publicly available' },
   'vis.private': { zh: '私有', en: 'Private' },
   'trust.trusted': { zh: '信任清单内', en: 'On trust list' },
