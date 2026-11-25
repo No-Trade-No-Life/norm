@@ -135,6 +135,10 @@ export type RequestRecord = {
   requestId: string;
   address: string;
   providerId: string | null;
+  /** 收钱的那一方的地址（provider 的持有者）：公共池时与 address 不同。 */
+  providerUser: string | null;
+  /** 花钱的那一方的地址（consumer 密钥属于谁）：签名直连时为空。 */
+  consumerUser: string | null;
   /** 这次调用由哪把下游消费者密钥发起；签名直连时为空。 */
   consumerId: string | null;
   baseUrl: string;
@@ -326,15 +330,17 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
 function requestInsert(env: Env, row: RequestRecord) {
   return env.DB.prepare(
     `INSERT INTO requests
-       (id, address, provider_id, consumer_id, base_url, model, status, status_code, latency_ms,
+       (id, address, provider_id, provider_user, consumer_id, consumer_user, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
         gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, first_token_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
     row.providerId,
+    row.providerUser,
     row.consumerId,
+    row.consumerUser,
     row.baseUrl,
     row.model,
     row.status,

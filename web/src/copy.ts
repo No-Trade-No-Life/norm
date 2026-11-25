@@ -285,6 +285,8 @@ export const COPY = {
   'us.col_tokens': { zh: '输入 / 命中 / 输出', en: 'In / hit / out' },
   'us.col_fee': { zh: '扣费', en: 'Fee' },
   'us.col_request_id': { zh: 'request_id', en: 'request_id' },
+  'us.col_provider_user': { zh: '上游用户', en: 'Provider user' },
+  'us.col_consumer_user': { zh: '下游用户', en: 'Consumer user' },
   'us.col_provider': { zh: '上游提供商', en: 'Provider' },
   'us.col_base_url': { zh: 'Base URL', en: 'Base URL' },
   'us.col_consumer': { zh: '下游消费者', en: 'Consumer' },

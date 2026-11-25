@@ -84,6 +84,10 @@ export type RequestRow = {
   id: string;
   address: string;
   provider_id: string | null;
+  /** 收钱那一方的地址（Ed25519 公钥）：公共池时不是调用方自己。 */
+  provider_user: string | null;
+  /** 花钱那一方的地址：消费者密钥属于谁；签名直连时为空。 */
+  consumer_user: string | null;
   consumer_id: string | null;
   base_url: string;
   model: string;

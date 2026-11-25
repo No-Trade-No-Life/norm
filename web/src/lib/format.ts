@@ -79,3 +79,15 @@ export function perMillion(nanos: number): string {
   const [whole, fraction = ''] = value.toFixed(4).replace(/0+$/, '').split('.');
   return `$${whole}.${fraction.padEnd(2, '0')}`;
 }
+
+/**
+ * 地址的缩略形态：前 4 位 + … + 后 4 位。
+ *
+ * 用地址而不是 id，是因为地址（Ed25519 公钥）走到哪儿都能自证是谁；
+ * 缩略只是别让一列 44 个字符把表格撑爆，完整值挂在 title 上。
+ */
+export function shortKey(address: string | null | undefined): string {
+  if (!address) return '—';
+  if (address.length <= 10) return address;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}
