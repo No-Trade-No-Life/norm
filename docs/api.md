@@ -247,7 +247,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/v1/models` | 这个上游有哪些模型。`{object:"list", data:[{id, object:"model", created?, owned_by?}]}` |
-| GET | `/v1/models/{model}` | 单个模型；不在上游清单里 → `404 model_not_found` |
+| GET | `/v1/models/{model}` | 单个模型；没有上游的清单里有它 → `404 model_not_served`；选中那条的清单里没有 → `404 model_not_found` |
 
 两种上游都能用，认上游的规则与转发完全一样（`X-Norm-Credential`，或账户只有一条时省略）。
 上游的清单在这里被归一成 OpenAI 形状，所以一个客户端不必知道自己接的是哪家：
