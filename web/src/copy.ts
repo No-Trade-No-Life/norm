@@ -173,8 +173,13 @@ export const COPY = {
     en: 'Once this dialog closes the key is gone for good. Lose it and you rotate.',
   },
   'co.usage_hint': {
-    zh: '用法：把它当 Bearer token 调用 /v1/chat/completions，仍要在 X-Norm-Credential 里指明用哪条上游凭证。',
-    en: 'Usage: send it as a Bearer token to /v1/chat/completions, still naming the upstream credential in X-Norm-Credential.',
+    zh: '四个入口都能用：/v1/chat/completions、/v1/responses、/v1/messages、/v1/models/{model}:generateContent。密钥放 Bearer、x-api-key 或 x-goog-api-key 都认；仍要在 X-Norm-Credential 里指明用哪条上游凭证。',
+    en: 'Any of four entry points works: /v1/chat/completions, /v1/responses, /v1/messages, /v1/models/{model}:generateContent. The key is accepted as Bearer, x-api-key or x-goog-api-key; X-Norm-Credential still picks the upstream.',
+  },
+  'co.entries_title': { zh: '四个入口 · 四种上游', en: 'Four entries · four upstreams' },
+  'co.entries_body': {
+    zh: '入口方言与凭证的上游协议同名时不做转换（请求体按原始字节转发，响应原样回来）；不同的 12 格才翻译。跨方言不翻译工具调用。',
+    en: 'When the entry dialect matches the credential\'s upstream protocol nothing is converted — the body goes out byte-for-byte and the response comes back untouched. Only the other 12 cells are translated. Tool calling is never translated across dialects.',
   },
   'co.rotate': { zh: '轮换', en: 'Rotate' },
   'co.rotate_confirm': { zh: '确认轮换？', en: 'Confirm rotate?' },

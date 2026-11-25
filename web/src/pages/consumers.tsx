@@ -319,6 +319,13 @@ function KeyDialog({ value, onClose }: { value: string; onClose: () => void }) {
           </Button>
         </div>
 
+        <div className="rounded-lg border border-border px-3 py-2">
+          <p className="text-[11px] font-semibold text-foreground">{t('co.entries_title')}</p>
+          <p className="mt-1 font-mono text-[10px] leading-relaxed break-all text-muted-foreground">
+            /v1/chat/completions · /v1/responses · /v1/messages · /v1/models/{'{model}'}:generateContent
+          </p>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{t('co.entries_body')}</p>
+        </div>
         <p className="text-[11px] leading-relaxed text-muted-foreground">{t('co.usage_hint')}</p>
 
         <DialogFooter>
