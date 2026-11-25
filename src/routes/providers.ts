@@ -3,13 +3,14 @@ import { canOwnPool, type Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
-import { PROTOCOLS, isProtocol, isVisibility } from '../protocols';
+import { PROTOCOLS, adapterFor, isProtocol, isVisibility } from '../protocols';
 import { hostOf } from '../base-urls';
 import { keyHintOf, sealProviderKey } from '../seal';
 import { findProvider, listProviders } from '../store';
 
 type Body = {
   label?: string;
+  /** 基址：协议钉死时（`deepseek`）可以不填；通用协议必填。 */
   base_url?: string;
   /** 上游提供商明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
   provider_key?: string;
@@ -49,7 +50,17 @@ providerRoutes.post('/', async (c) => {
     fail(403, 'pool_forbidden', '只有站点地址可以把上游放进公共池');
   }
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
-  if (!body.base_url || !hostOf(body.base_url)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
+
+  // 基址从哪来由协议决定：厂商协议（`deepseek`）的地址是协议自带的，用户不填；通用的
+  // 四条方言才要用户填自己的上游。填了固定协议的地址且对不上，说明调用方以为它能选。
+  const adapter = adapterFor(protocol);
+  const fixedBaseUrl = adapter.base_url;
+  const givenBaseUrl = (body.base_url ?? '').trim().replace(/\/+$/, '');
+  if (fixedBaseUrl !== undefined && givenBaseUrl && givenBaseUrl !== fixedBaseUrl) {
+    fail(400, 'base_url_fixed', `${protocol} 协议的基址固定为 ${fixedBaseUrl}，不要另填 base_url`);
+  }
+  const baseUrl = fixedBaseUrl ?? givenBaseUrl;
+  if (!baseUrl || !hostOf(baseUrl)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
   if (!body.provider_key?.trim()) fail(400, 'provider_key_missing', '缺少 provider_key');
 
   const now = nowSeconds();
@@ -75,7 +86,7 @@ providerRoutes.post('/', async (c) => {
       id,
       c.get('principal').address,
       label,
-      body.base_url.replace(/\/+$/, ''),
+      baseUrl,
       keyHintOf(providerKey),
       sealedKey,
       KDF,

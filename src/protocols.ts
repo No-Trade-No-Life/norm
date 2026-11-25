@@ -93,12 +93,34 @@ export type ProtocolPricing = {
   tariffs: Tariff[];
 };
 
+/**
+ * 一条协议的上游契约：说哪种方言、基址从哪来、配置一条这种上游要填哪些字段。
+ *
+ * 「Base URL + API key」不是两个可以自由组合的输入框，而是协议的一部分：厂商协议
+ * （`deepseek`）的地址是官方定死的，用户只需要给密钥；通用的四条方言协议才由用户
+ * 填自己的上游地址（可能是中转）。前端「先选协议、再按协议渲染字段」读的就是这张表。
+ */
+export type ProtocolSchema = {
+  protocol: Protocol;
+  /** 线缆上的方言：`deepseek` 是 `openai-responses`。 */
+  dialect: Dialect;
+  /** 这条协议钉死的上游基址；null = 由用户填。 */
+  base_url: string | null;
+  /** 配置一条这种上游要填的字段，按表单顺序；`provider_key` 是唯一恒有的那个。 */
+  fields: Array<'base_url' | 'provider_key'>;
+};
+
 export type Adapter = {
   /**
    * 这条协议的上游说的是哪种方言。读用量、嗅流、渲染都按它，不按 `protocol` 的字面——
    * `deepseek` 说 Responses，它的请求与账单都该按 Responses 读。
    */
   dialect: Dialect;
+  /**
+   * 这条协议钉死的上游基址。厂商协议（`deepseek`）写官方地址，用户不填也改不了；
+   * 不写 = 由用户填（通用的四条方言走的就是这条）。
+   */
+  base_url?: string;
   /** 协议路径（已含协议自带的版本段）。{model} 会被替换。 */
   path: (model: string) => string;
   headers: (apiKey: string) => Record<string, string>;
@@ -224,6 +246,8 @@ const openaiResponses: Adapter = {
  */
 const deepseek: Adapter = {
   ...openaiResponses,
+  // DeepSeek 官方 API 的基址：选了这条协议就是选了这一台主机，没有第二个问题要问。
+  base_url: 'https://api.deepseek.com',
   pricing: {
     mode: {
       kind: 'time-tiered',
@@ -358,6 +382,21 @@ const ADAPTERS: Record<Protocol, Adapter> = {
 export function adapterFor(protocol: Protocol): Adapter {
   return ADAPTERS[protocol];
 }
+
+/** 一条协议的上游契约（`GET /api/v1/protocols` 的一条）。 */
+export function schemaOf(protocol: Protocol): ProtocolSchema {
+  const adapter = adapterFor(protocol);
+  const fixed = adapter.base_url ?? null;
+  return {
+    protocol,
+    dialect: adapter.dialect,
+    base_url: fixed,
+    fields: fixed === null ? ['base_url', 'provider_key'] : ['provider_key'],
+  };
+}
+
+/** 全部协议的契约，一次算好：这是「先选协议、再渲染字段」的唯一一份数据。 */
+export const PROTOCOL_SCHEMAS: ProtocolSchema[] = PROTOCOLS.map(schemaOf);
 
 /** 这条协议对这个型号的官方价目；null = 这条协议没有自定义定价。 */
 export function tariffFor(protocol: Protocol, model: string): Tariff | null {

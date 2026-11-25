@@ -1150,31 +1150,33 @@ console.log('14. 模型总表：账户里所有上游的清单并成一张表，
   await call(alice, 'DELETE', `/api/v1/providers/${wrongKey.json.id}`);
 }
 
-console.log('15. deepseek 协议：说 Responses 方言，但计价按官方分时价');
+console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协议走');
 {
-  const deepseek = await createProvider('deepseek');
-  check('deepseek 协议可创建', deepseek.status === 201, deepseek.body);
+  // 「先选协议、再渲染字段」的唯一一份数据：每条协议说哪种方言、基址从哪来、要填哪些字段。
+  const schemas = (await (await fetch(`${BASE}/api/v1/protocols`)).json()).items;
+  const byProtocol = new Map(schemas.map((item) => [item.protocol, item]));
 
-  const seenBefore = seen.length;
-  const result = await relay(aliceKey, 'POST', '/v1/chat/completions', JSON.stringify({
-    model: 'deepseek-flash',
-    messages: [{ role: 'user', content: 'hi' }],
-  }), { 'X-Norm-Provider': deepseek.id });
-  check('deepseek 协议 200', result.status === 200, result.json);
-  check('deepseek 翻译回 chat 形状', result.json?.choices?.[0]?.message?.content === '你好', result.json?.choices);
+  check('协议清单公开且五种协议都在', schemas.length === 5, schemas.map((item) => item.protocol));
+  check('deepseek 只要密钥，基址是官方地址', JSON.stringify(byProtocol.get('deepseek')?.fields) === '["provider_key"]'
+    && byProtocol.get('deepseek')?.base_url === 'https://api.deepseek.com', byProtocol.get('deepseek'));
+  check('通用方言要 base_url + 密钥', JSON.stringify(byProtocol.get('openai-chat')?.fields) === '["base_url","provider_key"]'
+    && byProtocol.get('openai-chat')?.base_url === null, byProtocol.get('openai-chat'));
 
-  // 上游看到的是 Responses 的路径与形状：这条协议只是「Responses + 分时计价」。
-  const hit = seen.slice(seenBefore).find((entry) => entry.path.endsWith('/responses'));
-  check('deepseek 把请求翻译成 Responses', hit !== undefined && Array.isArray(hit.body.input), hit?.body);
+  // 不填 base_url 也能建：地址由协议给。
+  const fixed = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'deepseek 官方', protocol: 'deepseek', provider_key: KEY,
+  }));
+  check('deepseek 不填 base_url 也能创建', fixed.status === 201, fixed.body);
+  const row = (await call(alice, 'GET', '/api/v1/providers')).json.items.find((item) => item.id === fixed.json.id);
+  check('落库的是协议自带的基址', row?.base_url === 'https://api.deepseek.com', row?.base_url);
 
-  // 上游固定回 7 输入 / 2 输出：高峰 7×300 + 2×1200 = 4500 纳美元，低谷是它的一半。
-  // 跑在哪一档取决于 CI 的时钟，两个数都算对；剩下的平表价（4500）在高峰时段与之重合。
-  const norm = result.json?.norm;
-  check('deepseek 按官方两档之一计价', norm?.token_nanos === 4_500 || norm?.token_nanos === 2_250, norm?.token_nanos);
-  check('deepseek 账目自洽且 token 对得上', norm?.input_tokens === 7 && norm?.output_tokens === 2
-    && norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
+  // 另填一个地址 = 调用方以为它能选，直接告诉他不能。
+  const wrong = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'deepseek 中转', protocol: 'deepseek', base_url: BASE_URL, provider_key: KEY,
+  }));
+  check('deepseek 另填 base_url → 400 base_url_fixed', wrong.status === 400 && wrong.json.error === 'base_url_fixed', wrong.json);
 
-  await call(alice, 'DELETE', `/api/v1/providers/${deepseek.id}`);
+  await call(alice, 'DELETE', `/api/v1/providers/${fixed.json.id}`);
 }
 
 provider.close();

@@ -71,6 +71,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, protocols, gas_fee}`，单位是**纳美元 / 每百万 token** |
+| GET | `/api/v1/protocols` | 协议契约：`{items:[{protocol, dialect, base_url, fields}]}`，前端据此「先选协议、再渲染字段」 |
 
 `models` 是通用平表（一个型号一个价）；`protocols` 是协议自带的定价模式——目前只有
 `deepseek`：同一批型号两档价（`peak` / `off_peak`），外加 `peak_windows_utc`、
@@ -87,11 +88,17 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 | POST | `/api/v1/providers/:id/enabled` | `{enabled: bool}`，禁用/启用 |
 | DELETE | `/api/v1/providers/:id` | 撤销 |
 
+基址从哪来由**协议**决定（见 `GET /api/v1/protocols` 的 `base_url` / `fields`）：四条通用方言
+要 `base_url` + `provider_key`；`deepseek` 的基址固定为 DeepSeek 官方地址，只填密钥。
+给固定基址的协议另填一个不同的 `base_url` 会被拒（`400 base_url_fixed`）——那不是在配置，
+是在以为它能选。
+
 ```jsonc
 // POST /api/v1/providers  → 201 { id }
 {
   "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
-  "base_url": "https://api.openai.com/v1",    // 任意上游提供商，创建后不可改写
+  "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后不可改写。
+                                            // deepseek 的基址由协议给定，不能也不用填
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
   // 可选。protocol / visibility 的默认值取最保守的那侧；enabled 默认 true——
