@@ -31,6 +31,8 @@ export type ProviderRow = {
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
   protocol: Protocol;
   visibility: Visibility;
+  /** 1 = 参与选址；0 = 暂时不用。撤销（revoked_at）才是永久退场。 */
+  enabled: number;
   public_listed: number;
   created_at: number;
   revoked_at: number | null;
@@ -146,13 +148,24 @@ export async function resolveProviderId(env: Env, address: string, requested: st
   const named = requested?.trim();
   if (named) return named;
 
+  // 只有启用的上游提供商参与自动选址：禁用的那条等于「这次不想用它」，
+  // 不该因为它是账户里唯一的一条就被悄悄用上。
   const { results } = await env.DB.prepare(
-    'SELECT id FROM providers WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 2',
+    'SELECT id FROM providers WHERE address = ? AND revoked_at IS NULL AND enabled = 1 ORDER BY created_at DESC, rowid DESC LIMIT 2',
   )
     .bind(address)
     .all<{ id: string }>();
 
-  if (results.length === 0) fail(400, 'provider_missing', '还没有上游提供商：先去「上游提供商」页添加一条');
+  if (results.length === 0) {
+    // 「一条都没有」与「有但都关掉了」是两种处境：前者去添加，后者只需拨回开关。
+    const any = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM providers WHERE address = ? AND revoked_at IS NULL',
+    )
+      .bind(address)
+      .first<{ n: number }>();
+    if ((any?.n ?? 0) > 0) fail(409, 'provider_disabled', '账户里的上游提供商都已禁用：到「上游提供商」页启用一条');
+    fail(400, 'provider_missing', '还没有上游提供商：先去「上游提供商」页添加一条');
+  }
   if (results.length > 1) {
     fail(409, 'provider_ambiguous', '账户里有多条上游提供商，请用 X-Norm-Provider 指名用哪一条');
   }

@@ -229,6 +229,22 @@ export function useSetVisibility() {
   });
 }
 
+export function useSetEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      requestJson<{ id: string; enabled: number }>({
+        path: `/api/v1/providers/${id}/enabled`,
+        method: 'POST',
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
+    },
+  });
+}
+
 export function useRevokeProvider() {
   const queryClient = useQueryClient();
   return useMutation({

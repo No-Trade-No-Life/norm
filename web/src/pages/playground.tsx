@@ -39,7 +39,9 @@ export function PlaygroundPage() {
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
 
-  const list = providers.data?.items ?? [];
+  const all = providers.data?.items ?? [];
+  // 禁用的上游提供商不参与转发，也不该出现在选择器里：选了只会拿到 409。
+  const list = all.filter((item) => item.enabled === 1);
   const provider: Provider | undefined = useMemo(
     () => list.find((item) => item.id === providerId) ?? list[0],
     [list, providerId],
@@ -159,7 +161,7 @@ export function PlaygroundPage() {
               <Label>{t('pg.provider')}</Label>
               {list.length === 0 ? (
                 <Link to="/providers" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {t('pg.provider_none')}
+                  {all.length === 0 ? t('pg.provider_none') : t('pg.provider_all_disabled')}
                 </Link>
               ) : (
                 <Select

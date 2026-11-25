@@ -60,7 +60,7 @@ export async function groupByBaseUrl(env: Env): Promise<BaseUrlGroup[]> {
             GROUP_CONCAT(DISTINCT protocol) AS protocols,
             MAX(created_at) AS last_seen_at
      FROM providers
-     WHERE revoked_at IS NULL
+     WHERE revoked_at IS NULL AND enabled = 1
      GROUP BY base_url
      ORDER BY providers DESC, base_url ASC`,
   ).all<GroupRow>();

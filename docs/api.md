@@ -27,7 +27,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/health` | `{ok, service, version, now}` |
-| GET | `/api/v1/stats` | `{principals, providers, requests, spend_nanos, window_hours}` |
+| GET | `/api/v1/stats` | `{principals, providers, requests, spend_nanos, window_hours}`（`providers` 只计启用的） |
 | GET | `/api/v1/base-urls` | 按 base_url 聚合的上游提供商（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
@@ -77,6 +77,7 @@ fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
 | GET | `/api/v1/providers` | 本人的上游提供商（含密文与 hint，不含明文密钥） |
 | POST | `/api/v1/providers` | 新建，body 见下 |
 | POST | `/api/v1/providers/:id/visibility` | `{public_listed: bool}` |
+| POST | `/api/v1/providers/:id/enabled` | `{enabled: bool}`，禁用/启用 |
 | DELETE | `/api/v1/providers/:id` | 撤销 |
 
 ```jsonc
@@ -86,10 +87,13 @@ fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
   "base_url": "https://api.openai.com/v1",    // 任意上游提供商，创建后不可改写
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
-  // 可选，默认最保守：openai-chat / private
+  // 可选。protocol / visibility 的默认值取最保守的那侧；enabled 默认 true——
+  // 新加的一条上游提供商就是拿来用的，禁用是用户主动做的减法。
   "protocol": "openai-chat",         // openai-chat | openai-responses
-                                              // | anthropic-messages | google-gemini
-  "visibility": "private"            // public | private（上游提供商本身是否对公众可用）
+  "protocol": "openai-chat",         // openai-chat | openai-responses
+                                     // | anthropic-messages | google-gemini
+  "visibility": "private",           // public | private（上游提供商本身是否对公众可用）
+  "enabled": true                   // 禁用后不参与选址，也不能被 X-Norm-Provider 指名
 }
 ```
 
@@ -97,6 +101,10 @@ fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
 
 响应里的每条上游提供商还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的
 `TRUSTED_BASE_URLS` 清单里。后端只回这个事实，「官方 / 清单外」的措辞是前端的事。
+
+`enabled = 0` 只是暂时不用它：密钥、历史记账、公开看板都还在，拨回来立刻恢复。
+撤销（`DELETE`）才是永久退场。禁用同时影响三处：自动选址跳过它、`/v1/models` 拒绝它、
+`/api/v1/base-urls` 与 `/api/v1/stats` 不再计入它。
 
 ## 下游消费者 Token（签名）
 
@@ -154,10 +162,12 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 
 上游提供商密钥始终由服务端解密，客户端不接触它。
 
-**没有凭据头时走哪条上游提供商**：账户里恰好有一条（未撤销的）上游提供商就用它；一条都没有 →
-`400 provider_missing`；有多条 → `409 provider_ambiguous`，请在请求里用 `X-Norm-Provider`
-指名。指名了一条不属于本人或已撤销的上游提供商 → `404 provider_not_found`。
-这条规则对签名身份与 Bearer 一视同仁：绑定不是身份的一部分，是每次转发自己的决定。
+**没有凭据头时走哪条上游提供商**：账户里恰好有一条**启用的**（未撤销的）上游提供商就用它；
+一条都没有 → `400 provider_missing`；有多条 → `409 provider_ambiguous`，请在请求里用
+`X-Norm-Provider` 指名。指名了一条不属于本人或已撤销的上游提供商 → `404 provider_not_found`；
+指名了一条已禁用的 → `409 provider_disabled`；一条都没指名而账户里的上游提供商全被禁用 →
+同样是 `409 provider_disabled`。这条规则对签名身份与 Bearer 一视同仁：绑定不是身份的一部分，
+是每次转发自己的决定。
 
 三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；别家的 key 会走签名那条路失败。
 

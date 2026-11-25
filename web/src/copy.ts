@@ -100,6 +100,10 @@ export const COPY = {
   'pg.balance': { zh: '余额', en: 'Balance' },
   'pg.latency': { zh: '延迟', en: 'Latency' },
   'pg.provider_host': { zh: '打往', en: 'Went to' },
+  'pg.provider_all_disabled': {
+    zh: '所有上游提供商都已禁用。去启用一条，Playground 才能用。',
+    en: 'Every provider is disabled. Enable one to use the Playground.',
+  },
   'pg.need_provider': { zh: '请先选择上游提供商', en: 'Choose a provider first' },
   'pg.need_model': { zh: '请填写模型名', en: 'Enter a model name' },
   'pg.need_prompt': { zh: '请输入 prompt', en: 'Enter a prompt' },
@@ -118,9 +122,12 @@ export const COPY = {
   'pr.col_visibility': { zh: '公开可用', en: 'Publicly available' },
   'pr.col_trust': { zh: '落点', en: 'Destination' },
   'pr.col_hint': { zh: '密钥提示', en: 'Key hint' },
+  'pr.col_enabled': { zh: '启用', en: 'Enabled' },
   'pr.col_public': { zh: '公开', en: 'Public' },
   'pr.col_actions': { zh: '', en: '' },
   'pr.empty': { zh: '还没有上游提供商。先加一个，Playground 才能用。', en: 'No providers yet. Add one to use the Playground.' },
+  'pr.enabled_on': { zh: '启用', en: 'On' },
+  'pr.enabled_off': { zh: '已禁用', en: 'Disabled' },
   'pr.public_on': { zh: '公开', en: 'Public' },
   'pr.public_off': { zh: '未公开', en: 'Private' },
   'pr.new_title': { zh: '添加上游提供商', en: 'Add provider' },
@@ -146,6 +153,11 @@ export const COPY = {
   'pr.field_visibility_hint': {
     zh: '「私有」不代表掺水，只代表别人用不了同一个地址。',
     en: 'Private does not mean watered down — it only means others cannot reach the same endpoint.',
+  },
+  'pr.field_enabled': { zh: '启用这条上游提供商', en: 'Enable this provider' },
+  'pr.field_enabled_hint': {
+    zh: '禁用后不参与转发，也不能被 X-Norm-Provider 指名；密钥与历史都留着，随时可以再打开。',
+    en: 'A disabled provider is skipped for relay and cannot be named with X-Norm-Provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
     zh: '入口方言与这里选的协议同名时不转换，请求体按原始字节转发；不同的 12 格才由 Norm 翻译。',
