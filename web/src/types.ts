@@ -255,7 +255,7 @@ export type ModelList = {
 export type ChatChunk = {
   id?: string;
   model?: string;
-  choices?: Array<{ delta?: { content?: string; role?: string }; finish_reason?: string | null }>;
+  choices?: Array<{ delta?: { content?: string; reasoning_content?: string; role?: string }; finish_reason?: string | null }>;
   usage?: {
     prompt_tokens?: number;
     completion_tokens?: number;
@@ -263,6 +263,7 @@ export type ChatChunk = {
     output_tokens?: number;
   };
   norm?: CallBill;
+  /** 上游在流里报的错（HTTP 可能还是 200）：Norm 会把它原样交出来。 */
   error?: { message?: string } | string;
   message?: string;
 };

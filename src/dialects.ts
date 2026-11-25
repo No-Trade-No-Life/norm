@@ -937,6 +937,69 @@ export function carriesOutput(dialect: Dialect, data: string): boolean {
   });
 }
 
+/* ── 流里的失败：200 也可能是一句「我干不了」 ─────────────────────── */
+
+/**
+ * 上游在流里说的「这次失败了」。
+ *
+ * 一家上游先回 HTTP 200、再在 SSE 里报错是常态：配额不足、模型下线、内容被拦。
+ * 这类帧在四种方言里长得不一样，而且**都不是内容**。认不出来就整帧丢掉的结果，
+ * 是客户端拿到一个 200、一片空白、和一笔 Gas——用户看到的就是「点了没反应」。
+ * 所以这里统一认一次，交给转发层去决定：既不能当内容渲染，也不该被吞掉。
+ */
+export function streamError(dialect: Dialect, data: string): string | null {
+  if (data.length === 0 || data === '[DONE]') return null;
+  let json: Raw;
+  try {
+    json = JSON.parse(data) as Raw;
+  } catch {
+    return null;
+  }
+
+  /** 错误体的形状各家不同：一句人话、一个对象、或者只有一个 code。 */
+  const messageOf = (value: unknown, depth = 0): string | null => {
+    if (typeof value === 'string') return value.trim() || null;
+    if (depth > 2) return null;
+    const record = obj(value);
+    for (const key of ['message', 'detail', 'error_description']) {
+      const text = record[key];
+      if (typeof text === 'string' && text.trim()) return text.trim();
+    }
+    if (record.error !== undefined && record.error !== value) {
+      const nested = messageOf(record.error, depth + 1);
+      if (nested) return nested;
+    }
+    for (const key of ['code', 'type', 'status']) {
+      const text = record[key];
+      if (typeof text === 'string' && text.trim() && text.trim() !== 'error') return text.trim();
+    }
+    return null;
+  };
+
+  const type = typeof json.type === 'string' ? json.type : '';
+
+  if (dialect === 'openai-chat' || dialect === 'google-gemini') {
+    // chat：`{"error":{…}}`；gemini：裸帧里的同一把键。
+    if (json.error === undefined) return null;
+    return messageOf(json.error) ?? '上游在流里报了错';
+  }
+
+  if (dialect === 'openai-responses') {
+    if (type === 'response.failed') {
+      return messageOf(obj(json.response).error) ?? messageOf(json.error) ?? '上游把这次响应标成了 failed';
+    }
+    // `type: "error"` 是规范形状；裸的 `{error:…}` 也有人发，两种都认。
+    if (type === 'error' || json.error !== undefined) {
+      return messageOf(json.error) ?? messageOf(json) ?? '上游在流里报了错';
+    }
+    return null;
+  }
+
+  // anthropic：`{"type":"error","error":{"type":…,"message":…}}`
+  if (type === 'error') return messageOf(json.error) ?? '上游在流里报了错';
+  return null;
+}
+
 /* ── 流式里的用量 ─────────────────────────────────────────────────── */
 
 /**

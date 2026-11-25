@@ -121,6 +121,10 @@ export const COPY = {
   'pg.need_prompt': { zh: '请输入 prompt', en: 'Enter a prompt' },
   'pg.streaming': { zh: '生成中…', en: 'Streaming…' },
   'pg.failed': { zh: '请求失败', en: 'Request failed' },
+  'pg.empty_stream': {
+    zh: '上游返回 200，但整段流里没有一个字（不是 Norm 吞掉了：上游这次就是空的）。到「用量与账本」看这一笔的 request_id 与耗时。',
+    en: 'The upstream answered 200 but streamed no content at all (Norm passed everything it got). Check the request_id and latency of this call in Usage & Ledger.',
+  },
 
   'pr.title': { zh: '上游提供商', en: 'Providers' },
   'pr.desc': {
