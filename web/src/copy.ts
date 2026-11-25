@@ -173,8 +173,8 @@ export const COPY = {
     en: 'Once this dialog closes the key is gone for good. Lose it and you rotate.',
   },
   'co.usage_hint': {
-    zh: '四个入口都能用：/v1/chat/completions、/v1/responses、/v1/messages、/v1/models/{model}:generateContent。密钥放 Bearer、x-api-key 或 x-goog-api-key 都认；仍要在 X-Norm-Credential 里指明用哪条上游凭证。',
-    en: 'Any of four entry points works: /v1/chat/completions, /v1/responses, /v1/messages, /v1/models/{model}:generateContent. The key is accepted as Bearer, x-api-key or x-goog-api-key; X-Norm-Credential still picks the upstream.',
+    zh: '密钥放 Bearer、x-api-key 或 x-goog-api-key 都认（各家 SDK 的习惯）；无论走哪个入口，都要在 X-Norm-Credential 里指明用哪条上游凭证。',
+    en: 'The key is accepted as Bearer, x-api-key or x-goog-api-key (whatever your SDK sends); whichever entry you use, X-Norm-Credential still names the upstream credential.',
   },
   'co.entries_title': { zh: '四个入口 · 四种上游', en: 'Four entries · four upstreams' },
   'co.entries_body': {
