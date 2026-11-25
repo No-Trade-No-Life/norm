@@ -52,8 +52,12 @@ relayRoutes.post('/models/:target', (c: RelayContext) => {
 type Entry = { dialect: Dialect; model?: string; stream?: boolean };
 
 async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
-  const address = c.get('principal').address;
-  const credentialId = c.req.header('X-Norm-Credential');
+  const principal = c.get('principal');
+  const address = principal.address;
+
+  // 下游消费者密钥自带绑定的上游；只有人是签名来的，才需要在头里指名用哪一条。
+  // 这条规矩就是「密钥即完整调用」：程序侧永远不用再拼第二个头。
+  const credentialId = principal.credentialId ?? c.req.header('X-Norm-Credential');
   if (!credentialId) fail(400, 'credential_required', '缺少 X-Norm-Credential');
 
   const credential = await findCredential(c.env, address, credentialId);
@@ -90,9 +94,9 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const requestId = `req_${randomToken(12)}`;
   const startedAt = Date.now();
   const fee = feeMicros(c.env);
-  const principal = await findPrincipal(c.env, address);
-  if (principal.balance_micros < fee) {
-    fail(402, 'insufficient_balance', `余额不足：需要 ${fee} 微美元，当前 ${principal.balance_micros}`);
+  const account = await findPrincipal(c.env, address);
+  if (account.balance_micros < fee) {
+    fail(402, 'insufficient_balance', `余额不足：需要 ${fee} 微美元，当前 ${account.balance_micros}`);
   }
 
   // 唯一关于上游的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。

@@ -22,7 +22,7 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 |---|---|
 | **Serverless，单一部署** | 一个 Worker（Hono）+ 一个 D1 + 同源静态资源。没有运维机器、没有后台进程 |
 | **BYOK** | 上游密钥只在请求头里经过。库里只有客户端加密后的密文，服务端读不懂 |
-| **Ed25519（base58）身份** | 公钥即地址，私钥永不离开浏览器。逐请求签名，无注册、无密码、无 cookie 会话 |
+| **身份与消费分开** | 身份 = Ed25519 公钥（管资源，私钥永不离开浏览器，无注册无密码无 cookie）；消费 = 绑好上游的 `sk-norm-…` Token，一条 Bearer 就够 |
 | **ZDR + 可信发布** | 不留请求体、响应体、上游密钥；构建哈希公开，任何人可 `pnpm build` 复算 |
 | **上游来源可核验** | 每个上游提供者必须声明来源，平台自动核验并**公开**，掺水立刻可见 |
 
@@ -35,19 +35,25 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 自动获得一笔演示授信。然后到「上游提供者」页加一把上游密钥（服务端用 Worker secret 封装），
 回到 Playground 发一次请求，底部会显示这次调用的扣费、余额、延迟与来源核验结论。
 
-作为 OpenAI 兼容端点接进自己的工具：
+### 两种身份，各管一段
+
+| | 用来 | 凭据 |
+|---|---|---|
+| **身份** | 管理自己的资源：账户、上游提供者、下游 Token | Ed25519 逐请求签名（私钥在浏览器里） |
+| **Token** | 真正消费：调用模型 | `sk-norm-…`，建的时候绑死一条上游提供者 |
+
+所以程序侧不需要懂签名、也不需要懂 Norm 的任何专有头：**一个 api key 就是一次完整调用**。
 
 ```bash
-# 需要自己按 docs/crypto.md 生成签名头；Node 示例见 scripts/e2e.mjs
+# 在「下游消费者」页建一条 Token（选好上游提供者），之后当普通 OpenAI key 用
 curl https://norm.ntnl.io/v1/chat/completions \
-  -H "X-Norm-Address: <base58 公钥>" \
-  -H "X-Norm-Timestamp: <unix 秒>" \
-  -H "X-Norm-Nonce: <一次性随机串>" \
-  -H "X-Norm-Signature: <签名>" \
-  -H "X-Norm-Credential: <上游提供者 id>" \
+  -H "Authorization: Bearer sk-norm-…" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
 ```
+
+`x-api-key`（Anthropic SDK / Claude Code）与 `x-goog-api-key`（Google SDK）同样认——各家 SDK 发什么就用什么。
+换上游不用改程序：轮换或新建一条绑到另一条上游的 Token 即可。
 
 ## 自己部署一份
 
