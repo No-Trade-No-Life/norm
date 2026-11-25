@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { HashRouter } from 'react-router-dom';
 
 import { App } from './App';
+import { ErrorBoundary } from './components/error-boundary';
 import { I18nProvider } from './i18n';
 import { IdentityProvider } from './identity-context';
 import { SidebarProvider } from './sidebar';
@@ -19,20 +20,23 @@ const queryClient = new QueryClient({
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <ThemeProvider>
-          <IdentityProvider>
-            <SidebarProvider>
-              <TooltipProvider>
-                <HashRouter>
-                  <App />
-                </HashRouter>
-              </TooltipProvider>
-            </SidebarProvider>
-          </IdentityProvider>
-        </ThemeProvider>
-      </I18nProvider>
-    </QueryClientProvider>
+    {/* 最外层：任何渲染期异常都变成一屏可以读的错误，而不是一次静默的白屏。 */}
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>
+          <ThemeProvider>
+            <IdentityProvider>
+              <SidebarProvider>
+                <TooltipProvider>
+                  <HashRouter>
+                    <App />
+                  </HashRouter>
+                </TooltipProvider>
+              </SidebarProvider>
+            </IdentityProvider>
+          </ThemeProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   </StrictMode>,
 );

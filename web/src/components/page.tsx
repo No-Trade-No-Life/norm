@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 
+import { errorText } from '../lib/error-text';
 import { cn } from '../lib/utils';
 
 /** 页面骨架：标题一行、说明一行，下面是内容。所有页统一这个节奏。 */
@@ -66,11 +67,15 @@ export function Empty({ children, className }: { children: ReactNode; className?
 }
 
 /** 错误：一律放在它描述的内容正上方，绝不塞到列表末尾。 */
-export function ErrorNote({ title, message }: { title?: string; message: string }) {
+/**
+ * 错误条。`message` 收 unknown 而不是 string：调用方拿到的常常是上游原样回来的
+ * 错误体（对象），这里兜一次，谁都不许把对象交给 React。
+ */
+export function ErrorNote({ title, message }: { title?: string; message: unknown }) {
   return (
     <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
       {title ? <p className="font-semibold">{title}</p> : null}
-      <p className="break-words">{message}</p>
+      <p className="break-words whitespace-pre-wrap">{errorText(message, '—')}</p>
     </div>
   );
 }
