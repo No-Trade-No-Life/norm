@@ -20,6 +20,7 @@ import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
 import { findPrincipal, resolveProvider, settle, type RequestRecord, type Settled } from '../store';
 import { affinityKeyOf } from '../routing';
+import { sessionIdFor } from '../sessions';
 import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -81,7 +82,9 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
   // 走哪条上游是 Norm 自己的决定，调用方一个头都不用带：自己的上游优先、公共池兜底，
   // 同一个 thread-id / session-id 粘在同一条上（见 store.resolveProvider 与 routing.ts）。
-  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers));
+  // 亲和键只取一次：选址用它，要会话 id 的协议（OpenCode Go）也用它。
+  const affinity = affinityKeyOf(c.req.raw.headers);
+  const choice = await resolveProvider(c.env, address, affinity);
   const provider = choice.provider;
 
   // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
@@ -115,6 +118,17 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // 所以 Responses 客户端打给它一样一个字节都不动。
   const sameShape = entry.dialect === adapter.dialect;
 
+  /**
+   * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
+   * 值由 `sessions.ts` 从这次请求派生，调用方自报的原值永远不上行——它只影响
+   * 提示词缓存命中，不该成为一条能把两段对话对齐起来的明文线索。
+   */
+  const sessionHeaders = adapter.session_header
+    ? {
+        [adapter.session_header]: sessionIdFor({ address, headers: c.req.raw.headers, affinity, body: raw, model }),
+      }
+    : {};
+
   // 客户端有没有要求用量：OpenAI 兼容的流默认**不**回 usage，要它得显式 include_usage。
   const wantsUsage = obj(raw.stream_options).include_usage === true;
 
@@ -128,7 +142,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
    */
   const withUsage = (body: Record<string, unknown>): string =>
     JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
-  const askForUsage = stream && protocol === 'openai-chat';
+  const askForUsage = stream && adapter.dialect === 'openai-chat';
 
   const outbound = sameShape
     ? askForUsage
@@ -174,7 +188,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   try {
     reply = await fetch(protocolUrlFor(protocol, baseUrl, model, stream), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...adapter.headers(providerKey) },
+      headers: { 'Content-Type': 'application/json', ...adapter.headers(providerKey), ...sessionHeaders },
       body: outbound,
     });
   } catch (error) {

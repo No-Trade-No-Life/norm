@@ -154,6 +154,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | `anthropic-messages` | `{base}/v1/messages` | `x-api-key` + `anthropic-version` 头；`system` 独立字段；content blocks |
 | `google-gemini` | `{base}/v1beta/models/{model}:generateContent` | `x-goog-api-key`；`contents/parts`；流式走 `:streamGenerateContent?alt=sse` |
 | `deepseek` | `{base}/responses` | 与 `openai-responses` 同一个方言、同一个适配器；多出来的只有**计价**：官方价按请求开始的时刻分高峰 / 低谷两档（见 `src/deepseek.ts`） |
+| `opencode-go` | `{base}/openai/v1/chat/completions` | 与 `openai-chat` 同一个方言、同一个适配器；多出来的是**基址**（官方推理面 `https://opencode.ai/inference/go`，用户不填）与**会话头**（每个请求带 `x-opencode-session: ses_<sha256>`，缺了上游直接 `400 MissingSessionID`；值由 `src/sessions.ts` 派生，调用方的原值不上行） |
 
 四种都支持流式，全部被翻译成 OpenAI chat chunk，结尾统一补一条 `norm` 事件与 `data: [DONE]`。
 

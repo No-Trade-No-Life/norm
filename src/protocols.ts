@@ -6,6 +6,8 @@
  *   anthropic-messages  {base}/v1/messages
  *   google-gemini       {base}/v1beta/models/{model}:generateContent
  *   deepseek            {base}/responses（说 Responses 方言，但价目按时段分两档）
+ *   opencode-go         {base}/openai/v1/chat/completions（OpenCode Go 订阅的推理面，
+ *                       基址官方钉死，且每个请求必须带 x-opencode-session）
  *
  * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**上游提供商**的属性，
  * 由上游提供商配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
@@ -17,6 +19,7 @@
  */
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
+import { SESSION_HEADER } from './sessions';
 
 export type Dialect =
   | 'openai-chat'
@@ -24,7 +27,7 @@ export type Dialect =
   | 'anthropic-messages'
   | 'google-gemini';
 
-export type Protocol = Dialect | 'deepseek';
+export type Protocol = Dialect | 'deepseek' | 'opencode-go';
 
 export const PROTOCOLS: Protocol[] = [
   'openai-chat',
@@ -32,6 +35,7 @@ export const PROTOCOLS: Protocol[] = [
   'anthropic-messages',
   'google-gemini',
   'deepseek',
+  'opencode-go',
 ];
 
 export function isProtocol(value: string): value is Protocol {
@@ -124,6 +128,11 @@ export type Adapter = {
   /** 协议路径（已含协议自带的版本段）。{model} 会被替换。 */
   path: (model: string) => string;
   headers: (apiKey: string) => Record<string, string>;
+  /**
+   * 这条协议要求上游「本次会话」的头名（OpenCode Go 的 `x-opencode-session`）。
+   * 只声明要哪个头，值由 `sessions.ts` 从请求派生——协议不碰派生规则。
+   */
+  session_header?: string;
   request: (body: ChatBody, model: string) => unknown;
   /** 非流式：把上游提供商 JSON 翻译回 OpenAI Chat 形状。 */
   response: (json: unknown, model: string) => unknown;
@@ -259,6 +268,25 @@ const deepseek: Adapter = {
   },
 };
 
+/**
+ * —— opencode-go：说 OpenAI Chat，上游是 OpenCode Go 订阅的推理面 ——
+ *
+ * 三条硬性要求都钉在协议里，用户只需要给一把 `oc_sk_…`：
+ *   1. 基址是官方推理面 `https://opencode.ai/inference/go`（不是 console，也不是 zen）；
+ *   2. 路径自带版本段：`/openai/v1/chat/completions`（清单同在 `/openai/v1/models`）；
+ *   3. 每个请求必须带 `x-opencode-session: ses_<64 hex>`，缺了上游直接
+ *      `400 MissingSessionID`——它靠这个值把一段对话路由到同一个槽位、复用提示词缓存。
+ *
+ * 会话 id 不是身份、不进账本、也不透传调用方的原值：派生规则在 `src/sessions.ts`。
+ */
+const opencodeGo: Adapter = {
+  ...openaiChat,
+  base_url: 'https://opencode.ai/inference/go',
+  path: () => '/openai/v1/chat/completions',
+  modelsPath: () => '/openai/v1/models',
+  session_header: SESSION_HEADER,
+};
+
 /** —— anthropic-messages：content blocks、system 独立字段、x-api-key 头 —— */
 const anthropicMessages: Adapter = {
   dialect: 'anthropic-messages',
@@ -377,6 +405,7 @@ const ADAPTERS: Record<Protocol, Adapter> = {
   'anthropic-messages': anthropicMessages,
   'google-gemini': googleGemini,
   deepseek,
+  'opencode-go': opencodeGo,
 };
 
 export function adapterFor(protocol: Protocol): Adapter {

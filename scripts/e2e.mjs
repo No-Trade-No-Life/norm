@@ -1156,11 +1156,18 @@ console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协
   const schemas = (await (await fetch(`${BASE}/api/v1/protocols`)).json()).items;
   const byProtocol = new Map(schemas.map((item) => [item.protocol, item]));
 
-  check('协议清单公开且五种协议都在', schemas.length === 5, schemas.map((item) => item.protocol));
+  check('协议清单公开且六种协议都在', schemas.length === 6, schemas.map((item) => item.protocol));
   check('deepseek 只要密钥，基址是官方地址', JSON.stringify(byProtocol.get('deepseek')?.fields) === '["provider_key"]'
     && byProtocol.get('deepseek')?.base_url === 'https://api.deepseek.com', byProtocol.get('deepseek'));
   check('通用方言要 base_url + 密钥', JSON.stringify(byProtocol.get('openai-chat')?.fields) === '["base_url","provider_key"]'
     && byProtocol.get('openai-chat')?.base_url === null, byProtocol.get('openai-chat'));
+
+  // OpenCode Go：基址是官方推理面，且这条协议的请求必须带 x-opencode-session
+  // （上游缺它直接 400 MissingSessionID）。会话头由 sessions.ts 派生，所以这里只验契约。
+  check('opencode-go 只要密钥，基址是官方推理面',
+    JSON.stringify(byProtocol.get('opencode-go')?.fields) === '["provider_key"]'
+      && byProtocol.get('opencode-go')?.base_url === 'https://opencode.ai/inference/go'
+      && byProtocol.get('opencode-go')?.dialect === 'openai-chat', byProtocol.get('opencode-go'));
 
   // 不填 base_url 也能建：地址由协议给。
   const fixed = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
@@ -1176,6 +1183,20 @@ console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协
   }));
   check('deepseek 另填 base_url → 400 base_url_fixed', wrong.status === 400 && wrong.json.error === 'base_url_fixed', wrong.json);
 
+  const go = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'opencode go', protocol: 'opencode-go', provider_key: KEY,
+  }));
+  check('opencode-go 不填 base_url 也能创建', go.status === 201, go.body);
+  const goRow = (await call(alice, 'GET', '/api/v1/providers')).json.items.find((item) => item.id === go.json.id);
+  check('opencode-go 落库的是官方推理面', goRow?.base_url === 'https://opencode.ai/inference/go', goRow?.base_url);
+
+  const goWrong = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'opencode go 中转', protocol: 'opencode-go', base_url: BASE_URL, provider_key: KEY,
+  }));
+  check('opencode-go 另填 base_url → 400 base_url_fixed',
+    goWrong.status === 400 && goWrong.json.error === 'base_url_fixed', goWrong.json);
+
+  await call(alice, 'DELETE', `/api/v1/providers/${go.json.id}`);
   await call(alice, 'DELETE', `/api/v1/providers/${fixed.json.id}`);
 }
 
