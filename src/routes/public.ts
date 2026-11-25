@@ -50,5 +50,9 @@ publicRoutes.get('/attestation', (c) =>
       storage: 'billing-fields-only',
       keys: 'sealed-at-rest',
     },
+  }, 200, {
+    // 构建证明必须是「现在这一版」：它一旦被边缘缓存，部署核对就会读到上一版，
+    // 把一次成功的上线判成失败（2026-11-25 那次就是这样红的）。
+    'Cache-Control': 'no-store',
   }),
 );
