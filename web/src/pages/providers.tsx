@@ -26,8 +26,9 @@ import {
   useSetEnabled,
   useSetScope,
   useSetVisibility,
+  useUpdateProvider,
 } from '../queries';
-import { VISIBILITIES, type Provider } from '../types';
+import type { Provider } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
 export function ProvidersPage() {
@@ -38,6 +39,7 @@ export function ProvidersPage() {
   const setScope = useSetScope();
   const revoke = useRevokeProvider();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [editing, setEditing] = useState<Provider | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const items = providers.data?.items ?? [];
@@ -86,6 +88,7 @@ export function ProvidersPage() {
                   item={item}
                   confirming={confirmId === item.id}
                   onConfirm={(value) => setConfirmId(value ? item.id : null)}
+                  onEdit={() => setEditing(item)}
                   onToggleEnabled={(value) => setEnabled.mutate({ id: item.id, enabled: value })}
                   onTogglePublic={(value) => setVisibility.mutate({ id: item.id, publicListed: value })}
                   onToggleScope={() => setScope.mutate({ id: item.id, scope: item.scope === 'pool' ? 'private' : 'pool' })}
@@ -112,6 +115,9 @@ export function ProvidersPage() {
           setDialogOpen(false);
         }}
       />
+
+      {/* 以 key 重挂载：换一条就重新读一次已保存的配置，不残留上一条的草稿。 */}
+      {editing ? <EditProviderDialog key={editing.id} provider={editing} onClose={() => setEditing(null)} /> : null}
     </div>
   );
 }
@@ -121,6 +127,7 @@ function ProviderRow({
   lang,
   confirming,
   onConfirm,
+  onEdit,
   onToggleEnabled,
   onTogglePublic,
   onToggleScope,
@@ -130,6 +137,7 @@ function ProviderRow({
   lang: 'zh' | 'en';
   confirming: boolean;
   onConfirm: (value: boolean) => void;
+  onEdit: () => void;
   onToggleEnabled: (value: boolean) => void;
   onTogglePublic: (value: boolean) => void;
   onToggleScope: () => void;
@@ -205,6 +213,9 @@ function ProviderRow({
       <TableCell className="text-right">
         {item.mine ? (
           <div className="flex items-center justify-end gap-1">
+            <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onEdit}>
+              {t('action.edit')}
+            </Button>
             {/* 只有站点地址能真的拨动这个开关，其余账户会拿到 403 —— 那是服务端的答案，不在这里假装。 */}
             <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onToggleScope}>
               {item.scope === 'pool' ? t('pr.from_pool') : t('pr.to_pool')}
@@ -369,25 +380,21 @@ function NewProviderDialog({
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label>{t('pr.field_visibility')}</Label>
-            <Select
-              value={visibility}
-              onValueChange={(value) => setVisibility(String(value))}
-              items={VISIBILITIES.map((v) => ({ value: v, label: visibilityLabel(v, lang) }))}
-            >
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {VISIBILITIES.map((v) => (
-                  <SelectItem key={v} value={v}>
-                    {visibilityLabel(v, lang)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>{t('pr.field_visibility')}</Label>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={visibility === 'public'}
+                onCheckedChange={(value) => setVisibility(value ? 'public' : 'private')}
+                aria-label={t('pr.field_visibility')}
+              />
+              <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground sm:inline">
+                {visibility === 'public' ? t('pr.public_on') : t('pr.public_off')}
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center justify-between gap-3">
@@ -407,6 +414,191 @@ function NewProviderDialog({
           </Button>
           <Button onClick={() => void submit()} disabled={create.isPending || schema === null}>
             {create.isPending ? t('pr.creating') : t('action.create')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * 编辑一条上游：表单读的是已保存的配置，密钥只以提示的形式露一半。
+ *
+ * 两个刻意的约束：密钥留空 = 保持原密文（它只能被替换，不能被读出来）；基址仍由协议
+ * 决定——固定基址的协议不给输入框，从固定基址换到通用协议时清掉厂商地址，让用户自己填。
+ */
+function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose: () => void }) {
+  const { t, lang } = useI18n();
+  const update = useUpdateProvider();
+  const protocols = useProtocols();
+
+  const [label, setLabel] = useState(provider.label);
+  const [protocol, setProtocol] = useState<string>(provider.protocol);
+  const [baseUrl, setBaseUrl] = useState(provider.base_url);
+  const [visibility, setVisibility] = useState<string>(provider.visibility);
+  const [enabled, setEnabled] = useState(provider.enabled === 1);
+  const [providerKey, setProviderKey] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const schemas = protocols.data ?? [];
+  const schema = schemas.find((item) => item.protocol === protocol) ?? null;
+  const asksBaseUrl = schema?.fields.includes('base_url') === true;
+
+  const changeProtocol = (value: string) => {
+    const previous = schemas.find((item) => item.protocol === protocol);
+    const next = schemas.find((item) => item.protocol === value);
+    setProtocol(value);
+    // 厂商给的地址不该被当成用户自己的上游：换到通用协议时清空，强迫重新填一次。
+    if (next?.fields.includes('base_url') && previous?.base_url && baseUrl === previous.base_url) {
+      setBaseUrl('');
+    }
+  };
+
+  const submit = async () => {
+    setError(null);
+    if (!label.trim() || (asksBaseUrl && !baseUrl.trim())) {
+      setError(t('pr.missing'));
+      return;
+    }
+    try {
+      const body: Record<string, unknown> = {
+        label: label.trim(),
+        protocol,
+        visibility,
+        enabled,
+      };
+      if (asksBaseUrl) body.base_url = baseUrl.trim();
+      if (providerKey.trim()) body.provider_key = providerKey.trim();
+      await update.mutateAsync({ id: provider.id, body });
+      onClose();
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(value) => {
+        if (!value) onClose();
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('pr.edit_title')}</DialogTitle>
+          <DialogDescription>{t('pr.edit_desc')}</DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('pr.field_protocol')}</Label>
+            <Select
+              value={protocol}
+              onValueChange={(value) => changeProtocol(String(value))}
+              items={schemas.map((item) => ({ value: item.protocol, label: protocolLabel(item.protocol, lang) }))}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {schemas.map((item) => (
+                  <SelectItem key={item.protocol} value={item.protocol}>
+                    {protocolLabel(item.protocol, lang)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
+          </div>
+
+          {protocols.isError ? <ErrorNote message={(protocols.error as Error).message} /> : null}
+
+          {schema === null ? (
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.protocol_loading')}</p>
+          ) : (
+            <>
+              {asksBaseUrl ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t('pr.field_base_url')}</Label>
+                  <Input
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder={t('pr.field_base_url_placeholder')}
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_base_url_hint')}</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t('pr.field_base_url')}</Label>
+                  <p className="rounded-md border border-border bg-muted/40 px-2 py-1.5 font-mono text-xs break-all">
+                    {schema.base_url}
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    {t('pr.field_base_url_fixed', { protocol: protocolLabel(protocol, lang) })}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1.5">
+                <Label>{t('pr.field_key')}</Label>
+                {/* 已保存的密钥只以提示的形式露一半：可核对、可替换，但读不出明文。 */}
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>{t('pr.field_key_current')}</span>
+                  <code className="rounded bg-muted/60 px-1.5 py-0.5 text-foreground">{provider.key_hint}</code>
+                </div>
+                <Input
+                  type="password"
+                  value={providerKey}
+                  onChange={(event) => setProviderKey(event.target.value)}
+                  placeholder={t('pr.field_key_keep')}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_edit_hint')}</p>
+              </div>
+            </>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('pr.field_label')}</Label>
+            <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>{t('pr.field_visibility')}</Label>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={visibility === 'public'}
+                onCheckedChange={(value) => setVisibility(value ? 'public' : 'private')}
+                aria-label={t('pr.field_visibility')}
+              />
+              <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground sm:inline">
+                {visibility === 'public' ? t('pr.public_on') : t('pr.public_off')}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>{t('pr.field_enabled')}</Label>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_enabled_hint')}</p>
+            </div>
+            <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={t('pr.field_enabled')} />
+          </div>
+
+          {error ? <ErrorNote message={error} /> : null}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            {t('action.cancel')}
+          </Button>
+          <Button onClick={() => void submit()} disabled={update.isPending || schema === null}>
+            {update.isPending ? t('pr.saving') : t('action.save')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -782,6 +782,72 @@ console.log('10c. 上游提供商启用/禁用：不参与选址、不能被指�
   check('开关缺 enabled → 400 enabled_invalid', missing.status === 400 && missing.json.error === 'enabled_invalid', missing.json);
 }
 
+console.log('10c2. 编辑上游提供商：配置可改、密钥可换不可看');
+{
+  const erin = identity();
+  await call(erin, 'POST', '/api/v1/auth/login');
+  const EDIT_BASE_URL = `${BASE_URL}-edit`;
+  const created = await call(erin, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'before', base_url: EDIT_BASE_URL, provider_key: KEY, protocol: 'openai-chat',
+  }));
+  const id = created.json.id;
+
+  // 改配置：只发要改的字段，没发的保持不动。
+  const patched = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({
+    label: 'after', protocol: 'openai-responses', visibility: 'public', enabled: false,
+  }));
+  check('PATCH 200', patched.status === 200, patched.json);
+  const rowOf = async () => (await call(erin, 'GET', '/api/v1/providers')).json.items.find((item) => item.id === id);
+  const row = await rowOf();
+  check('标签已更新', row?.label === 'after', row?.label);
+  check('协议已更新', row?.protocol === 'openai-responses', row?.protocol);
+  check('公开性已更新', row?.visibility === 'public', row?.visibility);
+  check('启用状态已更新', row?.enabled === 0, row?.enabled);
+  check('没提交的 base_url 保持不变', row?.base_url === EDIT_BASE_URL, row?.base_url);
+
+  // 换密钥：只回提示（前 4 后 4），明文任何一条响应里都不出现。
+  const rerolled = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({ provider_key: 'sk-new-secret-9876' }));
+  check('换密钥 200', rerolled.status === 200, rerolled.json);
+  const afterKey = await rowOf();
+  check('密钥提示更新为前后各四位', afterKey?.key_hint === 'sk-n…9876', afterKey?.key_hint);
+  check('列表里没有新密钥明文', !JSON.stringify(afterKey).includes('sk-new-secret-9876'), afterKey);
+
+  // 基址由协议决定：固定基址的协议不接受另一个地址。
+  const fixed = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({
+    protocol: 'deepseek', base_url: EDIT_BASE_URL,
+  }));
+  check('固定基址协议另填地址 → 400 base_url_fixed', fixed.status === 400 && fixed.json.error === 'base_url_fixed', fixed.json);
+  const toFixed = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({ protocol: 'deepseek' }));
+  check('切到 deepseek 200', toFixed.status === 200, toFixed.json);
+  const fixedRow = await rowOf();
+  check('deepseek 的基址由协议给定', fixedRow?.base_url === 'https://api.deepseek.com', fixedRow?.base_url);
+
+  // 从固定基址换回通用方言：必须自己给地址，不能沿用厂商的。
+  const noBase = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({ protocol: 'openai-chat' }));
+  check('切回通用方言缺 base_url → 400 base_url_invalid', noBase.status === 400 && noBase.json.error === 'base_url_invalid', noBase.json);
+
+  // 改完立刻生效：下一次转发就打新地址，证明目的地在库里而不是缓存或请求头里。
+  const edited = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({
+    // 顺手把密钥换回假上游认的那把：上面那一步已经证明「只回提示不回明文」，
+    // 这里要验证的是地址切过去之后请求真的打得到。
+    protocol: 'openai-chat', base_url: `${EDIT_BASE_URL}-v2`, enabled: true, provider_key: KEY,
+  }));
+  check('改 base_url 200', edited.status === 200, edited.json);
+  // 推理面只认下游消费者 Token：编辑完用一把 Token 验证新地址立刻生效。
+  const erinKey = (await call(erin, 'POST', '/api/v1/consumers', JSON.stringify({ name: 'erin e2e' }))).json.key;
+  const sent = await relay(erinKey, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('转发 200', sent.status === 200, sent.json);
+  check('转发立刻改打新地址', seen.at(-1)?.path === `/v1/${RUN}-edit-v2/chat/completions`, seen.at(-1)?.path);
+
+  // 编辑校验与归属：空标签、别人的 provider 都不行。
+  const nameless = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({ label: '   ' }));
+  check('空标签 → 400 label_missing', nameless.status === 400 && nameless.json.error === 'label_missing', nameless.json);
+  const notMine = await call(erin, 'PATCH', `/api/v1/providers/${providers['openai-chat']}`, JSON.stringify({ label: 'stolen' }));
+  check('编辑别人的 provider → 404', notMine.status === 404 && notMine.json.error === 'provider_not_found', notMine.json);
+}
+
 console.log('10d. 选上游：自有优先、会话粘住、不可用就重挑');
 {
   // 四条全开：这正是旧版本会回 409 provider_ambiguous 的处境。
