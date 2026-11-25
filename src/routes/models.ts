@@ -41,7 +41,9 @@ modelRoutes.get('/', async (c: ModelsContext) => {
 /** 模型名里可能带斜杠（`meta-llama/Llama-3`），所以这里不能用单段参数。 */
 modelRoutes.get('/:model{.+}', async (c: ModelsContext) => {
   const wanted = decodeURIComponent(c.req.param('model') ?? '');
-  const resolved = await resolve(c);
+  // 问「这个型号在哪条上游」，就把型号带进选址：没有一条有它时应当直接说没有，
+  // 而不是拿一条恰好被挑中的上游的清单来说它不在。
+  const resolved = await resolve(c, wanted);
   if (!resolved.ok) return resolved.upstream;
 
   const found = resolved.items.find((item) => item.id === wanted);
@@ -70,12 +72,12 @@ type Resolved =
  * 上游失败时把它的原话原样交回（与转发同一套做法）：改写上游的报错只会让
  * 「为什么列不出来」更难查。
  */
-async function resolve(c: ModelsContext): Promise<Resolved> {
+async function resolve(c: ModelsContext, model?: string): Promise<Resolved> {
   const address = c.get('principal').address;
   // 与转发面同一套判定（store.resolveProvider）：自己的上游优先、公共池兜底、
   // thread-id / session-id 粘住。于是「GET /v1/models 列出的清单」就是
   // 「接下来 POST 会打到的那台」的清单，两者不会各说各话。
-  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers));
+  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers), { model });
   const provider = choice.provider;
 
   const startedAt = Date.now();

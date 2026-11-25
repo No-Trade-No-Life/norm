@@ -5,6 +5,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
 import { PROTOCOLS, adapterFor, isProtocol, isVisibility } from '../protocols';
 import { hostOf } from '../base-urls';
+import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
 import { findProvider, listProviders } from '../store';
 
@@ -97,6 +98,17 @@ providerRoutes.post('/', async (c) => {
       now,
     )
     .run();
+
+  // 清单在后台抓：新建一条上游不该为了「顺便问一句它有哪些模型」多等一个上游的响应，
+  // 但选址要按模型筛，这张表就得有。抓不到也没关系——没有清单的上游仍然可被选中。
+  background(
+    c,
+    syncProviderModels({
+      env: c.env,
+      address: c.get('principal').address,
+      provider: { id, base_url: baseUrl, protocol, sealed_key: sealedKey },
+    }).then(() => undefined),
+  );
 
   return c.json({ id, scope }, 201);
 });
@@ -198,6 +210,16 @@ providerRoutes.patch('/:id', async (c) => {
     .bind(label, baseUrl, protocol, visibility, enabled ? 1 : 0, sealedKey, keyHint, KDF, existing.id, address)
     .run();
 
+  // 换了协议、地址或密钥，这一条能跑的型号可能全变了：重新抓一次清单。
+  background(
+    c,
+    syncProviderModels({
+      env: c.env,
+      address,
+      provider: { id: existing.id, base_url: baseUrl, protocol, sealed_key: sealedKey },
+    }).then(() => undefined),
+  );
+
   return c.json({ id: existing.id });
 });
 
@@ -210,3 +232,20 @@ providerRoutes.delete('/:id', async (c) => {
     .run();
   return c.json({ id: existing.id, revoked: true });
 });
+
+/**
+ * 挂在响应之后跑的一件事：`waitUntil` 让它在响应发出去之后继续，调用方不用等它。
+ *
+ * 拿不到 executionCtx 的环境（单测、`vite` 预览）就当没跑——这类同步是尽力而为，
+ * 它失败不该改变请求的结果：没有清单的上游仍然参与选址，只是筛不了模型。
+ */
+function background(
+  c: { readonly executionCtx: { waitUntil(promise: Promise<unknown>): void } },
+  task: Promise<unknown>,
+): void {
+  try {
+    c.executionCtx.waitUntil(task.catch(() => undefined));
+  } catch {
+    // 没有 executionCtx：这次不同步，等「模型」页读一次总表时再补。
+  }
+}

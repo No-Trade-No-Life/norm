@@ -5,7 +5,7 @@ import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
 import { fail } from './http';
 import { nowSeconds, randomToken } from './ids';
-import { affinityFresh, affinityHash, narrowToOwned, pickByRendezvous, type AffinityKey } from './routing';
+import { affinityFresh, affinityHash, narrowToOwned, narrowToServingModel, pickByRendezvous, type AffinityKey } from './routing';
 
 /**
  * 账户的四块累计数。每一块都只增不减，方向不同、含义不同：
@@ -40,6 +40,8 @@ export function availableNanos(counters: {
 export type ProviderView = ProviderRow & {
   /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
   trusted: boolean;
+  /** 清单里记着几个型号；`models_fetched_at` 为 0 时这个数没有意义（还没抓过）。 */
+  models_count: number;
   /** true = 本账户名下的一条；false = 公共池里站点持有的那条，只能看不能改。 */
   mine: boolean;
 };
@@ -108,12 +110,14 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
  */
 export async function listProviders(env: Env, address: string): Promise<ProviderView[]> {
   const { results } = await env.DB.prepare(
-    `SELECT * FROM providers
-      WHERE revoked_at IS NULL AND (address = ? OR scope = 'pool')
-      ORDER BY created_at DESC, rowid DESC`,
+    `SELECT p.*,
+            (SELECT COUNT(*) FROM provider_models m WHERE m.provider_id = p.id) AS models_count
+       FROM providers p
+      WHERE p.revoked_at IS NULL AND (p.address = ? OR p.scope = 'pool')
+      ORDER BY p.created_at DESC, p.rowid DESC`,
   )
     .bind(address)
-    .all<ProviderRow>();
+    .all<ProviderRow & { models_count: number }>();
   // trusted 由同一份清单算出，不落库：清单改了，所有上游提供商的说法立刻跟着变。
   return results.map((row) => {
     const mine = row.address === address;
@@ -185,7 +189,7 @@ export async function recordRequest(env: Env, row: RequestRecord): Promise<void>
 }
 
 /**
- * 这次转发用哪条上游：自己名下的优先，公共池兜底，会话按 thread-id / session-id 粘住。
+ * 这次转发用哪条上游：模型跑得了是前提，自己名下的优先，公共池兜底，会话按 thread-id / session-id 粘住。
  *
  * 旧版本在多条上游时拒绝服务（409 provider_ambiguous），理由是「钱付给谁」不该由默认值
  * 替用户决定。那条理由现在不成立了：上游只有两种来源——你自己的，或站点的池子——
@@ -193,6 +197,8 @@ export async function recordRequest(env: Env, row: RequestRecord): Promise<void>
  * 「这一次打到哪台主机上」，而那个问题可以随手给，也可以给得很稳定。
  *
  * 判定顺序（每一步都能单独解释）：
+ *   0. 候选里跑不了这个型号的先去掉了（见 narrowToServingModel）：清单抓过而不含它，
+ *      就不是「优先级低」，是跑不了；清单从没抓过的那条留着，没有证据不等于说它没有
  *   1. 候选 = 启用中、未撤销、(自己名下 或 池子里)
  *   2. 有自有候选 → 只留自有的；一条都没有 → 这一单落到池子上
  *   3. 亲和键命中且那条仍在候选里 → 就是它
@@ -206,10 +212,112 @@ export type ProviderChoice = {
   sticky: boolean;
 };
 
+/** 这一次要问的两件事：谁的清单抓过、谁有这个名字。 */
+export type ModelCoverage = { known: Set<string>; serving: Set<string> };
+
+/** D1 的绑定参数有上限，问清单与写清单都按这个宽度分批。 */
+const MODEL_CHUNK = 40;
+
+/**
+ * 「这个型号谁能跑」：一次左连接同时回答两件事。
+ *
+ * `models_fetched_at > 0` = 这条上游的清单抓过；`provider_models` 里有这一行 = 它有它。
+ * 两个集合都要，因为「清单抓过但没有它」与「清单没抓过」是两种处境，不该压成一句。
+ */
+export async function modelCoverage(
+  env: Env,
+  providerIds: readonly string[],
+  model: string,
+): Promise<ModelCoverage> {
+  const known = new Set<string>();
+  const serving = new Set<string>();
+  if (providerIds.length === 0 || model.length === 0) return { known, serving };
+
+  for (let start = 0; start < providerIds.length; start += MODEL_CHUNK) {
+    const chunk = providerIds.slice(start, start + MODEL_CHUNK);
+    const { results } = await env.DB.prepare(
+      `SELECT p.id AS id, p.models_fetched_at AS fetched_at, m.model AS model
+         FROM providers p
+         LEFT JOIN provider_models m ON m.provider_id = p.id AND m.model = ?
+        WHERE p.id IN (${chunk.map(() => '?').join(', ')})`,
+    )
+      .bind(model, ...chunk)
+      .all<{ id: string; fetched_at: number; model: string | null }>();
+    for (const row of results) {
+      if (row.fetched_at > 0) known.add(row.id);
+      if (row.model !== null) serving.add(row.id);
+    }
+  }
+  return { known, serving };
+}
+
+/**
+ * 整份替换一条上游的清单。
+ *
+ * 替换而不是合并：清单是「它现在有什么」的事实，上游撤掉的型号不该在表里留下来。
+ *
+ * 空清单**不写**：一条 200 但不认识形状的回答，和「这家什么模型都没有」看起来一样，
+ * 而前者真会发生（中转层回 `{}`）。旧快照至少是上一次的真话，不该被一次答不上话覆盖。
+ * 抓取时刻与行一起写：两样合起来才是「知不知道」的完整答案。
+ */
+export async function recordProviderModels(
+  env: Env,
+  providerId: string,
+  models: readonly string[],
+  at: number,
+): Promise<void> {
+  const names = [...new Set(models.filter((name) => name.length > 0))];
+  if (names.length === 0) return;
+
+  const statements = [env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ?').bind(providerId)];
+  for (let start = 0; start < names.length; start += MODEL_CHUNK) {
+    const chunk = names.slice(start, start + MODEL_CHUNK);
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO provider_models (provider_id, model, fetched_at)
+         VALUES ${chunk.map(() => '(?, ?, ?)').join(', ')}
+         ON CONFLICT(provider_id, model) DO UPDATE SET fetched_at = excluded.fetched_at`,
+      ).bind(...chunk.flatMap((name) => [providerId, name, at])),
+    );
+  }
+  statements.push(env.DB.prepare('UPDATE providers SET models_fetched_at = ? WHERE id = ?').bind(at, providerId));
+  await env.DB.batch(statements);
+}
+
+/** 上游自己说没有这个型号：把那一行划掉，下一次选址就不会再选到它。 */
+export async function dropProviderModel(env: Env, providerId: string, model: string): Promise<void> {
+  if (model.length === 0) return;
+  await env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ? AND model = ?')
+    .bind(providerId, model)
+    .run();
+}
+
+/** 忘掉一条会话的粘性：这条路选错了，下一次重挑。 */
+export async function forgetAffinity(env: Env, address: string, hash: string): Promise<void> {
+  await env.DB.prepare('DELETE FROM affinities WHERE affinity_hash = ? AND address = ?').bind(hash, address).run();
+}
+
+/** 一条能跑这个型号的上游都没有：说清楚，别把请求丢给明知道没有它的上游。 */
+function failModelNotServed(model: string): never {
+  fail(
+    404,
+    'model_not_served',
+    `没有上游提供模型 ${model}：到「模型」页看各条上游都有什么，或者把有它的那条上游启用后再同步清单`,
+  );
+}
+
+export type ResolveRequest = {
+  /** 这次要跑的模型名。空 = 不问模型（只看账户与会话），给「列清单」这类调用留的。 */
+  model?: string;
+  /** 这一次请求已经试过的上游：重试时排掉，保证「换」真的发生了。 */
+  exclude?: readonly string[];
+};
+
 export async function resolveProvider(
   env: Env,
   address: string,
   affinityKey: AffinityKey | null,
+  request: ResolveRequest = {},
 ): Promise<ProviderChoice> {
   const now = nowSeconds();
   // 顺序固定（created_at, id）：rendezvous 的落点必须是候选的确定函数，
@@ -223,8 +331,22 @@ export async function resolveProvider(
     .all<ProviderRow>();
   if (results.length === 0) return failNoCandidate(env, address);
 
-  // 自有优先：池子只在「自己的上游一条都不可用」时才接这一单。
-  const candidates = narrowToOwned(results, address);
+  // 试过的不再选：换候选时这一步保证「换」真的发生了，而不是原地重试。
+  const excluded = new Set(request.exclude ?? []);
+  let pool = results.filter((row) => !excluded.has(row.id));
+  if (pool.length === 0) fail(404, 'provider_exhausted', '试过的上游都跑了、也没有别的上游可以换');
+
+  // 模型是硬约束，自有优先是偏好：先把「跑不了这个型号」的整批去掉，再在能跑的里面
+  // 让自有的赢。反过来的顺序会让「自己有一条不支持这个型号的上游」把请求卡死在它身上，
+  // 池子里那条能跑的反而用不上。
+  const model = (request.model ?? '').trim();
+  if (model) {
+    pool = [...narrowToServingModel(pool, await modelCoverage(env, pool.map((row) => row.id), model))];
+    if (pool.length === 0) failModelNotServed(model);
+  }
+
+  // 自有优先：池子只在「自己名下没有能跑这个型号的上游」时才接这一单。
+  const candidates = narrowToOwned(pool, address);
   const via = (provider: ProviderRow): 'owned' | 'pool' => (provider.address === address ? 'owned' : 'pool');
 
   // 没有亲和键 = 这次请求不粘：直接按随机种子摊开，连亲和表都不读。

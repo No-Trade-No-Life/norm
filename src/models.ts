@@ -12,10 +12,11 @@
  * 它不扣费：列清单不是一次生成，没有 token，也没有人去改写它。
  */
 import type { Env } from './env';
+import { nowSeconds } from './ids';
 import { ratesFor, type Rates } from './pricing';
 import { adapterFor, tariffFor, type ModelInfo, type Protocol } from './protocols';
 import { unsealProviderKey } from './seal';
-import type { ProviderRow } from './store';
+import { recordProviderModels } from './store';
 
 export type ModelProbe =
   | { ok: true; items: ModelInfo[]; latency_ms: number }
@@ -32,6 +33,19 @@ export type ModelProbe =
 /** 清单端点是「顺手问一句」，不该拖住整页：6 秒没有结果就当这条这次没答。 */
 export const MODEL_PROBE_TIMEOUT_MS = 6000;
 
+/**
+ * 打一次清单端点所需要的那几列。
+ *
+ * 收成结构类型而不是整行 `ProviderRow`：新建一条上游时行才刚写进去，手里只有这几列，
+ * 重新查一遍库只为凑齐类型没有意义。
+ */
+export type ProbeTarget = {
+  id: string;
+  base_url: string;
+  protocol: Protocol;
+  sealed_key: string;
+};
+
 export async function probeProviderModels({
   env,
   address,
@@ -40,7 +54,7 @@ export async function probeProviderModels({
 }: {
   env: Env;
   address: string;
-  provider: ProviderRow;
+  provider: ProbeTarget;
   timeoutMs?: number;
 }): Promise<ModelProbe> {
   let upstreamKey: string;
@@ -182,4 +196,39 @@ export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
   return [...byId.values()]
     .map((row) => ({ ...row, providers: [...new Set(row.providers)] }))
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * 上游这句话是不是在说「我没有这个型号」。
+ *
+ * 只认 400 / 404，并且要求错误体里同时出现这次的模型名与 model 这个词：型号拼错的请求、
+ * 密钥用光的请求、参数写错的请求同样会拿到 400，凭状态码就划掉清单里的一行，等于让
+ * 一次坏请求把一条好上游从路由里删掉。上游原话里点了这次的模型，才算它自己承认跑不了。
+ */
+export function isModelNotServed(status: number, body: string, model: string): boolean {
+  if (model.length === 0) return false;
+  if (status !== 400 && status !== 404) return false;
+  const text = body.toLowerCase();
+  return text.includes(model.toLowerCase()) && text.includes('model');
+}
+
+/**
+ * 探一次清单，顺手把结果写进 `provider_models`：这是这张表唯一的来源。
+ *
+ * 「问」与「记」放在一起，是因为两者必须是同一次观察——分开放，读的人迟早会以为
+ * 表里的行还能更新。写不进去（比如 D1 临时不可用）不该影响调用方：它只是少了一次刷新，
+ * 下一回再补。
+ */
+export async function syncProviderModels({
+  env,
+  address,
+  provider,
+}: {
+  env: Env;
+  address: string;
+  provider: ProbeTarget;
+}): Promise<ModelProbe> {
+  const probe = await probeProviderModels({ env, address, provider });
+  if (probe.ok) await recordProviderModels(env, provider.id, probe.items.map((item) => item.id), nowSeconds());
+  return probe;
 }

@@ -16,10 +16,21 @@ import {
 } from '../dialects';
 import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
+import { isModelNotServed } from '../models';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
-import { availableNanos, findPrincipal, resolveProvider, settle, type RequestRecord, type Settled } from '../store';
-import { affinityKeyOf } from '../routing';
+import {
+  availableNanos,
+  dropProviderModel,
+  findPrincipal,
+  forgetAffinity,
+  resolveProvider,
+  settle,
+  type ProviderChoice,
+  type RequestRecord,
+  type Settled,
+} from '../store';
+import { affinityHash, affinityKeyOf } from '../routing';
 import { sessionIdFor } from '../sessions';
 import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
 
@@ -76,29 +87,25 @@ function usageOnlyFrame(payload: string): boolean {
   }
 }
 
+/**
+ * 给上游补一句「把用量也回给我」：OpenAI 兼容的流默认**不**回 usage，而账本就靠它算钱。
+ * 少了这一步，真实的流式调用在账本上永远是 0 / 0 / 0，只剩一笔 Gas。
+ */
+const withUsage = (body: Record<string, unknown>): string =>
+  JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
+
+/** 一次请求最多试两条上游：够覆盖「清单里那条其实不认这个型号」，又不会变成一次扫荡。 */
+const MAX_ATTEMPTS = 2;
+
+/** 上游的原话：状态码 + 响应体。改写它只会让「为什么失败」更难查。 */
+type UpstreamFailure = { status: number; contentType: string; text: string };
+
 async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
 
-  // 走哪条上游是 Norm 自己的决定，调用方一个头都不用带：自己的上游优先、公共池兜底，
-  // 同一个 thread-id / session-id 粘在同一条上（见 store.resolveProvider 与 routing.ts）。
-  // 亲和键只取一次：选址用它，要会话 id 的协议（OpenCode Go）也用它。
-  const affinity = affinityKeyOf(c.req.raw.headers);
-  const choice = await resolveProvider(c.env, address, affinity);
-  const provider = choice.provider;
-
-  // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
-  // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。
-  //
-  // 解封用的是**持有者**的地址，不是调用方的：公共池里那条属于站点，调用方只是借用。
-  const providerKey = await unsealProviderKey({
-    env: c.env,
-    address: provider.address,
-    providerId: provider.id,
-    sealed: provider.sealed_key,
-  });
-
-  // 原始字节先留住：同格式直通要把它一个字节不改地发出去。
+  // 原始字节先留住：同格式直通要把它一个字节不改地发出去。模型名也要在选址之前读出来
+  // ——路由按模型筛候选，不先知道跑什么，就等于没筛。
   const rawBody = await c.req.text();
   let raw: Record<string, unknown>;
   try {
@@ -107,57 +114,17 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     fail(400, 'body_invalid', '请求体必须是 JSON');
   }
 
-  const protocol = provider.protocol;
   const model = entry.model ?? (typeof raw.model === 'string' ? raw.model : '');
   const stream = entry.stream ?? raw.stream === true;
-
-  // 目的地只能来自上游提供商：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
-  const baseUrl = provider.base_url;
-  const adapter = adapterFor(protocol);
-  // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
-  // 所以 Responses 客户端打给它一样一个字节都不动。
-  const sameShape = entry.dialect === adapter.dialect;
-
-  /**
-   * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
-   * 值由 `sessions.ts` 从这次请求派生，调用方自报的原值永远不上行——它只影响
-   * 提示词缓存命中，不该成为一条能把两段对话对齐起来的明文线索。
-   */
-  const sessionHeaders = adapter.session_header
-    ? {
-        [adapter.session_header]: sessionIdFor({ address, headers: c.req.raw.headers, affinity, body: raw, model }),
-      }
-    : {};
-
   // 客户端有没有要求用量：OpenAI 兼容的流默认**不**回 usage，要它得显式 include_usage。
   const wantsUsage = obj(raw.stream_options).include_usage === true;
 
-  /**
-   * 发往上游的请求体。
-   *
-   * 同格式直通按原始字节发出去——唯一的例外是流式请求打向 openai-chat 上游时：
-   * 那种上游默认不回 token 用量，而账本就靠它算钱。所以这里补一个
-   * `stream_options.include_usage`，并把多出来的那条用量帧吃掉（客户端没要就不转发）。
-   * 少了这一步，真实的流式调用在账本上永远是 0 / 0 / 0，只剩一笔 Gas。
-   */
-  const withUsage = (body: Record<string, unknown>): string =>
-    JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
-  const askForUsage = stream && adapter.dialect === 'openai-chat';
-
-  const outbound = sameShape
-    ? askForUsage
-      ? withUsage(raw)
-      : rawBody
-    : askForUsage
-      ? withUsage(adapter.request(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
-      : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
+  // 亲和键只取一次：选址用它，要会话 id 的协议（OpenCode Go）也用它。
+  const affinity = affinityKeyOf(c.req.raw.headers);
 
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
   const startedAt = Date.now();
-  // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
-  // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
-  const rate = rateAt(protocol, model, Math.floor(startedAt / 1000));
   // Gas 是「执行一次」的价：付不起就不打上游，也就没有这次执行，不记账。
   const gasFee = gasFeeNanos(c.env);
   const account = await findPrincipal(c.env, address);
@@ -165,72 +132,155 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     fail(402, 'insufficient_balance', `余额不足：需要 ${gasFee} 纳美元，当前 ${availableNanos(account)}`);
   }
 
-  // 唯一关于上游提供商的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
-  const host = hostOf(baseUrl);
-  const accounting: Accounting = {
-    env: c.env,
-    address,
-    providerId: provider.id,
-    providerUser: provider.address,
-    consumerUser: principal.consumerId ? address : null,
-    /** 这一单是不是落到了公共池上：账单里要说，否则「为什么打到别人的主机」无从解释。 */
-    pool: choice.via === 'pool',
-    // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
-    consumerId: principal.consumerId,
-    baseUrl,
-    requestId,
-    startedAt,
-    gasFee,
-    host,
-    model,
-    rate,
-  };
+  /** 这次请求试过的上游：重挑时传给选址，保证换的是另一条。 */
+  const tried: string[] = [];
+  /** 上一条候选的原话：换候选换到没得换时，交回去的应该是它，不是一句「没有候选」。 */
+  let refused: { failure: UpstreamFailure; accounting: Accounting } | null = null;
 
-  let reply: Response;
-  try {
-    reply = await fetch(protocolUrlFor(protocol, baseUrl, model, stream), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...adapter.headers(providerKey), ...sessionHeaders },
-      body: outbound,
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    // 走哪条上游是 Norm 自己的决定，调用方一个头都不用带：模型跑得了是前提，自己的上游
+    // 优先、公共池兜底，同一个 thread-id / session-id 粘在同一条上（见 store.resolveProvider）。
+    let choice: ProviderChoice;
+    try {
+      choice = await resolveProvider(c.env, address, affinity, { model, exclude: tried });
+    } catch (error) {
+      // 换候选时发现没有下一条了：这不是新错误，把上一条上游的原话交回去。
+      if (attempt > 0 && refused) return upstreamFailure(c, refused.accounting, refused.failure);
+      throw error;
+    }
+    const provider = choice.provider;
+    tried.push(provider.id);
+
+    // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，只在本次请求的
+    // 作用域里存在：不写日志、不进响应、不返回给客户端。
+    //
+    // 解封用的是**持有者**的地址，不是调用方的：公共池里那条属于站点，调用方只是借用。
+    const providerKey = await unsealProviderKey({
+      env: c.env,
+      address: provider.address,
+      providerId: provider.id,
+      sealed: provider.sealed_key,
     });
-  } catch (error) {
-    const settled = await recordFailure(accounting, 'network_error', 502);
-    return c.json(
-      { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
-      502,
-      failureHeaders(accounting.requestId, settled),
-    );
-  }
 
-  if (!reply.ok) {
+    const adapter = adapterFor(provider.protocol);
+    // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
+    // 所以 Responses 客户端打给它一样一个字节都不动。
+    const sameShape = entry.dialect === adapter.dialect;
+
+    /**
+     * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
+     * 值由 `sessions.ts` 从这次请求派生，调用方自报的原值永远不上行——它只影响
+     * 提示词缓存命中，不该成为一条能把两段对话对齐起来的明文线索。
+     */
+    const sessionHeaders = adapter.session_header
+      ? {
+          [adapter.session_header]: sessionIdFor({ address, headers: c.req.raw.headers, affinity, body: raw, model }),
+        }
+      : {};
+
+    /**
+     * 发往上游的请求体。
+     *
+     * 同格式直通按原始字节发出去——唯一的例外是流式请求打向 openai-chat 上游时：那种上游
+     * 默认不回 token 用量，而账本就靠它算钱。跨方言则整份重说一遍。
+     */
+    const askForUsage = stream && adapter.dialect === 'openai-chat';
+    const outbound = sameShape
+      ? askForUsage
+        ? withUsage(raw)
+        : rawBody
+      : askForUsage
+        ? withUsage(adapter.request(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
+        : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
+
+    // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
+    // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
+    const rate = rateAt(provider.protocol, model, Math.floor(startedAt / 1000));
+    // 唯一关于上游提供商的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
+    const host = hostOf(provider.base_url);
+    const accounting: Accounting = {
+      env: c.env,
+      address,
+      providerId: provider.id,
+      providerUser: provider.address,
+      consumerUser: principal.consumerId ? address : null,
+      /** 这一单是不是落到了公共池上：账单里要说，否则「为什么打到别人的主机」无从解释。 */
+      pool: choice.via === 'pool',
+      // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
+      consumerId: principal.consumerId,
+      baseUrl: provider.base_url,
+      requestId,
+      startedAt,
+      gasFee,
+      host,
+      model,
+      rate,
+    };
+
+    let reply: Response;
+    try {
+      reply = await fetch(protocolUrlFor(provider.protocol, provider.base_url, model, stream), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...adapter.headers(providerKey), ...sessionHeaders },
+        body: outbound,
+      });
+    } catch (error) {
+      const settled = await recordFailure(accounting, 'network_error', 502);
+      return c.json(
+        { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
+        502,
+        failureHeaders(requestId, settled),
+      );
+    }
+
+    if (reply.ok) {
+      if (stream) {
+        return sameShape
+          ? passThroughStream({ ...accounting, reply, dialect: entry.dialect, wantsUsage })
+          : bridgeStream({ ...accounting, reply, entry: entry.dialect, protocol: provider.protocol, wantsUsage });
+      }
+
+      const json = await reply.json<Record<string, unknown>>();
+      const core = readAnswer(adapter.dialect, json);
+      const billed = await bill(accounting, core, reply.status);
+      // 同格式：响应体一个字段都不动，只把 `norm` 作为附加字段挂上去。
+      // 跨方言：整个响应由 renderInbound 说出入口方言。
+      const body = sameShape ? { ...json, norm: billed } : renderInbound(entry.dialect, core, billed);
+      return c.json(body as Record<string, unknown>);
+    }
+
     // Gas 照收，token 不收：这次调用已经真的打出去了（Worker 与 D1 的成本都发生过），
     // 上游回什么也改不了这一点；没有答案，就没有可计价的 token。
-    // 上游提供商的错误体原样返回——它不是记账数据，改写它只会让上游提供商的报错更难查；
-    // 这一笔扣了多少，挂在响应头上。
-    const text = await reply.text();
-    const settled = await recordFailure(accounting, 'provider_error', reply.status);
-    return new Response(text, {
+    const failure: UpstreamFailure = {
       status: reply.status,
-      headers: {
-        'Content-Type': reply.headers.get('Content-Type') ?? 'application/json',
-        ...failureHeaders(accounting.requestId, settled),
-      },
-    });
+      contentType: reply.headers.get('Content-Type') ?? 'application/json',
+      text: await reply.text(),
+    };
+    refused = { failure, accounting };
+
+    // 上游说「我没有这个型号」——错的是路由依据，不是请求：把清单里那一行划掉、忘掉这条
+    // 会话的粘性，换一条候选再试一次。只换一次，而且只在上游原话点名了这次的模型时。
+    // 少了这一步，一次按错清单的选择会让同一条会话在亲和表里错满整个 TTL（7 天）。
+    if (attempt + 1 < MAX_ATTEMPTS && isModelNotServed(failure.status, failure.text, model)) {
+      await dropProviderModel(c.env, provider.id, model);
+      if (affinity) await forgetAffinity(c.env, address, affinityHash(address, affinity.value));
+      continue;
+    }
+
+    return upstreamFailure(c, accounting, failure);
   }
 
-  if (stream) {
-    return sameShape
-      ? passThroughStream({ ...accounting, reply, dialect: entry.dialect, wantsUsage })
-      : bridgeStream({ ...accounting, reply, entry: entry.dialect, protocol, wantsUsage });
-  }
+  // 循环正常走完说明每一条候选都试过了（最后一条的失败本该在上面返回）。
+  fail(502, 'provider_candidates_exhausted', '试过的上游都没跑通这次调用');
+}
 
-  const json = await reply.json<Record<string, unknown>>();
-  const core = readAnswer(adapter.dialect, json);
-  const billed = await bill(accounting, core, reply.status);
-  // 同格式：响应体一个字段都不动，只把 `norm` 作为附加字段挂上去。
-  // 跨方言：整个响应由 renderInbound 说出入口方言。
-  const body = sameShape ? { ...json, norm: billed } : renderInbound(entry.dialect, core, billed);
-  return c.json(body as Record<string, unknown>);
+/** 失败响应：上游的原话原样回（它不是记账数据），这一笔扣了多少挂在响应头上。 */
+async function upstreamFailure(c: RelayContext, accounting: Accounting, failure: UpstreamFailure): Promise<Response> {
+  const settled = await recordFailure(accounting, 'provider_error', failure.status);
+  return new Response(failure.text, {
+    status: failure.status,
+    headers: { 'Content-Type': failure.contentType, ...failureHeaders(accounting.requestId, settled) },
+  });
 }
 
 /* ── 记账 ─────────────────────────────────────────────────────────── */

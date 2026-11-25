@@ -1,6 +1,9 @@
 /**
  * 挑哪条上游：整块策略都在这里，纯函数，没有 IO。
  *
+ * 进来的候选已经过一道模型筛（见 narrowToServingModel）：能不能跑这个型号是前提，
+ * 下面三条只决定「在能跑的里面选谁」。
+ *
  * 三条规则，按顺序：
  *
  *   1. 自有优先 —— 候选里只要有一条自己名下的，公共池就整批退出。池子是兜底，
@@ -45,6 +48,31 @@ export function affinityFresh(expiresAt: number, now: number): boolean {
 export function narrowToOwned<T extends { address: string }>(candidates: readonly T[], me: string): readonly T[] {
   const owned = candidates.filter((candidate) => candidate.address === me);
   return owned.length > 0 ? owned : candidates;
+}
+
+/**
+ * 按模型筛候选：这一层只认「谁有它」，别的都不问。
+ *
+ * 三句话：
+ *
+ *   1. 清单抓过、里面没有这个型号 → 这条候选这次不参与。它不是「优先级低一点」，
+ *      是跑不了；把它留在候选里，下游拿到的就是上游的 400 原话。
+ *   2. 清单从没抓到过 → 留着。没有证据不等于有证据说没有：新加的上游、或者清单端点
+ *      答不上话的那条，不该因为一张空表被判死刑。
+ *   3. 筛完一条不剩 → 返回空，由调用方说出「没有上游提供这个模型」，而不是把请求丢给
+ *      一条明知道没有它的上游。
+ *
+ * `known` 与 `serving` 分开收，是因为调用方只查了一次库：一条 provider_models 的左连接
+ * 同时给出「清单抓过没有」与「有没有这个型号」，这里不该再去问第二遍。
+ */
+export function narrowToServingModel<T extends { id: string }>(
+  candidates: readonly T[],
+  coverage: { known: ReadonlySet<string>; serving: ReadonlySet<string> },
+): readonly T[] {
+  const serving = candidates.filter((candidate) => coverage.serving.has(candidate.id));
+  if (serving.length > 0) return serving;
+  // 一条都不认这个型号：只有清单未知的还值得一试。
+  return candidates.filter((candidate) => !coverage.known.has(candidate.id));
 }
 
 /**
