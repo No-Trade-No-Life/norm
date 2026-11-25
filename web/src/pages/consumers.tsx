@@ -7,40 +7,53 @@ import { Button } from '../components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
 import { when } from '../lib/format';
 import {
   useConsumers,
   useCreateConsumer,
-  useProviders,
   useRenameConsumer,
   useRevokeConsumer,
   useRotateConsumer,
 } from '../queries';
-import type { Consumer, Provider } from '../types';
+import type { Consumer } from '../types';
 
 /**
  * 下游消费者：给程序用的 `sk-norm-…`。
  *
- * 与「上游提供商」页的区别是「谁在说话」：那一页管资源（钱付给谁、上游提供商在哪），
+ * 与「上游提供商」页的区别是「谁在说话」：那一页管资源（钱付给谁、上游在哪），
  * 这一页管消费（谁的代码拿着 Token 来敲门）。
  *
- * 一条 Token 在建的时候就绑死一条上游提供商，所以程序侧一次调用只要
- * `Authorization: Bearer sk-norm-…`——再没有第二个 Norm 专有的头。
+ * 所以这里只有名字：Token 不绑定上游提供商。走哪条是每次转发自己的决定——
+ * 账户里只有一条启用的上游提供商时就那一条，有多条时才在请求里用 `X-Norm-Provider` 指名。
+ * 于是「添一条上游提供商、建一条 Token、把它当普通 api key 用」就是全部，
+ * 建密钥不必先想清楚它将来会打哪个上游。
+ *
+ * 建一条 Token 只有「起个名」这一个参数，所以不配对话框：按钮本身就是那一次创建，
+ * 名字先给一个默认值，事后再改。唯一必须停一下的是密钥本身——明文只出现一次。
  */
 export function ConsumersPage() {
   const { t } = useI18n();
   const consumers = useConsumers(true);
-  const providersQuery = useProviders(true);
+  const create = useCreateConsumer();
   const revoke = useRevokeConsumer();
-  const [createOpen, setCreateOpen] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Consumer | null>(null);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const items = consumers.data?.items ?? [];
-  const providers = providersQuery.data?.items ?? [];
+
+  // 按钮即创建：名字只是备注，默认值取一个没被占用的序号，用户随后改名即可。
+  const createNow = async () => {
+    setCreateError(null);
+    try {
+      const result = await create.mutateAsync({ name: nextName(t('co.default_name'), items) });
+      setRevealed(result.key);
+    } catch (caught) {
+      setCreateError((caught as Error).message);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -48,9 +61,9 @@ export function ConsumersPage() {
         title={t('co.title')}
         description={t('co.desc')}
         actions={
-          <Button onClick={() => setCreateOpen(true)}>
+          <Button onClick={() => void createNow()} disabled={create.isPending}>
             <PlusIcon />
-            {t('co.new')}
+            {create.isPending ? t('co.creating') : t('co.new')}
           </Button>
         }
       />
@@ -69,7 +82,6 @@ export function ConsumersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>{t('co.col_name')}</TableHead>
-                <TableHead className="hidden md:table-cell">{t('co.col_provider')}</TableHead>
                 <TableHead className="hidden sm:table-cell">{t('co.col_hint')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('co.col_created')}</TableHead>
                 <TableHead className="hidden md:table-cell">{t('co.col_last_used')}</TableHead>
@@ -91,14 +103,9 @@ export function ConsumersPage() {
         )}
       </Section>
 
+      {createError ? <ErrorNote title={t('common.error')} message={createError} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
-      <NewConsumerDialog
-        open={createOpen}
-        providers={providers}
-        onOpenChange={setCreateOpen}
-        onCreated={setRevealed}
-      />
       <RenameDialog consumer={renaming} onClose={() => setRenaming(null)} />
       {revealed ? <KeyDialog value={revealed} onClose={() => setRevealed(null)} /> : null}
     </div>
@@ -132,21 +139,6 @@ function ConsumerRow({
         <span className="font-medium">{item.name}</span>
         {/* 窄屏没有独立的密钥列，提示要贴在名字下面，事实不能被藏起来。 */}
         <code className="mt-0.5 block font-mono text-[11px] text-muted-foreground sm:hidden">{item.key_hint}</code>
-        <span className="mt-0.5 block text-[11px] text-muted-foreground md:hidden">
-          {item.provider_label ?? `${t('co.or_revoked')} ${item.provider_id}`}
-        </span>
-      </TableCell>
-      <TableCell className="hidden md:table-cell">
-        {item.provider_label ? (
-          <div className="flex flex-col">
-            <span className="text-xs">{item.provider_label}</span>
-            <code className="text-[11px] break-all text-muted-foreground">{item.provider_base_url}</code>
-          </div>
-        ) : (
-          <span className="text-xs text-muted-foreground">
-            {t('co.or_revoked')} <code className="text-[11px]">{item.provider_id}</code>
-          </span>
-        )}
       </TableCell>
       <TableCell className="hidden sm:table-cell">
         <code className="text-xs text-muted-foreground">{item.key_hint}</code>
@@ -189,108 +181,13 @@ function ConsumerRow({
   );
 }
 
-function NewConsumerDialog({
-  open,
-  providers,
-  onOpenChange,
-  onCreated,
-}: {
-  open: boolean;
-  providers: Provider[];
-  onOpenChange: (value: boolean) => void;
-  onCreated: (key: string) => void;
-}) {
-  const { t } = useI18n();
-  const create = useCreateConsumer();
-  const [name, setName] = useState('');
-  const [providerId, setProviderId] = useState('');
-  const [error, setError] = useState<string | null>(null);
-
-  // 默认选中第一条：绝大多数人只有一条上游提供商，让他少点一次。
-  const selected = providerId || providers[0]?.id || '';
-
-  const submit = async () => {
-    setError(null);
-    if (!name.trim()) {
-      setError(t('co.missing'));
-      return;
-    }
-    if (!selected) {
-      setError(t('co.provider_missing'));
-      return;
-    }
-    try {
-      const result = await create.mutateAsync({ name: name.trim(), provider_id: selected });
-      setName('');
-      onOpenChange(false);
-      onCreated(result.key);
-    } catch (caught) {
-      setError((caught as Error).message);
-    }
-  };
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        onOpenChange(next);
-        if (!next) setError(null);
-      }}
-    >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t('co.new_title')}</DialogTitle>
-          <DialogDescription>{t('co.new_desc')}</DialogDescription>
-        </DialogHeader>
-
-        {providers.length === 0 ? (
-          <Empty className="border-0">{t('co.no_provider')}</Empty>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label>{t('co.field_name')}</Label>
-              <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('co.field_name_placeholder')} />
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label>{t('co.field_provider')}</Label>
-              {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条上游提供商、打到哪台主机。 */}
-              <Select
-                value={selected}
-                onValueChange={(value) => setProviderId(String(value))}
-                items={providers.map((item) => ({ value: item.id, label: item.label }))}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder={t('co.field_provider_placeholder')} />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="font-mono text-[11px] leading-relaxed break-all text-muted-foreground">
-                {providers.find((item) => item.id === selected)?.base_url ?? ''}
-              </p>
-            </div>
-          </div>
-        )}
-
-        {error ? <ErrorNote message={error} /> : null}
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t('action.cancel')}
-          </Button>
-          <Button onClick={() => void submit()} disabled={create.isPending || providers.length === 0}>
-            {create.isPending ? t('co.creating') : t('co.create')}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
+/** 默认备注名：`未命名消费者 1`，取第一个没被占用的序号。 */
+function nextName(base: string, existing: Consumer[]): string {
+  const taken = new Set(existing.map((item) => item.name));
+  for (let index = 1; ; index += 1) {
+    const candidate = `${base} ${index}`;
+    if (!taken.has(candidate)) return candidate;
+  }
 }
 
 function RenameDialog({ consumer, onClose }: { consumer: Consumer | null; onClose: () => void }) {
