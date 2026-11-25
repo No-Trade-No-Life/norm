@@ -90,9 +90,19 @@ jobs:
       - name: Verify the deployment matches the build
         run: |
           set -euo pipefail
-          # 加一个时间戳：刚部署完的那几十秒里，边缘可能还缓存着上一版的证明，
-          # 拿它跟本次构建比会得到一次假红（部署其实是成功的）。
-          live=$(curl -sS --max-time 20 -H 'Cache-Control: no-cache' "https://norm.ntnl.io/api/v1/attestation?t=$(date +%s)" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).source_sha256))')
+          # 刚部署完的那几十秒里，边缘还在各处换掉上一版的证明：单查一次读到旧值就红，
+          # 那是一次假红（部署其实是成功的）。所以这里轮询到对上为止，超时才判失败。
+          # 每次带时间戳绕开缓存；不通过缓存头也不通过「等一会儿」来猜，只认这串数字。
           built='${{ steps.attest.outputs.source_sha256 }}'
-          test "$live" = "$built" || { echo "::error::线上 source_sha256($live) 与本次构建($built) 不一致"; exit 1; }
-          echo "可信发布核对通过：$live"
+          for attempt in $(seq 1 18); do
+            live=$(curl -sS --max-time 20 -H 'Cache-Control: no-cache' "https://norm.ntnl.io/api/v1/attestation?t=$(date +%s%N)" \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).source_sha256)}catch{console.log("")}})')
+            if [ "$live" = "$built" ]; then
+              echo "可信发布核对通过（第 $attempt 次尝试）：$live"
+              exit 0
+            fi
+            echo "第 $attempt 次：线上 $live ≠ 本次构建 $built，5 秒后重查"
+            sleep 5
+          done
+          echo "::error::90 秒内线上 source_sha256 一直不是本次构建($built)，最后一次读到 $live"
+          exit 1
