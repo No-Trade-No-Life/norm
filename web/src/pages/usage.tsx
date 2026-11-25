@@ -39,12 +39,15 @@ export function UsagePage() {
   const tokens_ = me.data?.usage;
   const billed = me.data?.billed;
 
+  // 余额是算出来的，四块累计数各自只增：充值 + 抵扣券 − 消费 − 提现。
   const cards = useMemo(
     () => [
       { label: t('us.balance'), value: usd(me.data?.balance_nanos), emphasis: true },
       { label: t('us.spend'), value: usd(me.data?.spend_nanos) },
+      { label: t('us.recharge'), value: usd(me.data?.recharge_nanos) },
+      { label: t('us.withdraw'), value: usd(me.data?.withdraw_nanos) },
+      { label: t('us.voucher'), value: usd(me.data?.voucher_nanos), note: t('us.voucher_note') },
       { label: t('us.requests'), value: me.data ? String(me.data.requests) : '—' },
-      { label: t('us.granted'), value: usd(me.data?.granted_nanos) },
     ],
     [me.data, t],
   );
@@ -93,6 +96,7 @@ export function UsagePage() {
             <p className={card.emphasis ? 'mt-1 text-lg font-semibold tabular-nums' : 'mt-1 text-base font-medium tabular-nums'}>
               {me.isPending ? '—' : card.value}
             </p>
+            {'note' in card && card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
           </div>
         ))}
       </div>
@@ -407,6 +411,14 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
   );
 }
 
+/** 四种只增的变动各自的说法：券、充值、提现、消费。 */
+const KIND_LABEL: Record<LedgerRow['kind'], (t: (key: never) => string) => string> = {
+  voucher: (t) => t('us.ledger_voucher' as never),
+  recharge: (t) => t('us.ledger_recharge' as never),
+  withdraw: (t) => t('us.ledger_withdraw' as never),
+  charge: (t) => t('us.ledger_charges' as never),
+};
+
 function LedgerTable({ rows }: { rows: LedgerRow[] }) {
   const { t } = useI18n();
   return (
@@ -425,13 +437,13 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
           <TableRow key={row.id}>
             <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
             <TableCell>
-              <Badge variant={row.kind === 'grant' ? 'outline' : 'secondary'} className="whitespace-nowrap">
-                <span className="sm:hidden">{row.kind === 'grant' ? t('us.kind_grant') : t('us.kind_charge')}</span>
-                <span className="hidden sm:inline">{row.kind === 'grant' ? t('us.ledger_grant') : t('us.ledger_charges')}</span>
+              <Badge variant={row.kind === 'charge' ? 'secondary' : 'outline'} className="whitespace-nowrap">
+                <span className="sm:hidden">{row.kind}</span>
+                <span className="hidden sm:inline">{KIND_LABEL[row.kind](t)}</span>
               </Badge>
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{signedUsd(row.amount_nanos)}</TableCell>
-            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{usd(row.balance_after_nanos)}</TableCell>
+            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{usd(row.available_after_nanos)}</TableCell>
             <TableCell className="hidden lg:table-cell">
               <code className="text-[11px] text-muted-foreground">{row.request_id ?? '—'}</code>
             </TableCell>

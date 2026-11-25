@@ -7,14 +7,35 @@ import { fail } from './http';
 import { nowSeconds, randomToken } from './ids';
 import { affinityFresh, affinityHash, narrowToOwned, pickByRendezvous, type AffinityKey } from './routing';
 
+/**
+ * 账户的四块累计数。每一块都只增不减，方向不同、含义不同：
+ *
+ *   充值   用户真的打进来的钱（可以提现）
+ *   抵扣券 站点给的额度，比如演示授信（**不可提现**）
+ *   消费   已经花掉的
+ *   提现   已经拿走的
+ *
+ * 可用余额 = 充值 + 抵扣券 − 消费 − 提现。余额不落库，就是为了让它永远等于这个算式。
+ */
 export type PrincipalRow = {
   address: string;
   label: string;
   created_at: number;
-  balance_nanos: number;
-  granted_nanos: number;
+  recharge_nanos: number;
+  voucher_nanos: number;
   spend_nanos: number;
+  withdraw_nanos: number;
 };
+
+/** 可用余额：唯一的算法，出现在页面、接口与扣费判断里，都是同一句。 */
+export function availableNanos(counters: {
+  recharge_nanos: number;
+  voucher_nanos: number;
+  spend_nanos: number;
+  withdraw_nanos: number;
+}): number {
+  return counters.recharge_nanos + counters.voucher_nanos - counters.spend_nanos - counters.withdraw_nanos;
+}
 
 export type ProviderView = ProviderRow & {
   /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
@@ -56,14 +77,14 @@ export async function ensurePrincipal(env: Env, address: string, at: number): Pr
   await env.DB.batch([
     env.DB.prepare('INSERT OR IGNORE INTO principals (address, created_at) VALUES (?, ?)').bind(address, at),
     env.DB.prepare(
-      `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, balance_after_nanos, created_at)
-       SELECT ?, address, NULL, 'grant', ?, ?, ? FROM principals
-       WHERE address = ? AND granted_nanos = 0`,
+      `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, available_after_nanos, created_at)
+       SELECT ?, address, NULL, 'voucher', ?, ?, ? FROM principals
+       WHERE address = ? AND voucher_nanos = 0`,
     ).bind(randomToken(), grant, grant, at, address),
     env.DB.prepare(
-      `UPDATE principals SET balance_nanos = balance_nanos + ?, granted_nanos = ?
-       WHERE address = ? AND granted_nanos = 0`,
-    ).bind(grant, grant, address),
+      `UPDATE principals SET voucher_nanos = ?
+       WHERE address = ? AND voucher_nanos = 0`,
+    ).bind(grant, address),
   ]);
 }
 
@@ -280,38 +301,44 @@ async function failNoCandidate(env: Env, address: string): Promise<never> {
  * 为什么是「先读再带条件更新」而不是一条 `UPDATE ... RETURNING`：
  * 我们需要知道**扣掉了多少**才能写流水，而 RETURNING 只给新余额，
  * 分不清「余额刚好够」与「余额不够」这两种都落到 0 的情况。
- * 于是用读到的余额做乐观并发条件（`balance_nanos = ?`），被并发改掉就重读重算。
+ * 于是用读到的累计消费做乐观并发条件（`spend_nanos = ?`），被并发改掉就重读重算。
  * 同一个账户同时打多个请求时才会撞上，最多重试 3 次。
  */
 export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
   const due = row.gasFeeNanos + row.tokenNanos;
+  const counters = 'recharge_nanos, voucher_nanos, spend_nanos, withdraw_nanos';
+  type Counters = { recharge_nanos: number; voucher_nanos: number; spend_nanos: number; withdraw_nanos: number };
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await env.DB.prepare('SELECT balance_nanos FROM principals WHERE address = ?')
+    const current = await env.DB.prepare(`SELECT ${counters} FROM principals WHERE address = ?`)
       .bind(row.address)
-      .first<{ balance_nanos: number }>();
+      .first<Counters>();
     if (!current) throw new Error(`账户不存在：${row.address}`);
 
-    const billed = Math.min(due, Math.max(current.balance_nanos, 0));
+    // 能收多少收多少：余额不够时把剩下的花光，差额记成未收（站点承担）。
+    const billed = Math.min(due, Math.max(availableNanos(current), 0));
+
+    // 只往「累计消费」这一块上加，其余三块不动——四块累计数各自只增，
+    // 条件更新盯住旧的 spend，被并发改过就重读重算，绝不覆盖别人的加法。
     const updated = await env.DB.prepare(
-      `UPDATE principals SET balance_nanos = balance_nanos - ?, spend_nanos = spend_nanos + ?
-       WHERE address = ? AND balance_nanos = ?
-       RETURNING balance_nanos`,
+      `UPDATE principals SET spend_nanos = spend_nanos + ?
+       WHERE address = ? AND spend_nanos = ?
+       RETURNING ${counters}`,
     )
-      .bind(billed, billed, row.address, current.balance_nanos)
-      .first<{ balance_nanos: number }>();
+      .bind(billed, row.address, current.spend_nanos)
+      .first<Counters>();
     if (!updated) continue;
 
     const settled: Settled = {
       billedNanos: billed,
       unbilledNanos: due - billed,
-      balanceNanos: updated.balance_nanos,
+      balanceNanos: availableNanos(updated),
     };
 
     // 流水与请求记录同批写入：这条 charge 一定能回到那次请求。
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, balance_after_nanos, created_at)
+        `INSERT INTO ledger (id, address, request_id, kind, amount_nanos, available_after_nanos, created_at)
          VALUES (?, ?, ?, 'charge', ?, ?, ?)`,
       ).bind(randomToken(), row.address, row.requestId, -billed, settled.balanceNanos, row.at),
       requestInsert(env, { ...row, feeNanos: billed, unbilledNanos: settled.unbilledNanos }),
@@ -320,11 +347,11 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
   }
 
   // 三次都被并发改写：宁可不扣，也不猜一个数。请求照样落库，账面上标成未收。
-  const latest = await env.DB.prepare('SELECT balance_nanos FROM principals WHERE address = ?')
+  const latest = await env.DB.prepare(`SELECT ${counters} FROM principals WHERE address = ?`)
     .bind(row.address)
-    .first<{ balance_nanos: number }>();
+    .first<Counters>();
   await recordRequest(env, { ...row, feeNanos: 0, unbilledNanos: due });
-  return { billedNanos: 0, unbilledNanos: due, balanceNanos: latest?.balance_nanos ?? 0 };
+  return { billedNanos: 0, unbilledNanos: due, balanceNanos: latest ? availableNanos(latest) : 0 };
 }
 
 function requestInsert(env: Env, row: RequestRecord) {
