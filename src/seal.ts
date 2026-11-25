@@ -31,27 +31,27 @@ async function masterKey(env: Env): Promise<CryptoKey> {
  * AAD 把密文绑到「哪个账户的哪条凭证」。这样即使两条记录被互换，
  * 解密也会失败——不需要额外的完整性字段。
  */
-function aad(address: string, credentialId: string): Uint8Array {
-  return new TextEncoder().encode(`${address}|${credentialId}`);
+function aad(address: string, providerId: string): Uint8Array {
+  return new TextEncoder().encode(`${address}|${providerId}`);
 }
 
 /** 返回 base64url(iv || ciphertext||tag)。 */
 export async function sealUpstreamKey({
   env,
   address,
-  credentialId,
+  providerId,
   upstreamKey,
 }: {
   env: Env;
   address: string;
-  credentialId: string;
+  providerId: string;
   upstreamKey: string;
 }): Promise<string> {
   const key = await masterKey(env);
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv, additionalData: aad(address, credentialId) },
+      { name: 'AES-GCM', iv, additionalData: aad(address, providerId) },
       key,
       new TextEncoder().encode(upstreamKey),
     ),
@@ -66,12 +66,12 @@ export async function sealUpstreamKey({
 export async function unsealUpstreamKey({
   env,
   address,
-  credentialId,
+  providerId,
   sealed,
 }: {
   env: Env;
   address: string;
-  credentialId: string;
+  providerId: string;
   sealed: string;
 }): Promise<string> {
   const normalized = sealed.replace(/-/g, '+').replace(/_/g, '/');
@@ -82,7 +82,7 @@ export async function unsealUpstreamKey({
 
   const key = await masterKey(env);
   const plain = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: packed.slice(0, IV_BYTES), additionalData: aad(address, credentialId) },
+    { name: 'AES-GCM', iv: packed.slice(0, IV_BYTES), additionalData: aad(address, providerId) },
     key,
     packed.slice(IV_BYTES),
   );

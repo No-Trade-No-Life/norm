@@ -16,8 +16,8 @@ import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { errorText } from '../lib/error-text';
 import { latency, usd } from '../lib/format';
-import { useCredentials } from '../queries';
-import type { ChatChunk, Credential } from '../types';
+import { useProviders } from '../queries';
+import type { ChatChunk, Provider } from '../types';
 
 type NormMeta = NonNullable<ChatChunk['norm']>;
 
@@ -25,9 +25,9 @@ export function PlaygroundPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { identity } = useIdentity();
-  const credentials = useCredentials(true);
+  const providers = useProviders(true);
 
-  const [credentialId, setCredentialId] = useState('');
+  const [providerId, setProviderId] = useState('');
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
 
@@ -39,10 +39,10 @@ export function PlaygroundPage() {
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
 
-  const list = credentials.data?.items ?? [];
-  const credential: Credential | undefined = useMemo(
-    () => list.find((item) => item.id === credentialId) ?? list[0],
-    [list, credentialId],
+  const list = providers.data?.items ?? [];
+  const provider: Provider | undefined = useMemo(
+    () => list.find((item) => item.id === providerId) ?? list[0],
+    [list, providerId],
   );
 
   useEffect(() => {
@@ -58,7 +58,7 @@ export function PlaygroundPage() {
 
   const send = useCallback(async () => {
     setError(null);
-    if (!credential) return setError(t('pg.need_credential'));
+    if (!provider) return setError(t('pg.need_provider'));
     if (!model.trim()) return setError(t('pg.need_model'));
     if (!prompt.trim()) return setError(t('pg.need_prompt'));
 
@@ -82,7 +82,7 @@ export function PlaygroundPage() {
         method: 'POST',
         body,
         // 密钥在服务端：这里只说用哪条凭证。明文密钥从不出现在浏览器里。
-        headers: { 'X-Norm-Credential': credential.id },
+        headers: { 'X-Norm-Provider': provider.id },
         signal: controller.signal,
       });
 
@@ -123,7 +123,7 @@ export function PlaygroundPage() {
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
-  }, [credential, model, prompt, queryClient, stream, t]);
+  }, [provider, model, prompt, queryClient, stream, t]);
 
   return (
     <div className="flex min-h-full flex-col gap-4">
@@ -141,15 +141,15 @@ export function PlaygroundPage() {
         <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <Label>{t('pg.credential')}</Label>
+              <Label>{t('pg.provider')}</Label>
               {list.length === 0 ? (
-                <Link to="/credentials" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {t('pg.credential_none')}
+                <Link to="/providers" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
+                  {t('pg.provider_none')}
                 </Link>
               ) : (
                 <Select
-                  value={credential?.id ?? ''}
-                  onValueChange={(value) => setCredentialId(String(value))}
+                  value={provider?.id ?? ''}
+                  onValueChange={(value) => setProviderId(String(value))}
                   items={list.map((item) => ({ value: item.id, label: `${item.label} · ${item.key_hint}` }))}
                 >
                   <SelectTrigger>

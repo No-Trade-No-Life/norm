@@ -57,10 +57,10 @@ console.log('2. 未签名与重放');
 }
 
 console.log('3. 新建凭证（明文密钥交给服务端封装）');
-let credentialId;
+let providerId;
 let consumerKey;
 {
-  const path = '/api/v1/credentials';
+  const path = '/api/v1/providers';
   const payload = JSON.stringify({
     label: 'smoke',
     base_url: 'https://api.openai.com/v1',
@@ -74,10 +74,10 @@ let consumerKey;
   });
   const body = await response.json();
   check('201', response.status === 201, body);
-  credentialId = body.id;
+  providerId = body.id;
 
   // 列表里只能有提示，不能有明文。
-  const listPath = '/api/v1/credentials';
+  const listPath = '/api/v1/providers';
   const list = await (await fetch(`${BASE}${listPath}`, { headers: sign('GET', listPath) })).json();
   check('列表不含明文密钥', !JSON.stringify(list).includes('sk-invalid-smoke-key'), list);
   check('列表只回提示', typeof list.items?.[0]?.key_hint === 'string', list.items?.[0]);
@@ -87,7 +87,7 @@ console.log('4. 下游消费者 Token：绑定上游、只显一次、能调用�
 {
   const path = '/api/v1/consumers';
   // Token 必须指定上游：调用时不再需要 Norm 专有的头。
-  const payload = JSON.stringify({ name: 'smoke bot', credential_id: credentialId });
+  const payload = JSON.stringify({ name: 'smoke bot', provider_id: providerId });
   const response = await fetch(`${BASE}${path}`, {
     method: 'POST',
     headers: { ...sign('POST', path, payload), 'Content-Type': 'application/json' },
@@ -143,7 +143,7 @@ console.log('5. 上游拒绝时不扣费（假密钥打真·官方端点）');
     headers: {
       ...sign('POST', path, payload),
       'Content-Type': 'application/json',
-      'X-Norm-Credential': credentialId,
+      'X-Norm-Provider': providerId,
     },
     body: payload,
   });
@@ -155,7 +155,7 @@ console.log('5. 上游拒绝时不扣费（假密钥打真·官方端点）');
 
 console.log('6. 清理');
 {
-  const path = `/api/v1/credentials/${credentialId}`;
+  const path = `/api/v1/providers/${providerId}`;
   const response = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: sign('DELETE', path) });
   check('撤销凭证 200', response.status === 200, response.status);
 }

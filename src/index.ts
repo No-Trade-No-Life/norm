@@ -4,8 +4,9 @@ import { HttpError } from './http';
 import { authenticate, resolvePrincipal, type Principal } from './auth';
 import { nowSeconds } from './ids';
 import { publicRoutes } from './routes/public';
+import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
-import { credentialRoutes } from './routes/credentials';
+import { providerRoutes } from './routes/providers';
 import { consumerRoutes } from './routes/consumers';
 import { relayRoutes } from './routes/relay';
 
@@ -15,6 +16,8 @@ type App = { Bindings: Env; Variables: Variables };
 const app = new Hono<App>();
 
 app.route('/api/v1', publicRoutes);
+// 价目表：账本要能被用户自己核算，所以它就是公开数据。
+app.route('/api/v1/pricing', pricingRoutes);
 
 /** 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。 */
 app.post('/api/v1/auth/login', async (c) => {
@@ -42,7 +45,7 @@ function signedOnly() {
     await next();
   });
   signed.route('/account', accountRoutes);
-  signed.route('/credentials', credentialRoutes);
+  signed.route('/providers', providerRoutes);
   signed.route('/consumers', consumerRoutes);
   return signed;
 }

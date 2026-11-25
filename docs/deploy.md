@@ -71,7 +71,7 @@ node scripts/smoke-prod.mjs   # 线上：真签名打真域名，覆盖凭证封
 
 ```bash
 ADDR=<TEST_ADDRESS>
-for t in consumers requests ledger credentials nonces principals; do
+for t in consumers requests ledger providers nonces principals; do
   pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
     --command "DELETE FROM $t WHERE address='$ADDR'"
 done

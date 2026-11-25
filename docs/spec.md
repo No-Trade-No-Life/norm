@@ -40,7 +40,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 ### 4.1 上游密钥的存放
 
 - 添加一个上游提供者时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
-  做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、base_url、
+  做 AES-256-GCM 封装，AAD 绑 `address|providerId`。库里存：label、base_url、
   `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（上游协议、上游是否公开可用）。
   没有 provider 一列：谁家的上游由 base_url 说话，品牌名只是 label 里的一段字。
 - 调用模型时 Worker 现解现用，明文只在本次请求的作用域里存在——不写日志、不进 D1、不回响应。
@@ -65,15 +65,34 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 这条边界同时是权限边界：前缀把两者划开，`/api/v1/*` 只认签名（管理面），`/v1/*` 两者都认（转发面）。
 一把 Token 因此不能凭空再铸一把 Token，也撤销不了凭证。
 
-签名身份在转发面仍然要带 `X-Norm-Credential` 指名上游——**它管资源，消费的时候还是该拿一条 Token**。
+签名身份在转发面仍然要带 `X-Norm-Provider` 指名上游——**它管资源，消费的时候还是该拿一条 Token**。
 
-## 5. 计费：请求隔离纳入计费
+## 5. 计费：按 Token 记，外加一笔服务费
 
-- 因为 BYOK，上游的 Token 账单由用户直接付给上游，Norm 不碰这部分钱。
-- Norm 只收**请求隔离费**：每一个会被隔离执行的请求都实实在在消耗 Worker 调用、D1 读写与日志额度。
-  - 默认 `REQUEST_FEE_MICROS = 500`（$0.0005 / 请求），可在 `wrangler.jsonc` 的 `vars` 里调整。
-- 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`，可以逐条回溯到那次调用。
+一次调用的钱由两项相加：
+
+| 项 | 怎么算 | 为什么 |
+|---|---|---|
+| `token_micros` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
+| `service_fee_micros` | 每次被隔离执行的调用固定一笔（默认 100 微美元） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测，与 token 无关 |
+
+三种 token 分开记，因为它们的价不同、含义也不同：
+
+- `input_tokens`：输入总量，**含**缓存命中
+- `cached_tokens`：其中命中上游缓存的（便宜一个量级）
+- `output_tokens`：输出（最贵）
+
+四家上游的用量口径不一致（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的 `prompt_tokens` 含），
+归一化只发生在 `src/dialects.ts` 的四个 extract 与流式嗅探器里，账本只认上面这三种数字。
+
+其他约定：
+
+- 价目表写在代码里而不是部署变量里：价格是「公开可复现的转发规则」的一部分，
+  改价 = 改代码 = 一次可被审查的合并；没定价的模型走兜底价，不会变成免费。
+- 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`（UUID v7），可以逐条回溯。
 - 余额单位为微美元（integer），不用浮点。新地址自动获得 $1.00 演示授信（`GRANT_MICROS = 1000000`）。
+- 失败不扣费：上游报错或不可达时 `fee_micros = 0`，只留一条诚实的记录。
+- 余额付不起时把剩下的扣到 0，差额记在 `unbilled_micros`（站点承担），余额永不变成负数。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
 ## 6. 上游渠道

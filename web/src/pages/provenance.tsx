@@ -87,7 +87,7 @@ export function ProvenancePage() {
               <TableRow>
                 <TableHead>{t('pv.col_trust')}</TableHead>
                 <TableHead className="min-w-32">{t('pv.col_base_url')}</TableHead>
-                <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_credentials')}</TableHead>
+                <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_providers')}</TableHead>
                 <TableHead className="hidden w-20 sm:table-cell">{t('pv.col_public')}</TableHead>
                 <TableHead className="hidden min-w-40 md:table-cell">{t('pv.col_protocols')}</TableHead>
                 <TableHead className="hidden w-36 lg:table-cell">{t('pv.col_last_seen')}</TableHead>
@@ -119,10 +119,10 @@ function BaseUrlRow({ item, lang }: { item: BaseUrlGroup; lang: 'zh' | 'en' }) {
         <span className="block text-[11px] text-muted-foreground">{item.host}</span>
         {/* 窄屏没有独立的计数列，把两个数字贴在这里，事实不能被藏起来。 */}
         <span className="block text-[11px] text-muted-foreground sm:hidden">
-          {item.credentials} {t('pv.col_credentials')} · {item.public_listed} {t('pv.col_public')}
+          {item.providers} {t('pv.col_providers')} · {item.public_listed} {t('pv.col_public')}
         </span>
       </TableCell>
-      <TableCell className="hidden tabular-nums sm:table-cell">{item.credentials}</TableCell>
+      <TableCell className="hidden tabular-nums sm:table-cell">{item.providers}</TableCell>
       <TableCell className="hidden tabular-nums sm:table-cell">{item.public_listed}</TableCell>
       <TableCell className="hidden md:table-cell">
         <div className="flex flex-wrap gap-1">

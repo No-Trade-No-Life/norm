@@ -12,7 +12,12 @@ export type Principal = {
    * 只有消费者密钥会填它：那条 Token 在建的时候就绑死了一条上游提供者。
    * 签名身份（人）永远留空——它管资源，消费的时候还是拿一条 Token。
    */
-  credentialId?: string;
+  providerId?: string;
+  /**
+   * 这次调用由哪把下游消费者密钥发起，只用于记账（账本要能回答「谁花的钱」）。
+   * 签名直连时为空：那是一个人，不是一把程序凭据。
+   */
+  consumerId?: string;
 };
 
 /**

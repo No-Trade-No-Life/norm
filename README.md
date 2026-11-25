@@ -82,6 +82,9 @@ pnpm attest         # 算出 source_sha256 / assets_sha256，与 /api/v1/attesta
 - **不做协议转换。** 一家上游一个代理（`-LB` 一族），Norm 只做 OpenAI 兼容转发。
 - **不留内容。** 记账只需要模型名、token 数、状态、延迟、费用——这已经足够解释一笔账，
   再多记一个字都是对 ZDR 的破坏。
+- **按 Token 记账，外加服务费。** 输入 / 缓存命中 / 输出三种 token 分开计价（价目表在
+  `src/pricing.ts`，公开在 `GET /api/v1/pricing`），再加一笔摊 Cloudflare 固定成本的服务费。
+  每条记录都满足 `fee = service_fee + token − unbilled`，谁都能自己重算一遍。
 - **失败不扣费。** 隔离执行的成本由站点承担；用户只看到一条诚实的失败记录与 `fee_micros: 0`。
 - **诚实标注边界。** 来源核验是信号不是证明，官方订阅额度无法在协议层证明——所以在
   `/api/v1/provenance` 里公开 `base_url` 原文与核验时间，让任何人都能自己重跑一次。

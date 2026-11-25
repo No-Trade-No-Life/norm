@@ -3,15 +3,15 @@ import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { consumerKeyHash, consumerKeyHint, newConsumerKey } from '../consumers';
 import { fail } from '../http';
-import { nowSeconds, randomToken } from '../ids';
-import { findCredential } from '../store';
+import { nowSeconds, uuidv4 } from '../ids';
+import { findProvider } from '../store';
 
 export type ConsumerRow = {
   id: string;
   address: string;
   name: string;
   /** 建的时候就绑死的那条上游提供者：一把密钥 = 一条完整调用。 */
-  credential_id: string;
+  provider_id: string;
   key_sha256: string;
   key_hint: string;
   created_at: number;
@@ -28,11 +28,11 @@ export const consumerRoutes = new Hono<{ Bindings: Env; Variables: { principal: 
 consumerRoutes.get('/', async (c) => {
   // 顺带把上游提供者的昵称带上：列表要回答「这把钥匙打到哪」，而不是只回一个 id。
   const { results } = await c.env.DB.prepare(
-    `SELECT consumers.id, consumers.name, consumers.key_hint, consumers.credential_id,
-            credentials.label AS credential_label, credentials.base_url AS credential_base_url,
+    `SELECT consumers.id, consumers.name, consumers.key_hint, consumers.provider_id,
+            providers.label AS provider_label, providers.base_url AS provider_base_url,
             consumers.created_at, consumers.last_used_at
      FROM consumers
-     LEFT JOIN credentials ON credentials.id = consumers.credential_id
+     LEFT JOIN providers ON providers.id = consumers.provider_id
      WHERE consumers.address = ? AND consumers.revoked_at IS NULL
      ORDER BY consumers.created_at DESC, consumers.rowid DESC`,
   )
@@ -46,31 +46,32 @@ consumerRoutes.get('/', async (c) => {
  * 不设默认值——「随便挑一条上游」会让一把钥匙悄悄变成别人的账单。
  */
 consumerRoutes.post('/', async (c) => {
-  const body = await c.req.json<{ name?: string; credential_id?: string }>();
+  const body = await c.req.json<{ name?: string; provider_id?: string }>();
   const address = c.get('principal').address;
   const name = (body.name ?? '').trim();
-  const credentialId = (body.credential_id ?? '').trim();
+  const providerId = (body.provider_id ?? '').trim();
   if (!name) fail(400, 'name_missing', '缺少 name');
-  if (!credentialId) fail(400, 'credential_missing', '缺少 credential_id');
+  if (!providerId) fail(400, 'provider_missing', '缺少 provider_id');
 
-  const credential = await findCredential(c.env, address, credentialId);
-  if (!credential) fail(404, 'credential_not_found', '凭证不存在或已撤销');
+  const provider = await findProvider(c.env, address, providerId);
+  if (!provider) fail(404, 'provider_not_found', '凭证不存在或已撤销');
 
   // 明文密钥只在这几行里存在：哈希入库，明文只随这一次响应离开服务器。
   const key = newConsumerKey();
-  const id = `cons_${randomToken(12)}`;
+  // 下游消费者同样只被引用：UUID v4，与上游提供者一致。
+  const id = uuidv4();
   await c.env.DB.prepare(
-    'INSERT INTO consumers (id, address, name, credential_id, key_sha256, key_hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO consumers (id, address, name, provider_id, key_sha256, key_hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, address, name, credentialId, consumerKeyHash(key), consumerKeyHint(key), nowSeconds())
+    .bind(id, address, name, providerId, consumerKeyHash(key), consumerKeyHint(key), nowSeconds())
     .run();
 
   return c.json(
     {
       id,
       name,
-      credential_id: credentialId,
-      credential_label: credential.label,
+      provider_id: providerId,
+      provider_label: provider.label,
       key,
       key_hint: consumerKeyHint(key),
     },

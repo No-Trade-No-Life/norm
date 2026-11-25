@@ -10,7 +10,7 @@ import { useI18n } from './i18n';
 import { AboutPage } from './pages/about';
 import { AttestationPage } from './pages/attestation';
 import { ConsumersPage } from './pages/consumers';
-import { CredentialsPage } from './pages/credentials';
+import { ProvidersPage } from './pages/providers';
 import { PlaygroundPage } from './pages/playground';
 import { ProvenancePage } from './pages/provenance';
 import { UsagePage } from './pages/usage';
@@ -62,7 +62,7 @@ export function App() {
     <AppShell>
       <Routes>
         <Route path="/" element={<PlaygroundPage />} />
-        <Route path="/credentials" element={<CredentialsPage />} />
+        <Route path="/providers" element={<ProvidersPage />} />
         <Route path="/consumers" element={<ConsumersPage />} />
         <Route path="/usage" element={<UsagePage />} />
         <Route path="/provenance" element={<ProvenancePage />} />

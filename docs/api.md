@@ -27,7 +27,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/health` | `{ok, service, version, now}` |
-| GET | `/api/v1/stats` | `{principals, credentials, requests, spend_micros, window_hours}` |
+| GET | `/api/v1/stats` | `{principals, providers, requests, spend_micros, window_hours}` |
 | GET | `/api/v1/base-urls` | 按 base_url 聚合的上游渠道（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
@@ -41,21 +41,36 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_micros, granted_micros, requests, spend_micros}` |
-| GET | `/api/v1/account/usage?limit=50` | 请求记录（不含内容） |
-| GET | `/api/v1/account/ledger?limit=50` | 记账流水 |
+| GET | `/api/v1/account/me` | `{address, label, balance_micros, granted_micros, spend_micros, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{service_fee_micros,token_micros,unbilled_micros}}` |
+| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
+| GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 记账流水，游标是上一页最后一行的 `cursor` |
+| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_micros}` |
+| GET | `/api/v1/account/usage/by-provider` | 按上游提供者聚合（同上，`provider_id` / `provider_label`） |
+
+请求记录里每一行都能自己重算一遍：
+
+```
+fee_micros = service_fee_micros + token_micros − unbilled_micros
+```
+
+`input_tokens` **含**缓存命中，`cached_tokens` 是其中命中上游缓存的量（按便宜的价算），
+`output_tokens` 单独计价。余额不够时 `unbilled_micros` 大于 0——那是站点承担的部分，如实记账。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, service_fee}`，单位是**微美元 / 每百万 token** |
 
 ## 上游提供者（签名）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/credentials` | 本人的上游提供者（含密文与 hint，不含明文密钥） |
-| POST | `/api/v1/credentials` | 新建，body 见下 |
-| POST | `/api/v1/credentials/:id/visibility` | `{public_listed: bool}` |
-| DELETE | `/api/v1/credentials/:id` | 撤销 |
+| GET | `/api/v1/providers` | 本人的上游提供者（含密文与 hint，不含明文密钥） |
+| POST | `/api/v1/providers` | 新建，body 见下 |
+| POST | `/api/v1/providers/:id/visibility` | `{public_listed: bool}` |
+| DELETE | `/api/v1/providers/:id` | 撤销 |
 
 ```jsonc
-// POST /api/v1/credentials  → 201 { id }
+// POST /api/v1/providers  → 201 { id }
 {
   "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
   "base_url": "https://api.openai.com/v1",    // 任意上游，创建后不可改写
@@ -80,16 +95,16 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/consumers` | `{items: [{id, name, credential_id, credential_label, credential_base_url, key_hint, created_at, last_used_at}]}`（不含哈希） |
-| POST | `/api/v1/consumers` | `{name, credential_id}` → `201 {id, name, credential_id, credential_label, key, key_hint}`，`key` 只此一次 |
+| GET | `/api/v1/consumers` | `{items: [{id, name, provider_id, provider_label, provider_base_url, key_hint, created_at, last_used_at}]}`（不含哈希） |
+| POST | `/api/v1/consumers` | `{name, provider_id}` → `201 {id, name, provider_id, provider_label, key, key_hint}`，`key` 只此一次 |
 | POST | `/api/v1/consumers/:id/rotate` | → `{id, key, key_hint}`，旧钥立刻失效，绑定不变 |
 | POST | `/api/v1/consumers/:id/name` | `{name}` |
 | DELETE | `/api/v1/consumers/:id` | 撤销 |
 
-`credential_id` 必填：缺少 → `400 credential_missing`，不属于本人或已撤销 → `404 credential_not_found`。
+`provider_id` 必填：缺少 → `400 provider_missing`，不属于本人或已撤销 → `404 provider_not_found`。
 绑定不可改写——要换上游就轮换到一条新 Token。
 
-`GET` 里的 `credential_label` / `credential_base_url` 由 `LEFT JOIN` 带出，凭证被撤销后为 `null`。
+`GET` 里的 `provider_label` / `provider_base_url` 由 `LEFT JOIN` 带出，凭证被撤销后为 `null`。
 
 ## 转发（签名或 Bearer 消费者密钥）
 
@@ -115,7 +130,10 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 流式：`stream: true` 或 Gemini 的 `:streamGenerateContent`。跨方言时上游 SSE 被翻译成
 入口方言自己的帧（`response.output_text.delta` / `content_block_delta` / `candidates`
-裸 data 帧），**不报 token 用量**（上游不一定在中途给，冒充数字不如留 0，记账同样是 0）。
+裸 data 帧）。用量一边转发一边从上游的帧里嗅出来（四家的位置各不相同：chat 在末帧、
+Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Responses 在
+`response.completed`），所以**收尾帧里的 token 数就是记账用的那一份**；上游一次都没给时
+三项都是 0，账单也就只有服务费。
 同格式直通时上游的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
 唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
 
@@ -124,11 +142,11 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | `Authorization: Bearer sk-norm-…` | 必填，三选一（OpenAI SDK 的形状） | — |
 | `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） | — |
 | `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） | — |
-| `X-Norm-Credential` | **不需要**：上游在建钥时绑好了 | 必填，决定发往哪个上游 |
+| `X-Norm-Provider` | **不需要**：上游在建钥时绑好了 | 必填，决定发往哪个上游 |
 | `X-Norm-Address` 等四个签名头 | — | 必填（见上一节） |
 
 上游密钥始终由服务端解密，客户端不接触它。Token 的绑定优先于任何请求头：
-带一条 Token 又带 `X-Norm-Credential` 时，用的是 Token 绑的那条。
+带一条 Token 又带 `X-Norm-Provider` 时，用的是 Token 绑的那条。
 
 三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；别家的 key 会走签名那条路失败。
 

@@ -2,11 +2,11 @@ import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { fail } from '../http';
-import { nowSeconds, randomToken } from '../ids';
+import { nowSeconds, uuidv4 } from '../ids';
 import { isProtocol, isVisibility } from '../upstreams';
 import { hostOf } from '../base-urls';
 import { keyHintOf, sealUpstreamKey } from '../seal';
-import { findCredential, listCredentials } from '../store';
+import { findProvider, listProviders } from '../store';
 
 type Body = {
   label?: string;
@@ -20,11 +20,11 @@ type Body = {
 /** 库里密文的封装方式。改这个常量意味着要迁移全部旧密文。 */
 const KDF = 'aes-256-gcm+worker-secret';
 
-export const credentialRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
+export const providerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
-credentialRoutes.get('/', async (c) => c.json({ items: await listCredentials(c.env, c.get('principal').address) }));
+providerRoutes.get('/', async (c) => c.json({ items: await listProviders(c.env, c.get('principal').address) }));
 
-credentialRoutes.post('/', async (c) => {
+providerRoutes.post('/', async (c) => {
   const body = await c.req.json<Body>();
   const label = (body.label ?? '').trim();
   // 两个都可选，但默认值必须是"最保守"的那个：协议默认 chat，公开性默认私有。
@@ -38,19 +38,20 @@ credentialRoutes.post('/', async (c) => {
   if (!body.upstream_key?.trim()) fail(400, 'upstream_key_missing', '缺少 upstream_key');
 
   const now = nowSeconds();
-  const id = `cred_${randomToken(12)}`;
+  // 上游提供者不按时间被扫描，只是一个被引用的名字：UUID v4。
+  const id = uuidv4();
 
   // 明文只活在这几行里：封装后立刻丢弃，既不进 D1 也不进日志。
   const upstreamKey = body.upstream_key.trim();
   const sealedKey = await sealUpstreamKey({
     env: c.env,
     address: c.get('principal').address,
-    credentialId: id,
+    providerId: id,
     upstreamKey,
   });
 
   await c.env.DB.prepare(
-    `INSERT INTO credentials
+    `INSERT INTO providers
        (id, address, label, base_url, key_hint, sealed_key, kdf,
         upstream_protocol, upstream_visibility, public_listed, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
@@ -72,22 +73,22 @@ credentialRoutes.post('/', async (c) => {
   return c.json({ id }, 201);
 });
 
-credentialRoutes.post('/:id/visibility', async (c) => {
+providerRoutes.post('/:id/visibility', async (c) => {
   const { public_listed } = await c.req.json<{ public_listed?: boolean }>();
   const address = c.get('principal').address;
-  const existing = await findCredential(c.env, address, c.req.param('id'));
-  if (!existing) fail(404, 'credential_not_found', '凭证不存在或已撤销');
-  await c.env.DB.prepare('UPDATE credentials SET public_listed = ? WHERE id = ? AND address = ?')
+  const existing = await findProvider(c.env, address, c.req.param('id'));
+  if (!existing) fail(404, 'provider_not_found', '凭证不存在或已撤销');
+  await c.env.DB.prepare('UPDATE providers SET public_listed = ? WHERE id = ? AND address = ?')
     .bind(public_listed ? 1 : 0, existing.id, address)
     .run();
   return c.json({ id: existing.id, public_listed: public_listed ? 1 : 0 });
 });
 
-credentialRoutes.delete('/:id', async (c) => {
+providerRoutes.delete('/:id', async (c) => {
   const address = c.get('principal').address;
-  const existing = await findCredential(c.env, address, c.req.param('id'));
-  if (!existing) fail(404, 'credential_not_found', '凭证不存在或已撤销');
-  await c.env.DB.prepare('UPDATE credentials SET revoked_at = ? WHERE id = ? AND address = ?')
+  const existing = await findProvider(c.env, address, c.req.param('id'));
+  if (!existing) fail(404, 'provider_not_found', '凭证不存在或已撤销');
+  await c.env.DB.prepare('UPDATE providers SET revoked_at = ? WHERE id = ? AND address = ?')
     .bind(nowSeconds(), existing.id, address)
     .run();
   return c.json({ id: existing.id, revoked: true });

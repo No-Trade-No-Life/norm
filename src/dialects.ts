@@ -15,26 +15,49 @@
  * 以为有 function calling 时收到一段散文。所以跨方言带 tools 的请求在这里就拒绝。
  */
 import { fail } from './http';
+import type { Usage } from './pricing';
 import type { ChatBody, ChatMessage, UpstreamProtocol } from './upstreams';
 
 export type Dialect = UpstreamProtocol;
 
-/** 从任意一种方言的响应里读出的、记账与渲染都需要的那点东西。 */
+/**
+ * 从任意一种方言的响应里读出的、记账与渲染都需要的那点东西。
+ *
+ * `usage` 只有三项，因为账本只认这三种 token：
+ *   input   输入 token 总量（**含**缓存命中的那部分）
+ *   cached  其中命中上游缓存的
+ *   output  输出 token
+ * 四家的口径各不相同（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的
+ * `prompt_tokens` 含），归一化只发生在下面四个 extract 里，别处不再判断方言。
+ */
 export type AnswerCore = {
   text: string;
   model: string;
-  promptTokens: number;
-  completionTokens: number;
+  usage: Usage;
   createdAt: number;
 };
 
+/** 一次调用的账单结论：总价、构成、以及算这笔账用的三项 token。 */
 export type NormMeta = {
   request_id: string;
   fee_micros: number;
+  service_fee_micros: number;
+  token_micros: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  /** 余额不足时没能收上来的部分；正常为 0。 */
+  unbilled_micros: number;
   balance_micros: number | null;
   latency_ms: number;
   host: string;
 };
+
+/** 四家方言里表示「用量」的那几个字段名，集中在这里，别处不出现。 */
+export type RawUsage = Record<string, unknown>;
+
+const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) ? value : 0);
+const obj = (value: unknown): RawUsage => (value !== null && typeof value === 'object' ? (value as RawUsage) : {});
 
 type Raw = Record<string, unknown>;
 
@@ -132,51 +155,77 @@ export function parseInbound(dialect: Dialect, raw: Raw, model: string, stream: 
 /* ── 响应 → AnswerCore（记账与渲染都要的中间物，不是方言） ──────────── */
 
 const text = (value: unknown): string => (typeof value === 'string' ? value : '');
-const num = (value: unknown): number => (typeof value === 'number' ? value : 0);
+
+/**
+ * OpenAI chat / responses：`prompt_tokens` / `input_tokens` **含**缓存命中的部分，
+ * 命中数在 `*_details.cached_tokens` 里。
+ */
+function chatUsage(raw: RawUsage): Usage {
+  const details = obj(raw.prompt_tokens_details ?? raw.input_tokens_details);
+  return {
+    input: num(raw.prompt_tokens ?? raw.input_tokens),
+    cached: num(details.cached_tokens),
+    output: num(raw.completion_tokens ?? raw.output_tokens),
+  };
+}
+
+/**
+ * Anthropic：`input_tokens` **不含**缓存读与缓存写，另外两项单独给。
+ * 所以输入总量要三项相加，命中数只算 `cache_read_input_tokens`。
+ * 缓存写按普通输入计价——那是有意的保守：它其实比普通输入贵，按便宜的收，
+ * 账面不会多收用户的钱。
+ */
+function anthropicUsage(raw: RawUsage): Usage {
+  const fresh = num(raw.input_tokens);
+  const read = num(raw.cache_read_input_tokens);
+  const created = num(raw.cache_creation_input_tokens);
+  return { input: fresh + read + created, cached: read, output: num(raw.output_tokens) };
+}
+
+/** Gemini：`promptTokenCount` 含 `cachedContentTokenCount`。 */
+function geminiUsage(raw: RawUsage): Usage {
+  return {
+    input: num(raw.promptTokenCount),
+    cached: num(raw.cachedContentTokenCount),
+    output: num(raw.candidatesTokenCount),
+  };
+}
 
 const extractChat = (json: Raw): AnswerCore => {
   const choice = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { message?: { content?: unknown } } | undefined;
-  const usage = (json.usage ?? {}) as Raw;
   return {
     text: flatten(choice?.message?.content),
     model: text(json.model),
-    promptTokens: num(usage.prompt_tokens),
-    completionTokens: num(usage.completion_tokens),
+    usage: chatUsage(obj(json.usage)),
     createdAt: num(json.created),
   };
 };
 
 const extractResponses = (json: Raw): AnswerCore => {
   const output = Array.isArray(json.output) ? json.output : [];
-  const usage = (json.usage ?? {}) as Raw;
   return {
     text: output.map((item) => flatten((item as { content?: unknown }).content)).filter(Boolean).join('\n'),
     model: text(json.model),
-    promptTokens: num(usage.input_tokens),
-    completionTokens: num(usage.output_tokens),
+    usage: chatUsage(obj(json.usage)),
     createdAt: num(json.created_at),
   };
 };
 
 const extractAnthropic = (json: Raw): AnswerCore => {
-  const usage = (json.usage ?? {}) as Raw;
   return {
     text: (Array.isArray(json.content) ? json.content : []).map((block) => text((block as { text?: unknown }).text)).join(''),
     model: text(json.model),
-    promptTokens: num(usage.input_tokens),
-    completionTokens: num(usage.output_tokens),
+    usage: anthropicUsage(obj(json.usage)),
     createdAt: 0,
   };
 };
 
 const extractGemini = (json: Raw): AnswerCore => {
   const candidates = Array.isArray(json.candidates) ? json.candidates : [];
-  const usage = (json.usageMetadata ?? {}) as Raw;
   return {
     text: candidates.map((candidate) => flatten((candidate as { content?: { parts?: unknown } }).content?.parts)).filter(Boolean).join('\n'),
     model: text(json.modelVersion),
-    promptTokens: num(usage.promptTokenCount),
-    completionTokens: num(usage.candidatesTokenCount),
+    usage: geminiUsage(obj(json.usageMetadata)),
     createdAt: 0,
   };
 };
@@ -199,6 +248,8 @@ export function readAnswer(dialect: Dialect, json: Raw): AnswerCore {
  * `norm` 只加在顶层：它是附加字段，按已知字段反序列化的客户端会忽略它。
  */
 export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMeta): unknown {
+  const { input, cached, output } = answer.usage;
+
   if (dialect === 'openai-chat') {
     return {
       id: `chatcmpl-${norm.request_id}`,
@@ -206,7 +257,13 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       created: Math.floor(Date.now() / 1000),
       model: answer.model,
       choices: [{ index: 0, message: { role: 'assistant', content: answer.text }, finish_reason: 'stop' }],
-      usage: { prompt_tokens: answer.promptTokens, completion_tokens: answer.completionTokens },
+      // prompt_tokens 含缓存命中的那部分，与 OpenAI 自己的口径一致；命中数单列。
+      usage: {
+        prompt_tokens: input,
+        completion_tokens: output,
+        total_tokens: input + output,
+        prompt_tokens_details: { cached_tokens: cached },
+      },
       norm,
     };
   }
@@ -220,7 +277,8 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       content: [{ type: 'text', text: answer.text }],
       stop_reason: 'end_turn',
       stop_sequence: null,
-      usage: { input_tokens: answer.promptTokens, output_tokens: answer.completionTokens },
+      // Anthropic 的 input_tokens 不含缓存读，所以这里回的是扣掉命中的那部分。
+      usage: { input_tokens: input - cached, output_tokens: output, cache_read_input_tokens: cached },
       norm,
     };
   }
@@ -242,9 +300,10 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
         },
       ],
       usage: {
-        input_tokens: answer.promptTokens,
-        output_tokens: answer.completionTokens,
-        total_tokens: answer.promptTokens + answer.completionTokens,
+        input_tokens: input,
+        input_tokens_details: { cached_tokens: cached },
+        output_tokens: output,
+        total_tokens: input + output,
       },
       norm,
     };
@@ -253,9 +312,10 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
   return {
     candidates: [{ content: { role: 'model', parts: [{ text: answer.text }] }, finishReason: 'STOP', index: 0 }],
     usageMetadata: {
-      promptTokenCount: answer.promptTokens,
-      candidatesTokenCount: answer.completionTokens,
-      totalTokenCount: answer.promptTokens + answer.completionTokens,
+      promptTokenCount: input,
+      cachedContentTokenCount: cached,
+      candidatesTokenCount: output,
+      totalTokenCount: input + output,
     },
     modelVersion: answer.model,
     norm,
@@ -318,9 +378,10 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
           model: answer.model,
           output: [message('completed', [{ type: 'output_text', text }])],
           usage: {
-            input_tokens: answer.promptTokens,
-            output_tokens: answer.completionTokens,
-            total_tokens: answer.promptTokens + answer.completionTokens,
+            input_tokens: answer.usage.input,
+            input_tokens_details: { cached_tokens: answer.usage.cached },
+            output_tokens: answer.usage.output,
+            total_tokens: answer.usage.input + answer.usage.output,
           },
         },
       }),
@@ -340,7 +401,15 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
     delta: (text) => [named('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })],
     tail: (answer) => [
       named('content_block_stop', { type: 'content_block_stop', index: 0 }),
-      named('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: answer.completionTokens } }),
+      named('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: {
+          output_tokens: answer.usage.output,
+          input_tokens: answer.usage.input - answer.usage.cached,
+          cache_read_input_tokens: answer.usage.cached,
+        },
+      }),
       named('message_stop', { type: 'message_stop' }),
     ],
   };
@@ -355,13 +424,78 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
         bare({
           candidates: [{ content: { role: 'model', parts: [] }, finishReason: 'STOP', index: 0 }],
           usageMetadata: {
-            promptTokenCount: answer.promptTokens,
-            candidatesTokenCount: answer.completionTokens,
-            totalTokenCount: answer.promptTokens + answer.completionTokens,
+            promptTokenCount: answer.usage.input,
+            cachedContentTokenCount: answer.usage.cached,
+            candidatesTokenCount: answer.usage.output,
+            totalTokenCount: answer.usage.input + answer.usage.output,
           },
           modelVersion: answer.model,
         }),
       ],
+  };
+}
+
+/* ── 流式里的用量 ─────────────────────────────────────────────────── */
+
+/**
+ * 流式响应里，用量散在几个不相邻的帧里，而且各自的含义不同：
+ *
+ *   openai-chat        末帧的 `usage`（只在请求 `stream_options.include_usage` 时出现）
+ *   openai-responses   `response.completed` 里的 `response.usage`
+ *   anthropic-messages `message_start` 给输入与缓存，`message_delta` 给输出
+ *   google-gemini      每一帧都带一次累计的 `usageMetadata`
+ *
+ * 所以这里不是一个「读最后一帧」的函数，而是一个累加器：同一字段取最大值
+ * （都是累计计数，取最大等于取最后一次完整读数），缺的字段保持原值。
+ * 一个流里一次用量都没给时，三项都是 0——账单为 0，与 docs/api.md 的说法一致。
+ */
+export function usageSniffer(dialect: Dialect): { push(data: string): void; usage(): Usage } {
+  const acc: Usage = { input: 0, cached: 0, output: 0 };
+
+  const takeChat = (raw: RawUsage) => {
+    const usage = chatUsage(raw);
+    acc.input = Math.max(acc.input, usage.input);
+    acc.cached = Math.max(acc.cached, usage.cached);
+    acc.output = Math.max(acc.output, usage.output);
+  };
+
+  const takeAnthropic = (raw: RawUsage) => {
+    const fresh = num(raw.input_tokens);
+    const read = num(raw.cache_read_input_tokens);
+    const created = num(raw.cache_creation_input_tokens);
+    if (fresh + read + created > 0) {
+      acc.input = Math.max(acc.input, fresh + read + created);
+      acc.cached = Math.max(acc.cached, read);
+    }
+    acc.output = Math.max(acc.output, num(raw.output_tokens));
+  };
+
+  const takeGemini = (raw: RawUsage) => {
+    const usage = geminiUsage(raw);
+    acc.input = Math.max(acc.input, usage.input);
+    acc.cached = Math.max(acc.cached, usage.cached);
+    acc.output = Math.max(acc.output, usage.output);
+  };
+
+  return {
+    push(data) {
+      if (data.length === 0 || data === '[DONE]') return;
+      let json: Raw;
+      try {
+        json = JSON.parse(data) as Raw;
+      } catch {
+        return;
+      }
+      if (dialect === 'openai-chat') takeChat(obj(json.usage));
+      else if (dialect === 'openai-responses') {
+        if (json.type === 'response.completed') takeChat(obj(obj(json.response).usage));
+      } else if (dialect === 'anthropic-messages') {
+        // 输入在 `message_start`（包里套一层 message.usage），输出在 `message_delta`（顶层）。
+        takeAnthropic(obj(json.usage ?? obj(json.message).usage));
+      }
+      else takeGemini(obj(json.usageMetadata));
+    },
+    usage: () => ({ ...acc }),
   };
 }
 
