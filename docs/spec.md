@@ -124,6 +124,10 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 「入口方言 === 上游提供商协议」就是一句字符串相等，而那 4 格**不转换**——请求体按原始字节
 发出去，响应体原样回来。一个字段都不碰，包括我们不打算理解的 `tools`、`response_format`。
 
+例外只有一个：流式请求打向 `openai-chat` 上游时补 `stream_options.include_usage`，
+因为那种上游默认不回用量，而账本必须知道这次花了多少 token。多出来的那条用量帧
+客户端没要就不转发。
+
 其余 12 格才经过 OpenAI Chat 这座桥。桥只在一侧出现，所以矩阵是 4 段入口翻译
 加 4 段上游提供商适配（`src/providers.ts` 只管 ChatBody → 四种上游提供商），不是 16 条路径。
 

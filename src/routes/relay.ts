@@ -53,6 +53,26 @@ relayRoutes.post('/models/:target', (c: RelayContext) => {
 
 type Entry = { dialect: Dialect; model?: string; stream?: boolean };
 
+const obj = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+
+/**
+ * 这条 SSE 帧是不是「只有用量、没有内容」的那一条。
+ *
+ * OpenAI 兼容的流在 `stream_options.include_usage` 时会在结尾补一条
+ * `{"choices":[],"usage":{…}}`——没有文本增量，客户端拿它只为对账。
+ * 我们自己要来的那一条不该突然出现在没要求的客户端面前。
+ */
+function usageOnlyFrame(payload: string): boolean {
+  try {
+    const json = JSON.parse(payload) as Record<string, unknown>;
+    const choices = json.choices;
+    return json.usage !== undefined && json.usage !== null && (!Array.isArray(choices) || choices.length === 0);
+  } catch {
+    return false;
+  }
+}
+
 async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
@@ -91,7 +111,29 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // 目的地只能来自上游提供商：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
   const baseUrl = provider.base_url;
   const adapter = adapterFor(protocol);
-  const outbound = sameShape ? rawBody : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
+
+  // 客户端有没有要求用量：OpenAI 兼容的流默认**不**回 usage，要它得显式 include_usage。
+  const wantsUsage = obj(raw.stream_options).include_usage === true;
+
+  /**
+   * 发往上游的请求体。
+   *
+   * 同格式直通按原始字节发出去——唯一的例外是流式请求打向 openai-chat 上游时：
+   * 那种上游默认不回 token 用量，而账本就靠它算钱。所以这里补一个
+   * `stream_options.include_usage`，并把多出来的那条用量帧吃掉（客户端没要就不转发）。
+   * 少了这一步，真实的流式调用在账本上永远是 0 / 0 / 0，只剩一笔 Gas。
+   */
+  const withUsage = (body: Record<string, unknown>): string =>
+    JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
+  const askForUsage = stream && protocol === 'openai-chat';
+
+  const outbound = sameShape
+    ? askForUsage
+      ? withUsage(raw)
+      : rawBody
+    : askForUsage
+      ? withUsage(adapter.request(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
+      : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
 
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
@@ -153,8 +195,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
   if (stream) {
     return sameShape
-      ? passThroughStream({ ...accounting, reply, dialect: entry.dialect })
-      : bridgeStream({ ...accounting, reply, entry: entry.dialect, protocol });
+      ? passThroughStream({ ...accounting, reply, dialect: entry.dialect, wantsUsage })
+      : bridgeStream({ ...accounting, reply, entry: entry.dialect, protocol, wantsUsage });
   }
 
   const json = await reply.json<Record<string, unknown>>();
@@ -284,8 +326,8 @@ function recordOf(
  * `{"norm":…}` 显示本次调用的费用与余额。另外三条路的客户端是第三方 SDK，
  * 它们的解析器我们管不着，所以一个事件都不插——request_id 走 `X-Norm-Request-Id`。
  */
-function passThroughStream(accounting: Accounting & { reply: Response; dialect: Dialect }): Response {
-  const { env, reply, dialect } = accounting;
+function passThroughStream(accounting: Accounting & { reply: Response; dialect: Dialect; wantsUsage: boolean }): Response {
+  const { env, reply, dialect, wantsUsage } = accounting;
   const source = reply.body;
   if (!source) return new Response('上游提供商没有返回流', { status: 502 });
   const reader = source.getReader();
@@ -330,8 +372,28 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
       finished = true;
 
       if (injectNorm) {
-        if (buffer.length > 0 && buffer.trim() !== 'data: [DONE]') controller.enqueue(encoder.encode(buffer));
+        if (buffer.length > 0 && buffer.trim() !== 'data: [DONE]') {
+          if (buffer.startsWith('data:')) sniffer.push(buffer.slice(5).trim());
+          // 我们自己要来记账的那条用量帧：客户端没要就不转发。
+          if (wantsUsage || !usageOnlyFrame(buffer.slice(5).trim())) controller.enqueue(encoder.encode(buffer));
+        }
         const meta = await finish();
+        // 入口是 chat 且客户端要了用量：上游那一家可能把用量放在别的帧里，
+        // 这里统一补一条 chat 形状的用量帧（choices 为空），OpenAI SDK 认这个形状。
+        if (wantsUsage) {
+          const usageChunk = {
+            object: 'chat.completion.chunk',
+            model: accounting.model,
+            choices: [],
+            usage: {
+              prompt_tokens: meta.input_tokens,
+              completion_tokens: meta.output_tokens,
+              total_tokens: meta.input_tokens + meta.output_tokens,
+              prompt_tokens_details: { cached_tokens: meta.cached_tokens },
+            },
+          };
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
+        }
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
       } else {
         await finish();
@@ -362,8 +424,8 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
  * 收尾帧必须带上最终 token 数——那正是我们记账用的那一份，于是「账」与「回给客户端的
  * 用量」永远一致，不会出现「扣了钱但报 0 token」。
  */
-function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; protocol: Protocol }): Response {
-  const { env, reply, entry, protocol } = accounting;
+function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; protocol: Protocol; wantsUsage: boolean }): Response {
+  const { env, reply, entry, protocol, wantsUsage } = accounting;
   const source = reply.body;
   if (!source) return new Response('上游提供商没有返回流', { status: 502 });
 

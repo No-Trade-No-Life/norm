@@ -162,9 +162,13 @@ const text = (value: unknown): string => (typeof value === 'string' ? value : ''
  */
 function chatUsage(raw: RawUsage): Usage {
   const details = obj(raw.prompt_tokens_details ?? raw.input_tokens_details);
+  // 缓存命中的字段各家不同：OpenAI 放在 `prompt_tokens_details.cached_tokens`，
+  // DeepSeek 直接给 `prompt_cache_hit_tokens`（未命中的那半在 `prompt_cache_miss_tokens`）。
+  // 少了这一条，DeepSeek 的缓存命中率在账本上永远是 0——那正是它最便宜的来源。
+  const cached = num(details.cached_tokens) || num(raw.prompt_cache_hit_tokens) || num(raw.cached_tokens);
   return {
     input: num(raw.prompt_tokens ?? raw.input_tokens),
-    cached: num(details.cached_tokens),
+    cached,
     output: num(raw.completion_tokens ?? raw.output_tokens),
   };
 }

@@ -15,6 +15,15 @@ describe('非流式的用量归一化', () => {
     expect(core.usage).toEqual({ input: 1000, cached: 900, output: 20 });
   });
 
+  it('openai-chat：DeepSeek 把缓存命中放在 prompt_cache_hit_tokens', () => {
+    const core = readAnswer('openai-chat', {
+      model: 'deepseek-chat',
+      choices: [{ message: { content: 'hi' } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 20, prompt_cache_hit_tokens: 900, prompt_cache_miss_tokens: 100 },
+    });
+    expect(core.usage).toEqual({ input: 1000, cached: 900, output: 20 });
+  });
+
   it('openai-responses：input/output_tokens', () => {
     const core = readAnswer('openai-responses', {
       model: 'gpt-4o',
