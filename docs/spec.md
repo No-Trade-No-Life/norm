@@ -20,7 +20,9 @@ Norm 不是「一台你租给我的机器」，而是**一份公开可复现的�
 ## 3. 身份
 
 - 用户身份 = Ed25519 密钥对。地址 = `base58(publicKey)`（32 字节公钥 → 44 字符左右）。
-- 私钥只存在于用户浏览器（IndexedDB/localStorage），可导出为 base58 以便换设备。
+- 私钥以**拓展形式**存在：64 字节的 `seed || publicKey`，与 Solana 的密钥种子一致。
+  只存在于用户浏览器（localStorage），可导出为 base58 或 Solana `id.json` 的 JSON 数组以便换设备。
+  旧版 32 字节种子在首次读取时原地升级，地址不变。
 - 没有注册、没有邮箱、没有密码、没有 cookie 会话。
 - 每个 API 请求自带签名：
 

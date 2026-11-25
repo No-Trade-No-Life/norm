@@ -5,13 +5,33 @@
 ## 1. 身份
 
 ```
-私钥 = 32 字节随机种子   →   ed25519 keypair（RFC 8032）
-公钥 = 32 字节            →   address = base58(publicKey)
+种子   = 32 字节随机             →  ed25519 keypair（RFC 8032）
+公钥   = 32 字节（由种子派生）    →  address = base58(publicKey)
+密钥   = 种子 || 公钥 = 64 字节   →  存储与备份的单位
 ```
 
-- 浏览器用 `@noble/curves/ed25519` 的 `ed25519.getPublicKey(seed)` 与 `ed25519.sign(msg, seed)`。
-- 服务端用 `@noble/curves/ed25519` 的 `ed25519.verify(sig, msg, publicKey)`。
-- 私钥落在浏览器 `localStorage['norm.identity.seed']`（base58）。没有服务端会话。
+- 密钥用 **拓展形式**：64 字节的 `seed(32) || publicKey(32)`，与 **Solana 的密钥种子一致**
+  （即 `solana-keygen` 写进 `id.json` 的那 64 个数字、`@solana/web3.js` 里 `secretKey` 的布局）。
+- 浏览器用 `@noble/curves/ed25519`：派生用 `ed25519.getPublicKey(seed)`，签名用
+  `ed25519.sign(msg, seed)`——**noble 只吃 32 字节种子**，64 字节里的后 32 字节是给人看的、
+  给别的钱包用的公钥副本，签名前取 `keypair.subarray(0, 32)`。
+- 服务端用 `@noble/curves/ed25519` 的 `ed25519.verify(sig, msg, publicKey)`，与密钥形态无关。
+- 密钥落在浏览器 `localStorage['norm.identity.keypair']`（base58 的 64 字节）。没有服务端会话。
+
+### 1a. 导入导出与旧格式迁移
+
+| 形状 | 例子 | 处理 |
+|---|---|---|
+| base58 · 64 字节 | `4vJ9JU…`（本版导出） | 直接接受；校验公钥段 = 派生公钥 |
+| JSON 数组 · 64 个整数 | `[1,2,…,64]`（Solana `id.json`） | 同上 |
+| base58 · 32 字节 | 旧版 `norm.identity.seed` 的值 | 按种子派生公钥，升级为 64 字节 |
+| JSON 数组 · 32 个整数 | 旧种子被转成数组 | 同上 |
+
+- 64 字节里「公钥段 ≠ 种子派生结果」一律**拒绝**，不静默按种子重算——否则用户会以为
+  自己在用那把公钥。
+- 迁移在读取时进行，写新键后再删旧键（`norm.identity.seed`）：先写保证不会丢密钥，
+  删旧保证不存在两份互相矛盾的身份来源。**地址与账户不变**，只是备份格式变了。
+- 旧值解析失败时不清空它：那是用户手抄备份之外的最后一份副本，坏了也不该被我们删掉。
 
 ## 2. 请求签名
 

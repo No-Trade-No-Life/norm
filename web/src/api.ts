@@ -1,9 +1,8 @@
-import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { base58 } from '@scure/base';
 
 import { errorText } from './lib/error-text';
-import { loadStoredSeed, sign } from './identity';
+import { loadStoredIdentity, sign } from './identity';
 
 /** docs/api.md 的错误形状：{ error, message }。 */
 export class ApiError extends Error {
@@ -63,8 +62,8 @@ export type SignedRequest = {
  * 否则键序或空格变了，服务端验签必然失败。
  */
 export async function signedFetch({ path, method = 'GET', body, headers, signal }: SignedRequest): Promise<Response> {
-  const seed = loadStoredSeed();
-  if (!seed) throw new ApiError(0, 'no_identity', '本地没有身份种子');
+  const stored = loadStoredIdentity(localStorage);
+  if (!stored) throw new ApiError(0, 'no_identity', '本地没有身份密钥');
 
   const bodyBytes = body === undefined ? new Uint8Array(0) : encoder.encode(body);
   const timestamp = String(Math.floor(Date.now() / 1000));
@@ -78,8 +77,9 @@ export async function signedFetch({ path, method = 'GET', body, headers, signal 
     nonce,
     bodySha256Hex: sha256Hex(bodyBytes),
   });
-  const signature = base58.encode(sign(seed, message));
-  const address = base58.encode(ed25519.getPublicKey(seed));
+  const signature = base58.encode(sign(stored.keypair, message));
+  // 地址取密钥里自带的那 32 字节公钥，不现场再派生一次。
+  const address = base58.encode(stored.keypair.subarray(32));
 
   return fetch(path, {
     method,
