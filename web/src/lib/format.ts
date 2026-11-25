@@ -65,3 +65,17 @@ export function percent(part: number | null | undefined, whole: number | null | 
   if (!whole || whole <= 0 || part === null || part === undefined) return '0%';
   return `${Math.round((part / whole) * 100)}%`;
 }
+
+/**
+ * 官方价：纳美元 / 1M token → 每百万 token 的美元。
+ *
+ * 与 usd() 分家的原因：价目表里常有 $0.075 这种三位小数的单价，
+ * 四舍五入到分（$0.08）会让「官方价」这个锚点先自己失真。
+ */
+export function perMillion(nanos: number): string {
+  const value = nanos / 1_000_000_000;
+  if (value === 0) return '$0';
+  // 至少两位小数（$1.10 而不是 $1.1），再多则保留有效位：$0.075 不能被舍成 $0.08。
+  const [whole, fraction = ''] = value.toFixed(4).replace(/0+$/, '').split('.');
+  return `$${whole}.${fraction.padEnd(2, '0')}`;
+}

@@ -1,4 +1,5 @@
 import {
+  BoxesIcon,
   ChevronLeftIcon,
   FileCheck2Icon,
   InfoIcon,
@@ -78,6 +79,7 @@ function SidebarBody({ collapsed, onNavigate }: { collapsed: boolean; onNavigate
       items: [
         { to: '/', labelKey: 'nav.playground', icon: <TerminalIcon /> },
         { to: '/providers', labelKey: 'nav.providers', icon: <KeyRoundIcon /> },
+        { to: '/models', labelKey: 'nav.models', icon: <BoxesIcon /> },
         { to: '/consumers', labelKey: 'nav.consumers', icon: <PlugZapIcon /> },
         { to: '/usage', labelKey: 'nav.usage', icon: <ReceiptTextIcon /> },
       ],

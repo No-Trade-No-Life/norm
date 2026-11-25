@@ -972,6 +972,60 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   check('清单不动余额', after.balance_nanos === before.balance_nanos, { before: before.balance_nanos, after: after.balance_nanos });
 }
 
+console.log('14. 模型总表：账户里所有上游的清单并成一张表，带官方价锚点');
+{
+  const catalog = await call(alice, 'GET', '/api/v1/models');
+  check('模型总表 200', catalog.status === 200, catalog.status);
+
+  const items = catalog.json.models ?? [];
+  const ids = items.map((item) => item.id);
+  const mini = items.find((item) => item.id === 'gpt-4o-mini');
+  check('跨上游同名只出现一次', ids.filter((id) => id === 'gpt-4o-mini').length === 1, ids);
+  check('四种上游的清单都在表里', ['gpt-4o-mini', 'claude-haiku-3', 'gemini-2.0-flash'].every((id) => ids.includes(id)), ids);
+  check(
+    '谁有它：两条 openai 上游都列了它',
+    mini?.providers.length === 2 && mini.providers.includes(providers['openai-chat']) && mini.providers.includes(providers['openai-responses']),
+    mini?.providers,
+  );
+  check(
+    '官方价锚在最长的规则上',
+    mini?.official?.match === 'gpt-4o-mini' && mini.official.input === 150_000_000 && mini.official.output === 600_000_000,
+    mini?.official,
+  );
+
+  const probeRows = catalog.json.providers ?? [];
+  const probed = probeRows.filter((row) => row.probed);
+  check('每条启用中的上游都探测了', probed.length === 4 && probed.every((row) => row.ok === true), probeRows);
+  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 2, probeRows);
+
+  // 禁用的一条：不参与探测，它的模型也不该留在「可用」里。
+  await call(alice, 'POST', `/api/v1/providers/${providers['google-gemini']}/enabled`, JSON.stringify({ enabled: false }));
+  const afterOff = (await call(alice, 'GET', '/api/v1/models')).json;
+  const offRow = afterOff.providers.find((row) => row.id === providers['google-gemini']);
+  check('禁用的上游不探测，也不假装失败', offRow?.probed === false && offRow.ok === null, offRow);
+  check('禁用的上游的模型退出这张表', !afterOff.models.some((item) => item.id.startsWith('gemini-')), afterOff.models.map((item) => item.id));
+  await call(alice, 'POST', `/api/v1/providers/${providers['google-gemini']}/enabled`, JSON.stringify({ enabled: true }));
+
+  // 打不通的一条：它自己的答复留在表上，别人的模型照常。
+  const dead = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'unreachable', base_url: 'http://127.0.0.1:1/v1', provider_key: 'sk-x', protocol: 'openai-chat',
+  }));
+  const withDead = (await call(alice, 'GET', '/api/v1/models')).json;
+  const deadRow = withDead.providers.find((row) => row.id === dead.json.id);
+  check('打不通的上游记成 ok=false 且有原因', deadRow?.ok === false && typeof deadRow.error === 'string' && deadRow.error.length > 0, deadRow);
+  check('一条坏掉不影响整张表', withDead.models.some((item) => item.id === 'gpt-4o-mini'), withDead.models.length);
+  await call(alice, 'DELETE', `/api/v1/providers/${dead.json.id}`);
+
+  // 上游不认这把密钥：把它的原话压成一句带回来。
+  const wrongKey = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'wrong key', base_url: BASE_URL, provider_key: 'sk-wrong', protocol: 'openai-chat',
+  }));
+  const withWrong = (await call(alice, 'GET', '/api/v1/models')).json;
+  const wrongRow = withWrong.providers.find((row) => row.id === wrongKey.json.id);
+  check('上游 401 的原话被带回来', wrongRow?.ok === false && wrongRow.error.includes('401'), wrongRow);
+  await call(alice, 'DELETE', `/api/v1/providers/${wrongKey.json.id}`);
+}
+
 provider.close();
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);

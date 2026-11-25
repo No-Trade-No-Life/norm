@@ -14,6 +14,7 @@ import type {
   Pricing,
   Provider,
   ProviderUsage,
+  ModelCatalog,
   ModelList,
   RequestRow,
 } from './types';
@@ -73,6 +74,24 @@ export function useModels(enabled: boolean, providerId: string) {
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return (await response.json()) as ModelList;
     },
+  });
+}
+
+/**
+ * 账户的模型总表：所有启用中的上游提供商各自回了什么，并成一张表。
+ *
+ * 与数据面的 `/v1/models` 分工不同：那个一次只答一条上游、要一把下游 Token；
+ * 这张表是资源视图，走签名，一次问完所有上游。它不扣费，所以取回来可以多放一会儿；
+ * 也因为它会真的去打每条上游，页面加载时不主动重取，点「刷新」才再问一遍。
+ */
+export function useModelCatalog(enabled: boolean) {
+  const { identity } = useIdentity();
+  return useQuery({
+    queryKey: ['model-catalog', identity.address],
+    enabled,
+    retry: false,
+    staleTime: 5 * 60_000,
+    queryFn: () => requestJson<ModelCatalog>({ path: '/api/v1/models' }),
   });
 }
 
