@@ -171,6 +171,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     env: c.env,
     address,
     providerId: provider.id,
+    providerUser: provider.address,
+    consumerUser: principal.consumerId ? address : null,
     /** 这一单是不是落到了公共池上：账单里要说，否则「为什么打到别人的主机」无从解释。 */
     pool: choice.via === 'pool',
     // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
@@ -238,6 +240,10 @@ type Accounting = {
   env: Env;
   address: string;
   providerId: string;
+  /** 收钱的那一方的地址：公共池时是站点的地址，不是调用方的。 */
+  providerUser: string;
+  /** 花钱的那一方的地址：消费者密钥属于谁；签名直连时为空。 */
+  consumerUser: string | null;
   /** true = 公共池兜底，false = 自己名下的上游。 */
   pool: boolean;
   consumerId: string;
@@ -329,7 +335,9 @@ function recordOf(
     requestId: accounting.requestId,
     address: accounting.address,
     providerId: accounting.providerId,
+    providerUser: accounting.providerUser,
     consumerId: accounting.consumerId,
+    consumerUser: accounting.consumerUser,
     baseUrl: accounting.baseUrl,
     model: accounting.model,
     status: parts.status,

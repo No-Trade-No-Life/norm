@@ -564,6 +564,11 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   check('非流式首字为空', ok.some((row) => row.first_token_ms === null), ok.slice(0, 3));
   check('首字不会晚于总耗时', ok.every((row) => row.first_token_ms === null || row.first_token_ms <= row.latency_ms), ok.slice(0, 3));
   check('缓存命中不超过输入（缓存率恒在 0..1）', ok.every((row) => row.cached_tokens <= row.input_tokens), ok.slice(0, 3));
+  // 审计要回答「钱进了谁的口袋、又是谁花的」——记地址（公钥）而不是库内 id。
+  check('审计记下了上游用户的地址', ok.every((row) => typeof row.provider_user === 'string' && row.provider_user.length > 20), ok.slice(0, 2));
+  // 推理面现在只认下游密钥，所以每条记录都该有下游用户；空值只可能出现在历史行里。
+  check('每条记录都有下游用户的地址', ok.every((row) => typeof row.consumer_user === 'string' && row.consumer_user.length > 20), ok.slice(0, 2));
+  check('用钥匙的行，下游用户就是账户地址', rows.filter((row) => row.consumer_id).every((row) => row.consumer_user === alice.address), rows.filter((row) => row.consumer_id).slice(0, 2));
   const meLatency = me.latency;
   check('账户级延迟统计可读', typeof meLatency?.avg_latency_ms === 'number' && (meLatency?.streamed_requests ?? 0) > 0, meLatency);
   check('失败那条只扣 Gas、token 为 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 300 && row.gas_fee_nanos === 300 && row.token_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));

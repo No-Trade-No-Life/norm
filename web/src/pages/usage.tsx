@@ -6,18 +6,17 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { latency, percent, safeHost, shortAddress, signedUsd, tokens, usd, when } from '../lib/format';
+import { latency, percent, safeHost, shortAddress, shortKey, signedUsd, tokens, usd, when } from '../lib/format';
 import { protocolLabel } from '../lib/labels';
 import {
   PER_PAGE,
   useLedger,
   useMe,
-  usePricing,
   useUsage,
   useUsageByConsumer,
   useUsageByProvider,
 } from '../queries';
-import type { ConsumerUsage, LedgerRow, Pricing, ProviderUsage, RequestRow } from '../types';
+import type { ConsumerUsage, LedgerRow, ProviderUsage, RequestRow } from '../types';
 
 /**
  * 用量与账本。这一页的顺序就是一个人核对账单的顺序：
@@ -36,7 +35,6 @@ export function UsagePage() {
   const ledger = useCursorPages<number>((cursor) => useLedger(true, cursor));
   const byConsumer = useUsageByConsumer(true);
   const byProvider = useUsageByProvider(true);
-  const pricing = usePricing();
 
   const tokens_ = me.data?.usage;
   const billed = me.data?.billed;
@@ -187,17 +185,6 @@ export function UsagePage() {
         )}
       </Section>
 
-      <Section title={t('us.pricing_title')} description={t('us.pricing_note')} bodyClassName="p-0">
-        {pricing.isPending ? (
-          <SkeletonRows rows={4} cols={4} />
-        ) : pricing.isError ? (
-          <div className="p-3">
-            <ErrorNote title={t('common.error')} message={(pricing.error as Error).message} />
-          </div>
-        ) : pricing.data ? (
-          <PricingTable pricing={pricing.data} />
-        ) : null}
-      </Section>
     </div>
   );
 }
@@ -297,6 +284,8 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
           <TableHead className="hidden w-20 text-right sm:table-cell">{t('us.col_latency')}</TableHead>
           <TableHead className="hidden w-32 text-right xl:table-cell">{t('us.col_tokens')}</TableHead>
           <TableHead className="w-[5.5rem] text-right">{t('us.col_fee')}</TableHead>
+          <TableHead className="hidden w-24 lg:table-cell">{t('us.col_provider_user')}</TableHead>
+          <TableHead className="hidden w-24 lg:table-cell">{t('us.col_consumer_user')}</TableHead>
           <TableHead className="hidden min-w-56 xl:table-cell">{t('us.col_request_id')}</TableHead>
         </TableRow>
       </TableHeader>
@@ -327,6 +316,18 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_gas')} ${usd(row.gas_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
               {usd(row.fee_nanos)}
+            </TableCell>
+            <TableCell className="hidden lg:table-cell">
+              {/* 收钱的是谁：公共池时这里是站点的地址，不是调用方自己。 */}
+              <code className="text-[11px] text-muted-foreground" title={row.provider_user ?? ''}>
+                {shortKey(row.provider_user)}
+              </code>
+            </TableCell>
+            <TableCell className="hidden lg:table-cell">
+              {/* 花钱的是谁：签名直连说明这次是人手动打的。 */}
+              <code className="text-[11px] text-muted-foreground" title={row.consumer_user ?? ''}>
+                {row.consumer_user ? shortKey(row.consumer_user) : t('us.direct')}
+              </code>
             </TableCell>
             <TableCell className="hidden xl:table-cell">
               <code className="block text-[11px] text-muted-foreground" title={row.id}>
@@ -438,46 +439,5 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
         ))}
       </TableBody>
     </Table>
-  );
-}
-
-/**
- * 价目表：纳美元 / 每百万 token。放在页面末尾，是因为它是「核对」而不是「日常」。
- *
- * 平表之后跟一段协议定价模式（DeepSeek 的高峰 / 低谷）：平表列的是高峰价，
- * 折扣只在那条协议上发生，所以折扣规则得写在能看到价的地方。
- */
-function PricingTable({ pricing }: { pricing: Pricing }) {
-  const { t, lang } = useI18n();
-  const rows = [{ match: t('us.pricing_default'), ...pricing.default }, ...pricing.models];
-  const protocols = pricing.protocols ?? [];
-  return (
-    <div>
-      <ul className="divide-y divide-border">
-        <li className="flex items-center justify-between px-3 py-2 text-[11px] uppercase tracking-[0.1em] text-muted-foreground">
-          <span>{t('us.col_match')}</span>
-          <span className="tabular-nums">{t('us.col_price')}</span>
-        </li>
-        {rows.map((row) => (
-          <li key={row.match} className="flex items-center justify-between gap-3 px-3 py-1.5">
-            <code className="truncate text-xs">{row.match}</code>
-            <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-              {usd(row.input)} / {usd(row.cached)} / {usd(row.output)}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {protocols.map((entry) => (
-        <p
-          key={entry.protocol}
-          className="border-t border-border px-3 py-2 text-[11px] leading-relaxed text-muted-foreground"
-        >
-          {t('us.pricing_protocol_note', {
-            protocol: protocolLabel(entry.protocol, lang),
-            peak: entry.peak_windows_utc.join(' / '),
-          })}
-        </p>
-      ))}
-    </div>
   );
 }
