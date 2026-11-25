@@ -11,7 +11,7 @@
  *
  * 三个单价对应三种 token，它们不是同一个东西：
  *   input   未命中缓存的输入 token（真正要重新预填充的那部分）
- *   cached  命中缓存的输入 token（上游会便宜很多）
+ *   cached  命中缓存的输入 token（Provider 会便宜很多）
  *   output  输出 token（最贵，逐字生成）
  */
 
@@ -34,7 +34,7 @@ export const DEFAULT_RATES: Rates = { input: 500_000, cached: 50_000, output: 1_
 
 /**
  * 定价表。数值取自各家公开发布的价目（2026-11），只做一件事：
- * 让账本里的钱与上游自己的账单在同一个量级上，而不是凭空发明一个价格。
+ * 让账本里的钱与 provider 自己的账单在同一个量级上，而不是凭空发明一个价格。
  * 价格会变，改这里就是改价；`GET /api/v1/pricing` 永远回这张表的当前值。
  */
 export const MODEL_RATES: PriceEntry[] = [
@@ -96,7 +96,7 @@ const micros = (tokens: number, rate: number): number => Math.round((Math.max(to
 /**
  * 把三项 token 折成一笔钱。
  *
- * 缓存命中永远不会多于输入总量：上游的计数口径各不相同（有的把缓存算进输入，有的分开），
+ * 缓存命中永远不会多于输入总量：provider 的计数口径各不相同（有的把缓存算进输入，有的分开），
  * 归一化在 dialects.ts 里做，这里只负责不让一个坏数字变成一笔负账。
  */
 export function quote(model: string, usage: Usage): Quote {

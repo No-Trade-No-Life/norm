@@ -2,7 +2,7 @@
   "name": "norm",
   "private": true,
   "version": "0.1.0",
-  "description": "Norm — serverless AI relay: BYOK, Ed25519 identity, per-request isolation billing, verifiable upstream provenance, ZDR by trusted publishing.",
+  "description": "Norm — serverless AI relay: BYOK, Ed25519 identity, per-request isolation billing, verifiable provider provenance, ZDR by trusted publishing.",
   "type": "module",
   "packageManager": "pnpm@11.22.0",
   "scripts": {

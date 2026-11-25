@@ -18,59 +18,59 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useCreateCredential, useCredentials, useRevokeCredential, useSetVisibility } from '../queries';
-import { PROTOCOLS, VISIBILITIES, type Credential } from '../types';
+import { useCreateProvider, useProviders, useRevokeProvider, useSetVisibility } from '../queries';
+import { PROTOCOLS, VISIBILITIES, type Provider } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
-export function CredentialsPage() {
+export function ProvidersPage() {
   const { t, lang } = useI18n();
-  const credentials = useCredentials(true);
+  const providers = useProviders(true);
   const setVisibility = useSetVisibility();
-  const revoke = useRevokeCredential();
+  const revoke = useRevokeProvider();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
-  const items = credentials.data?.items ?? [];
+  const items = providers.data?.items ?? [];
 
   return (
     <div className="flex flex-col gap-4">
       <PageHeader
-        title={t('cr.title')}
-        description={t('cr.desc')}
+        title={t('pr.title')}
+        description={t('pr.desc')}
         actions={
           <Button onClick={() => setDialogOpen(true)}>
             <PlusIcon />
-            {t('action.new_credential')}
+            {t('action.new_provider')}
           </Button>
         }
       />
 
       <Section bodyClassName="p-0">
-        {credentials.isPending ? (
+        {providers.isPending ? (
           <SkeletonRows rows={4} cols={5} />
-        ) : credentials.isError ? (
+        ) : providers.isError ? (
           <div className="p-3">
-            <ErrorNote title={t('common.error')} message={(credentials.error as Error).message} />
+            <ErrorNote title={t('common.error')} message={(providers.error as Error).message} />
           </div>
         ) : items.length === 0 ? (
-          <Empty className="border-0">{t('cr.empty')}</Empty>
+          <Empty className="border-0">{t('pr.empty')}</Empty>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>{t('cr.col_label')}</TableHead>
-                <TableHead className="hidden lg:table-cell">{t('cr.col_base_url')}</TableHead>
-                <TableHead className="hidden md:table-cell">{t('cr.col_protocol')}</TableHead>
-                <TableHead className="hidden xl:table-cell">{t('cr.col_visibility')}</TableHead>
-                <TableHead>{t('cr.col_trust')}</TableHead>
-                <TableHead className="hidden lg:table-cell">{t('cr.col_hint')}</TableHead>
-                <TableHead>{t('cr.col_public')}</TableHead>
-                <TableHead className="text-right">{t('cr.col_actions')}</TableHead>
+                <TableHead>{t('pr.col_label')}</TableHead>
+                <TableHead className="hidden lg:table-cell">{t('pr.col_base_url')}</TableHead>
+                <TableHead className="hidden md:table-cell">{t('pr.col_protocol')}</TableHead>
+                <TableHead className="hidden xl:table-cell">{t('pr.col_visibility')}</TableHead>
+                <TableHead>{t('pr.col_trust')}</TableHead>
+                <TableHead className="hidden lg:table-cell">{t('pr.col_hint')}</TableHead>
+                <TableHead>{t('pr.col_public')}</TableHead>
+                <TableHead className="text-right">{t('pr.col_actions')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {items.map((item) => (
-                <CredentialRow
+                <ProviderRow
                   key={item.id}
                   item={item}
                   confirming={confirmId === item.id}
@@ -90,7 +90,7 @@ export function CredentialsPage() {
       {setVisibility.isError ? <ErrorNote title={t('common.error')} message={(setVisibility.error as Error).message} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
-      <NewCredentialDialog
+      <NewProviderDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onCreated={() => {
@@ -101,7 +101,7 @@ export function CredentialsPage() {
   );
 }
 
-function CredentialRow({
+function ProviderRow({
   item,
   lang,
   confirming,
@@ -109,7 +109,7 @@ function CredentialRow({
   onTogglePublic,
   onRevoke,
 }: {
-  item: Credential;
+  item: Provider;
   lang: 'zh' | 'en';
   confirming: boolean;
   onConfirm: (value: boolean) => void;
@@ -128,11 +128,11 @@ function CredentialRow({
       </TableCell>
       <TableCell className="hidden md:table-cell">
         <Badge variant="outline" className="font-normal">
-          {protocolLabel(item.upstream_protocol, lang)}
+          {protocolLabel(item.protocol, lang)}
         </Badge>
       </TableCell>
       <TableCell className="hidden xl:table-cell">
-        <span className="text-xs">{visibilityLabel(item.upstream_visibility, lang)}</span>
+        <span className="text-xs">{visibilityLabel(item.visibility, lang)}</span>
       </TableCell>
       <TableCell>
         {/* 落点只看主机名是否在信任清单里：清单是配置，不是判词。 */}
@@ -143,9 +143,9 @@ function CredentialRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
-          <Switch checked={item.public_listed === 1} onCheckedChange={onTogglePublic} aria-label={t('cr.col_public')} />
+          <Switch checked={item.public_listed === 1} onCheckedChange={onTogglePublic} aria-label={t('pr.col_public')} />
           <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground xl:inline">
-            {item.public_listed === 1 ? t('cr.public_on') : t('cr.public_off')}
+            {item.public_listed === 1 ? t('pr.public_on') : t('pr.public_off')}
           </span>
         </div>
       </TableCell>
@@ -163,7 +163,7 @@ function CredentialRow({
   );
 }
 
-function NewCredentialDialog({
+function NewProviderDialog({
   open,
   onOpenChange,
   onCreated,
@@ -173,10 +173,10 @@ function NewCredentialDialog({
   onCreated: () => void;
 }) {
   const { t, lang } = useI18n();
-  const create = useCreateCredential();
+  const create = useCreateProvider();
 
   const [label, setLabel] = useState('');
-  const [upstreamKey, setUpstreamKey] = useState('');
+  const [providerKey, setProviderKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [protocol, setProtocol] = useState<string>('openai-chat');
   const [visibility, setVisibility] = useState<string>('private');
@@ -184,14 +184,14 @@ function NewCredentialDialog({
 
   const reset = () => {
     setLabel('');
-    setUpstreamKey('');
+    setProviderKey('');
     setError(null);
   };
 
   const submit = async () => {
     setError(null);
-    if (!label.trim() || !upstreamKey.trim() || !baseUrl.trim()) {
-      setError(t('cr.missing'));
+    if (!label.trim() || !providerKey.trim() || !baseUrl.trim()) {
+      setError(t('pr.missing'));
       return;
     }
     try {
@@ -199,9 +199,9 @@ function NewCredentialDialog({
       await create.mutateAsync({
         label: label.trim(),
         base_url: baseUrl.trim(),
-        upstream_key: upstreamKey.trim(),
-        upstream_protocol: protocol,
-        upstream_visibility: visibility,
+        provider_key: providerKey.trim(),
+        protocol: protocol,
+        visibility: visibility,
       });
       reset();
       onCreated();
@@ -214,29 +214,29 @@ function NewCredentialDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t('cr.new_title')}</DialogTitle>
-          <DialogDescription>{t('cr.new_desc')}</DialogDescription>
+          <DialogTitle>{t('pr.new_title')}</DialogTitle>
+          <DialogDescription>{t('pr.new_desc')}</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3">
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_label')}</Label>
-            <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('cr.field_label_placeholder')} />
+            <Label>{t('pr.field_label')}</Label>
+            <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_base_url')}</Label>
+            <Label>{t('pr.field_base_url')}</Label>
             <Input
               value={baseUrl}
               onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder={t('cr.field_base_url_placeholder')}
+              placeholder={t('pr.field_base_url_placeholder')}
               spellCheck={false}
             />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_base_url_hint')}</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_base_url_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_protocol')}</Label>
+            <Label>{t('pr.field_protocol')}</Label>
             <Select
               value={protocol}
               onValueChange={(value) => setProtocol(String(value))}
@@ -253,11 +253,11 @@ function NewCredentialDialog({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_protocol_hint')}</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_visibility')}</Label>
+            <Label>{t('pr.field_visibility')}</Label>
             <Select
               value={visibility}
               onValueChange={(value) => setVisibility(String(value))}
@@ -274,13 +274,13 @@ function NewCredentialDialog({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_visibility_hint')}</p>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_key')}</Label>
-            <Input type="password" value={upstreamKey} onChange={(event) => setUpstreamKey(event.target.value)} autoComplete="off" spellCheck={false} />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_key_hint')}</p>
+            <Label>{t('pr.field_key')}</Label>
+            <Input type="password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} autoComplete="off" spellCheck={false} />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_hint')}</p>
           </div>
 
           {error ? <ErrorNote message={error} /> : null}
@@ -291,7 +291,7 @@ function NewCredentialDialog({
             {t('action.cancel')}
           </Button>
           <Button onClick={() => void submit()} disabled={create.isPending}>
-            {create.isPending ? t('cr.creating') : t('action.create')}
+            {create.isPending ? t('pr.creating') : t('action.create')}
           </Button>
         </DialogFooter>
       </DialogContent>

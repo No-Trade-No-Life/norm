@@ -16,8 +16,8 @@ import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { errorText } from '../lib/error-text';
 import { latency, usd } from '../lib/format';
-import { useCredentials } from '../queries';
-import type { ChatChunk, Credential } from '../types';
+import { useProviders } from '../queries';
+import type { ChatChunk, Provider } from '../types';
 
 type NormMeta = NonNullable<ChatChunk['norm']>;
 
@@ -25,9 +25,9 @@ export function PlaygroundPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { identity } = useIdentity();
-  const credentials = useCredentials(true);
+  const providers = useProviders(true);
 
-  const [credentialId, setCredentialId] = useState('');
+  const [providerId, setProviderId] = useState('');
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
 
@@ -39,10 +39,10 @@ export function PlaygroundPage() {
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
 
-  const list = credentials.data?.items ?? [];
-  const credential: Credential | undefined = useMemo(
-    () => list.find((item) => item.id === credentialId) ?? list[0],
-    [list, credentialId],
+  const list = providers.data?.items ?? [];
+  const provider: Provider | undefined = useMemo(
+    () => list.find((item) => item.id === providerId) ?? list[0],
+    [list, providerId],
   );
 
   useEffect(() => {
@@ -58,7 +58,7 @@ export function PlaygroundPage() {
 
   const send = useCallback(async () => {
     setError(null);
-    if (!credential) return setError(t('pg.need_credential'));
+    if (!provider) return setError(t('pg.need_provider'));
     if (!model.trim()) return setError(t('pg.need_model'));
     if (!prompt.trim()) return setError(t('pg.need_prompt'));
 
@@ -81,13 +81,13 @@ export function PlaygroundPage() {
         path: '/v1/chat/completions',
         method: 'POST',
         body,
-        // 密钥在服务端：这里只说用哪条凭证。明文密钥从不出现在浏览器里。
-        headers: { 'X-Norm-Credential': credential.id },
+        // 密钥在服务端：这里只说用哪条Provider。明文密钥从不出现在浏览器里。
+        headers: { 'X-Norm-Provider': provider.id },
         signal: controller.signal,
       });
 
       if (!response.ok) {
-        // 上游的错误体原样回来（这是设计：改写它只会让上游的报错更难查），
+        // provider 的错误体原样回来（这是设计：改写它只会让 provider 的报错更难查），
         // 所以这里的活儿是把它压成一句话——`error` 常常是一个对象，
         // 直接塞进 JSX 会让整页白屏，用户看到的就是「点了没反应」。
         const text = await response.text();
@@ -123,7 +123,7 @@ export function PlaygroundPage() {
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
-  }, [credential, model, prompt, queryClient, stream, t]);
+  }, [provider, model, prompt, queryClient, stream, t]);
 
   return (
     <div className="flex min-h-full flex-col gap-4">
@@ -141,15 +141,15 @@ export function PlaygroundPage() {
         <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <Label>{t('pg.credential')}</Label>
+              <Label>{t('pg.provider')}</Label>
               {list.length === 0 ? (
-                <Link to="/credentials" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {t('pg.credential_none')}
+                <Link to="/providers" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
+                  {t('pg.provider_none')}
                 </Link>
               ) : (
                 <Select
-                  value={credential?.id ?? ''}
-                  onValueChange={(value) => setCredentialId(String(value))}
+                  value={provider?.id ?? ''}
+                  onValueChange={(value) => setProviderId(String(value))}
                   items={list.map((item) => ({ value: item.id, label: `${item.label} · ${item.key_hint}` }))}
                 >
                   <SelectTrigger>
@@ -257,10 +257,10 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
       <span>
         {t('pg.latency')} <code className="text-foreground">{latency(meta.latency_ms)}</code>
       </span>
-      {/* 只报事实：这次请求打到了哪台主机。是否可信交给上游渠道页的清单去说。 */}
+      {/* 只报事实：这次请求打到了哪台主机。是否可信交给 provider 页的清单去说。 */}
       <span className="flex items-center gap-1">
         <ServerIcon className="size-3.5" />
-        {t('pg.upstream_host')} <code className="text-foreground">{meta.host}</code>
+        {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>
       </span>
       {meta.fee_micros === 0 ? <span>{t('pg.fee_zero_failed')}</span> : null}
     </div>

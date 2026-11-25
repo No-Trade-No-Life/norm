@@ -1,13 +1,13 @@
 import type { Env } from './env';
 
 /**
- * 上游密钥在库里的封装：AES-256-GCM，密钥来自 Worker secret `NORM_MASTER_KEY`。
+ * Provider 密钥在库里的封装：AES-256-GCM，密钥来自 Worker secret `NORM_MASTER_KEY`。
  *
  * 为什么放在服务端而不是让用户记口令：口令那一层只保护「存储中的副本」，
  * 而中转站每次调用都必然看见明文——它防不住运行期，只能防拖库。
  * 既然目标是拖库，那用一把由系统配置的高熵密钥就够了，且没有弱口令问题。
  *
- * 代价要说清：拿到这把密钥又拿到库，就能解开所有上游密钥。所以它是
+ * 代价要说清：拿到这把密钥又拿到库，就能解开所有 provider 密钥。所以它是
  * Worker secret（不进仓库、不进 D1、不进日志），轮换即全量重封（见 docs/rotate-key.md）。
  */
 const IV_BYTES = 12;
@@ -28,32 +28,32 @@ async function masterKey(env: Env): Promise<CryptoKey> {
 }
 
 /**
- * AAD 把密文绑到「哪个账户的哪条凭证」。这样即使两条记录被互换，
+ * AAD 把密文绑到「哪个账户的哪条 provider」。这样即使两条记录被互换，
  * 解密也会失败——不需要额外的完整性字段。
  */
-function aad(address: string, credentialId: string): Uint8Array {
-  return new TextEncoder().encode(`${address}|${credentialId}`);
+function aad(address: string, providerId: string): Uint8Array {
+  return new TextEncoder().encode(`${address}|${providerId}`);
 }
 
 /** 返回 base64url(iv || ciphertext||tag)。 */
-export async function sealUpstreamKey({
+export async function sealProviderKey({
   env,
   address,
-  credentialId,
-  upstreamKey,
+  providerId,
+  providerKey,
 }: {
   env: Env;
   address: string;
-  credentialId: string;
-  upstreamKey: string;
+  providerId: string;
+  providerKey: string;
 }): Promise<string> {
   const key = await masterKey(env);
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv, additionalData: aad(address, credentialId) },
+      { name: 'AES-GCM', iv, additionalData: aad(address, providerId) },
       key,
-      new TextEncoder().encode(upstreamKey),
+      new TextEncoder().encode(providerKey),
     ),
   );
   const packed = new Uint8Array(iv.length + sealed.length);
@@ -63,15 +63,15 @@ export async function sealUpstreamKey({
 }
 
 /** 解封。密文被改、AAD 不匹配、密钥轮换过，都会抛错——不静默返回空串。 */
-export async function unsealUpstreamKey({
+export async function unsealProviderKey({
   env,
   address,
-  credentialId,
+  providerId,
   sealed,
 }: {
   env: Env;
   address: string;
-  credentialId: string;
+  providerId: string;
   sealed: string;
 }): Promise<string> {
   const normalized = sealed.replace(/-/g, '+').replace(/_/g, '/');
@@ -82,7 +82,7 @@ export async function unsealUpstreamKey({
 
   const key = await masterKey(env);
   const plain = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: packed.slice(0, IV_BYTES), additionalData: aad(address, credentialId) },
+    { name: 'AES-GCM', iv: packed.slice(0, IV_BYTES), additionalData: aad(address, providerId) },
     key,
     packed.slice(IV_BYTES),
   );
@@ -90,8 +90,8 @@ export async function unsealUpstreamKey({
 }
 
 /** 展示用提示：前 4 + … + 后 4。只在创建时算一次，明文不留在库里。 */
-export function keyHintOf(upstreamKey: string): string {
-  const trimmed = upstreamKey.trim();
+export function keyHintOf(providerKey: string): string {
+  const trimmed = providerKey.trim();
   if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}…${trimmed.slice(-2)}`;
   return `${trimmed.slice(0, 4)}…${trimmed.slice(-4)}`;
 }

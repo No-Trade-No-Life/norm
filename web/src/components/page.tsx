@@ -68,7 +68,7 @@ export function Empty({ children, className }: { children: ReactNode; className?
 
 /** 错误：一律放在它描述的内容正上方，绝不塞到列表末尾。 */
 /**
- * 错误条。`message` 收 unknown 而不是 string：调用方拿到的常常是上游原样回来的
+ * 错误条。`message` 收 unknown 而不是 string：调用方拿到的常常是 provider 原样回来的
  * 错误体（对象），这里兜一次，谁都不许把对象交给 React。
  */
 export function ErrorNote({ title, message }: { title?: string; message: unknown }) {

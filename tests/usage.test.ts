@@ -3,7 +3,7 @@ import { readAnswer, usageSniffer } from '../src/dialects';
 
 /**
  * 四家的用量口径各不相同，账本只认一种：input（含缓存命中）/ cached / output。
- * 归一化写错一个字段，账单就会静默地对不上上游——这类错必须由测试兜住。
+ * 归一化写错一个字段，账单就会静默地对不上 provider——这类错必须由测试兜住。
  */
 describe('非流式的用量归一化', () => {
   it('openai-chat：prompt 含缓存，命中数在 details 里', () => {

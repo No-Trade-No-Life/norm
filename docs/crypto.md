@@ -55,21 +55,21 @@ norm-v1\n{METHOD}\n{PATH}\n{timestamp}\n{nonce}\n{sha256hex(body)}
 - 服务端校验顺序：头部齐全 → 时间戳在 ±`SIGNATURE_WINDOW_SECONDS` 内 → `(address, nonce)` 首次出现 → 验签。
 - nonce 一经落库即作废；同一 nonce 第二次到达一律 401 `nonce_replayed`。
 
-## 3. 上游密钥的封装（拖库拿不到明文）
+## 3. Provider 密钥的封装（拖库拿不到明文）
 
 ```
 key     = base64url 解码 NORM_MASTER_KEY（必须是 32 字节，Worker secret，不进仓库、不进 D1）
-sealed  = base64url( iv12 || AES-256-GCM(key, iv12, plaintext = utf8(upstreamKey), aad = utf8(address + "|" + providerId)) )
+sealed  = base64url( iv12 || AES-256-GCM(key, iv12, plaintext = utf8(providerKey), aad = utf8(address + "|" + providerId)) )
 kdf     = "aes-256-gcm+worker-secret"
 ```
 
-- 封装与解封都在 Worker 里：`POST /api/v1/providers` 收到明文 `upstream_key`，立刻封装后丢弃；
+- 封装与解封都在 Worker 里：`POST /api/v1/providers` 收到明文 `provider_key`，立刻封装后丢弃；
   `POST /v1/chat/completions` 现解现用，只在本次请求的作用域里存在。
-- AAD 把密文绑到「哪个账户的哪条凭证」，两条记录被互换也会解密失败，不需要额外的完整性字段。
+- AAD 把密文绑到「哪个账户的哪条 provider」，两条记录被互换也会解密失败，不需要额外的完整性字段。
 - 库里只有 `sealed_key`、`kdf`、`key_hint`（前 4 + `…` + 后 4）。
 - 为什么不早先那套「用户口令派生」：口令只保护**存储中的副本**，而中转站每次调用都必然看见明文，
   它防不住运行期、只能防拖库；既然如此，一把由系统配置的高熵密钥就够了，也不引入弱口令与「每次调用重输」的负担。
-- 代价要说清：拿到 `NORM_MASTER_KEY` 又拿到库，就能解开全部上游密钥。所以它是 Worker secret，
+- 代价要说清：拿到 `NORM_MASTER_KEY` 又拿到库，就能解开全部 provider 密钥。所以它是 Worker secret，
   轮换等于全量重封（旧密文解不开，必须重录或做一次迁移）。
 
 ## 3b. 下游消费者密钥（`sk-norm-…`）
@@ -82,11 +82,11 @@ key_hint  = "sk-norm-" + 前 4 + "…" + 后 4           → 列表与页面只�
 
 - 查表即鉴权：`Authorization: Bearer sk-norm-…` → `key_sha256` → 账户。
 - 轮换就地替换哈希，旧钥立刻失效，备注名与使用历史留在同一行。
-- 管理面（`/api/v1/*`）只认签名，所以一把下游密钥不能再铸钥匙、也撤销不了凭证。
+- 管理面（`/api/v1/*`）只认签名，所以一把下游密钥不能再铸钥匙、也撤销不了Provider。
 
 ## 4. 计费计数器
 
 - 全部是**整数微美元**（`1e-6 USD`），不用浮点。
-- `REQUEST_FEE_MICROS` 每次成功转发扣一次；失败请求（上游 4xx/5xx、网络错误）**不扣**（`fee_micros = 0`），
+- `REQUEST_FEE_MICROS` 每次成功转发扣一次；失败请求（Provider 4xx/5xx、网络错误）**不扣**（`fee_micros = 0`），
   但照样记一条 `requests`，因为隔离执行的成本由站点承担——这是给用户的诚实账。
 - 账本 `balance_after_micros` 必须与 `principals.balance_micros` 在同一事务里一致。

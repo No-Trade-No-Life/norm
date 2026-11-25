@@ -1,5 +1,5 @@
 import type { Env } from './env';
-import type { UpstreamProtocol, UpstreamVisibility } from './upstreams';
+import type { Protocol, Visibility } from './protocols';
 import { grantMicros } from './env';
 import { isTrusted } from './base-urls';
 import { fail } from './http';
@@ -14,12 +14,12 @@ export type PrincipalRow = {
   spend_micros: number;
 };
 
-export type CredentialView = CredentialRow & {
+export type ProviderView = ProviderRow & {
   /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
   trusted: boolean;
 };
 
-export type CredentialRow = {
+export type ProviderRow = {
   id: string;
   address: string;
   label: string;
@@ -27,10 +27,10 @@ export type CredentialRow = {
   key_hint: string;
   sealed_key: string;
   kdf: string;
-  // INVARIANT: 这两列只由 credentials 路由写入，写入前已校验枚举；
+  // INVARIANT: 这两列只由 providers 路由写入，写入前已校验枚举；
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
-  upstream_protocol: UpstreamProtocol;
-  upstream_visibility: UpstreamVisibility;
+  protocol: Protocol;
+  visibility: Visibility;
   public_listed: number;
   created_at: number;
   revoked_at: number | null;
@@ -67,32 +67,32 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
   return row;
 }
 
-export async function listCredentials(env: Env, address: string): Promise<CredentialView[]> {
+export async function listProviders(env: Env, address: string): Promise<ProviderView[]> {
   const { results } = await env.DB.prepare(
-    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
+    'SELECT * FROM providers WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
   )
     .bind(address)
-    .all<CredentialRow>();
-  // trusted 由同一份清单算出，不落库：清单改了，所有凭证的说法立刻跟着变。
+    .all<ProviderRow>();
+  // trusted 由同一份清单算出，不落库：清单改了，所有 provider 的说法立刻跟着变。
   return results.map((row) => ({ ...row, trusted: isTrusted(row.base_url, env) }));
 }
 
-export async function findCredential(env: Env, address: string, id: string): Promise<CredentialRow | null> {
-  return env.DB.prepare('SELECT * FROM credentials WHERE id = ? AND address = ? AND revoked_at IS NULL')
+export async function findProvider(env: Env, address: string, id: string): Promise<ProviderRow | null> {
+  return env.DB.prepare('SELECT * FROM providers WHERE id = ? AND address = ? AND revoked_at IS NULL')
     .bind(id, address)
-    .first<CredentialRow>();
+    .first<ProviderRow>();
 }
 
 /**
  * 一次调用的全部记账：扣钱、记流水、记请求，三步只描述同一件事。
  *
  * 余额的扣减用一条 `UPDATE ... MIN(?, balance)` 完成：扣掉的是「该付的」与「还剩下的」
- * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：上游已经执行完了，
+ * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：Provider 已经执行完了，
  * 这笔钱该记下来，而账不能变成负数——差的那部分记成 `unbilled_micros`，
  * 由站点承担，并在页面上如实显示。
  *
  * 余额充足时 `unbilled_micros` 恒为 0，`fee_micros = service_fee_micros + token_micros`。
- * 失败（上游报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
+ * 失败（Provider 报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
  */
 export type Bill = {
   requestId: string;
@@ -113,7 +113,7 @@ export type Settled = {
 export type RequestRecord = {
   requestId: string;
   address: string;
-  credentialId: string | null;
+  providerId: string | null;
   /** 这次调用由哪把下游消费者密钥发起；签名直连时为空。 */
   consumerId: string | null;
   baseUrl: string;
@@ -137,24 +137,24 @@ export async function recordRequest(env: Env, row: RequestRecord): Promise<void>
 }
 
 /**
- * 这次转发用哪条上游：头里点了名就用它，没点名就用账户里唯一的那条。
+ * 这次转发用哪条 provider：头里点了名就用它，没点名就用账户里唯一的那条。
  *
  * 多条又不指名是 409 而不是猜一条——「钱付给谁」是这个服务里失败代价最高的选择，
  * 不该由一个默认值替用户决定。签名身份与消费者 Token 走同一个判定点。
  */
-export async function resolveCredentialId(env: Env, address: string, requested: string | null): Promise<string> {
+export async function resolveProviderId(env: Env, address: string, requested: string | null): Promise<string> {
   const named = requested?.trim();
   if (named) return named;
 
   const { results } = await env.DB.prepare(
-    'SELECT id FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 2',
+    'SELECT id FROM providers WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 2',
   )
     .bind(address)
     .all<{ id: string }>();
 
-  if (results.length === 0) fail(400, 'credential_missing', '还没有上游提供者：先去「上游提供者」页添加一条');
+  if (results.length === 0) fail(400, 'provider_missing', '还没有 provider：先去「 provider」页添加一条');
   if (results.length > 1) {
-    fail(409, 'credential_ambiguous', '账户里有多条上游提供者，请用 X-Norm-Credential 指名用哪一条');
+    fail(409, 'provider_ambiguous', '账户里有多条 provider，请用 X-Norm-Provider 指名用哪一条');
   }
   return results[0].id;
 }
@@ -163,7 +163,7 @@ export async function resolveCredentialId(env: Env, address: string, requested: 
  * 扣费 + 流水 + 请求记录：一次调用的三件事，写在一起。
  *
  * 扣多少：该付多少就扣多少，余额不够时把剩下的全扣掉（余额落到 0），
- * 差的那部分记成 `unbilled_micros` 由站点承担——上游已经执行完了，账要记，
+ * 差的那部分记成 `unbilled_micros` 由站点承担——Provider 已经执行完了，账要记，
  * 但余额不能变成负数。
  *
  * 为什么是「先读再带条件更新」而不是一条 `UPDATE ... RETURNING`：
@@ -219,14 +219,14 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
 function requestInsert(env: Env, row: RequestRecord) {
   return env.DB.prepare(
     `INSERT INTO requests
-       (id, address, credential_id, consumer_id, base_url, model, status, status_code, latency_ms,
+       (id, address, provider_id, consumer_id, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
         service_fee_micros, token_micros, fee_micros, unbilled_micros, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
-    row.credentialId,
+    row.providerId,
     row.consumerId,
     row.baseUrl,
     row.model,

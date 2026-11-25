@@ -1,6 +1,6 @@
 # Norm — 无站的中转站
 
-> Serverless, 无站胜有站。BYOK + Ed25519 身份 + 逐请求隔离计费 + 按 base_url 聚合的上游渠道 + 可信发布。
+> Serverless, 无站胜有站。BYOK + Ed25519 身份 + 逐请求隔离计费 + 按 base_url 聚合的 provider + 可信发布。
 
 ## 1. 灵魂
 
@@ -12,10 +12,10 @@ Norm 不是「一台你租给我的机器」，而是**一份公开可复现的�
 | # | 承诺 | Param Norm 的落地方式 |
 |---|---|---|
 | 1 | Serverless，单一部署 | 一个 Cloudflare Worker（Hono）+ 一个 D1 + 静态资源同源。没有运维机器、没有后台进程 |
-| 2 | 用户 BYOK | 上游密钥只经手一次（创建时），服务端用 Worker secret 封装入 D1，调用时现解现用。仓库里没有任何上游密钥 |
+| 2 | 用户 BYOK | Provider 密钥只经手一次（创建时），服务端用 Worker secret 封装入 D1，调用时现解现用。仓库里没有任何 provider 密钥 |
 | 3 | Ed25519（base58）身份 | 公钥即地址，私钥永不离开浏览器。每个请求都要签名，服务端不签发会话、不存密码 |
-| 4 | ZDR，可信发布 | 不留请求体、不留响应体、不留上游密钥；构建产物哈希公开，任何人可 `pnpm build` 复算 |
-| 5 | 上游渠道可核验 | 后端不对上游做价值判断，只存事实：base_url（创建时钉死、转发时不可改写）、协议、是否公开可用。信任是一份 base_url 清单，命中与否由 `/api/v1/base-urls` 公开 |
+| 4 | ZDR，可信发布 | 不留请求体、不留响应体、不留 provider 密钥；构建产物哈希公开，任何人可 `pnpm build` 复算 |
+| 5 | Provider 可核验 | 后端不对 provider 做价值判断，只存事实：base_url（创建时钉死、转发时不可改写）、协议、是否公开可用。信任是一份 base_url 清单，命中与否由 `/api/v1/base-urls` 公开 |
 
 ## 3. 身份
 
@@ -39,14 +39,14 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 ## 4. BYOK 与两侧身份
 
-### 4.1 上游密钥的存放
+### 4.1 Provider 密钥的存放
 
-- 添加一个上游提供者时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
-  做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、base_url、
-  `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（上游协议、上游是否公开可用）。
-  没有 provider 一列：谁家的上游由 base_url 说话，品牌名只是 label 里的一段字。
+- 添加一个 provider 时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
+  做 AES-256-GCM 封装，AAD 绑 `address|providerId`。库里存：label、base_url、
+  `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（provider 协议、Provider 是否公开可用）。
+  没有 provider 一列：谁家的 provider 由 base_url 说话，品牌名只是 label 里的一段字。
 - 调用模型时 Worker 现解现用，明文只在本次请求的作用域里存在——不写日志、不进 D1、不回响应。
-- 结论：单拿数据库拿不到任何上游密钥；拿到 `NORM_MASTER_KEY` 又拿到库才能解开，所以它是 secret 而不是配置项。
+- 结论：单拿数据库拿不到任何 provider 密钥；拿到 `NORM_MASTER_KEY` 又拿到库才能解开，所以它是 secret 而不是配置项。
 
 为什么不是「用户口令」：口令只保护存储中的副本，而中转站每次调用都必然看见明文，它防不住运行期、
 只能防拖库。既然如此就用一把系统配置的高熵密钥，既不引入弱口令风险，也不用每次调用重输。
@@ -57,20 +57,20 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | | 凭据 | 谁在说 | 管什么 | 生命周期 |
 |---|---|---|---|---|
-| **身份** | Ed25519 逐请求签名（公钥即地址） | 人 | 自己的资源：账户、上游提供者、下游 Token | 种子在浏览器里，可导出换设备 |
+| **身份** | Ed25519 逐请求签名（公钥即地址） | 人 | 自己的资源：账户、Provider、下游 Token | 种子在浏览器里，可导出换设备 |
 | **消费** | `Authorization: Bearer sk-norm-…` | 代码 | 一次模型调用 | 库里只存 sha256；明文只在创建/轮换时出现一次 |
 
-**Token 只回答「谁的代码在调用」，不绑定上游。** 因此程序侧一次调用只要一个 api key
+**Token 只回答「谁的代码在调用」，不绑定Provider。** 因此程序侧一次调用只要一个 api key
 （Bearer、`x-api-key`、`x-goog-api-key` 三选一，取决于用哪家 SDK），
 不需要签名、也不需要任何 Norm 专有的头。
 
-走哪条上游是**每次转发自己的决定**，规则只有一条：请求带了 `X-Norm-Credential` 就用它，
-没带就用账户里唯一的那条上游；账户里有多条又没有指名，是 `409 credential_ambiguous`——
-猜一条会把钱打到别的上游去，所以不猜。这样「添一条上游、建一条 Token、当普通 api key 用」
-就是全部；换上游也不必重新发钥匙，因为绑定从来不是身份的一部分。
+走哪条 provider 是**每次转发自己的决定**，规则只有一条：请求带了 `X-Norm-Provider` 就用它，
+没带就用账户里唯一的那条 provider；账户里有多条又没有指名，是 `409 provider_ambiguous`——
+猜一条会把钱打到别的 provider 去，所以不猜。这样「添一条Provider、建一条 Token、当普通 api key 用」
+就是全部；换 provider 也不必重新发钥匙，因为绑定从来不是身份的一部分。
 
 这条边界同时是权限边界：前缀把两者划开，`/api/v1/*` 只认签名（管理面），`/v1/*` 两者都认（转发面）。
-一把 Token 因此不能凭空再铸一把 Token，也撤销不了凭证。
+一把 Token 因此不能凭空再铸一把 Token，也撤销不了Provider。
 
 ## 5. 计费：按 Token 记，外加一笔服务费
 
@@ -84,10 +84,10 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 三种 token 分开记，因为它们的价不同、含义也不同：
 
 - `input_tokens`：输入总量，**含**缓存命中
-- `cached_tokens`：其中命中上游缓存的（便宜一个量级）
+- `cached_tokens`：其中命中 provider 缓存的（便宜一个量级）
 - `output_tokens`：输出（最贵）
 
-四家上游的用量口径不一致（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的 `prompt_tokens` 含），
+四家 provider 的用量口径不一致（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的 `prompt_tokens` 含），
 归一化只发生在 `src/dialects.ts` 的四个 extract 与流式嗅探器里，账本只认上面这三种数字。
 
 其他约定：
@@ -96,32 +96,32 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
   改价 = 改代码 = 一次可被审查的合并；没定价的模型走兜底价，不会变成免费。
 - 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`（UUID v7），可以逐条回溯。
 - 余额单位为微美元（integer），不用浮点。新地址自动获得 $1.00 演示授信（`GRANT_MICROS = 1000000`）。
-- 失败不扣费：上游报错或不可达时 `fee_micros = 0`，只留一条诚实的记录。
+- 失败不扣费：Provider 报错或不可达时 `fee_micros = 0`，只留一条诚实的记录。
 - 余额付不起时扣到 0，差额记在 `unbilled_micros`（站点承担），余额永不变成负数。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
-## 6. 上游渠道
+## 6. Provider
 
 ### 6.1 后端只存事实，判断留给清单
 
 一个中转站可以自称「官方 Key」，没有人能证伪。Norm 的做法不是让中转站自证，而是**把可证伪的部分剥离出去**：
 
-- 凭证创建时填写 `base_url`，之后钉死。转发只用凭证里的地址，**不读任何请求头**
+- Provider 创建时填写 `base_url`，之后钉死。转发只用 provider 里的地址，**不读任何请求头**
   （早期版本的 `X-Norm-Base-Url` 已删除；它一存在，「钉死」就只是句口号）。e2e 有专门一条断言盯着。
-- 后端**不做**「官方 / 第三方」这类判断。它只回三项事实：`base_url`、`upstream_protocol`、
-  `upstream_visibility`。
+- 后端**不做**「官方 / 第三方」这类判断。它只回三项事实：`base_url`、`protocol`、
+  `visibility`。
 - 「可信」是一份**主机名清单**（`wrangler.jsonc` 的 `TRUSTED_BASE_URLS`），精确匹配而非后缀匹配：
   `api.openai.com.evil.tld` 与 `api.openai.com` 是两台机器。命中与否作为 `trusted` 布尔返回。
-- 因此「官方 key」退化成**前端的渲染概念**：换一份清单，同一个上游就换个说法，数据层不动。
+- 因此「官方 key」退化成**前端的渲染概念**：换一份清单，同一个 provider 就换个说法，数据层不动。
 
 ### 6.2 四种协议，两侧同名：4×4
 
-四种协议既是**入口**（客户端怎么说），也是**上游**（上游提供者怎么存）。因为两侧同名，
-「入口方言 === 上游协议」就是一句字符串相等，而那 4 格**不转换**——请求体按原始字节
+四种协议既是**入口**（客户端怎么说），也是**Provider**（Provider 怎么存）。因为两侧同名，
+「入口方言 === provider 协议」就是一句字符串相等，而那 4 格**不转换**——请求体按原始字节
 发出去，响应体原样回来。一个字段都不碰，包括我们不打算理解的 `tools`、`response_format`。
 
 其余 12 格才经过 OpenAI Chat 这座桥。桥只在一侧出现，所以矩阵是 4 段入口翻译
-加 4 段上游适配（`src/upstreams.ts` 只管 ChatBody → 四种上游），不是 16 条路径。
+加 4 段 provider 适配（`src/providers.ts` 只管 ChatBody → 四种 provider），不是 16 条路径。
 
 **不做跨方言的工具调用**：三家的 tools 形状不同，硬拼一个「尽力而为」的映射，
 只会在客户端以为有 function calling 时收到一段散文。所以跨方言带 tools 直接 400。
@@ -130,7 +130,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 这条边界是为了让「直通」有意义：如果一切都先归一化再重建，`responses → responses`
 这种本来一致的调用也会丢字段、白费 CPU，那 4 格就成了借口而不是承诺。
 
-| `upstream_protocol` | 上游路径 | 关键差异 |
+| `protocol` | 协议路径 | 关键差异 |
 |---|---|---|
 | `openai-chat` | `{base}/chat/completions` | 原样透传 |
 | `openai-responses` | `{base}/responses` | 请求用 `input`；响应用 `output[].content[].text`；usage 是 `input/output_tokens` |
@@ -143,20 +143,20 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `upstream_protocol` | 上表四种 | 上游说哪种协议 |
-| `upstream_visibility` | `public` / `private` | 这个上游本身是否对公众可用。自部署是 `private`——那不是掺水，只是不对外 |
+| `protocol` | 上表四种 | Provider 说哪种协议 |
+| `visibility` | `public` / `private` | 这个 provider 本身是否对公众可用。自部署是 `private`——那不是掺水，只是不对外 |
 
-两者都与信任无关。注意 `upstream_visibility`（上游别人能不能用）与 `public_listed`
-（我愿不愿意把这条凭证挂上看板）是**两个不同的开关**，不要混。
+两者都与信任无关。注意 `visibility`（Provider 别人能不能用）与 `public_listed`
+（我愿不愿意把这条 provider 挂上看板）是**两个不同的开关**，不要混。
 
 ### 6.4 公开视图
 
-`GET /api/v1/base-urls` 按 `base_url` 聚合，返回每个上游的 `host`、`trusted`、凭证数、
-公开条数、协议集合、最近添加时间。这是后端关于上游的唯一视图——没有官方/第三方，只有地址与计数。
+`GET /api/v1/base-urls` 按 `base_url` 聚合，返回每个 provider 的 `host`、`trusted`、Provider 数、
+公开条数、协议集合、最近添加时间。这是后端关于 provider 的唯一视图——没有官方/第三方，只有地址与计数。
 
 ## 7. ZDR 与可信发布
 
-- 不留请求体、不留响应体、不留上游密钥。唯一的持久化是记账所需的最小字段（模型名、token 数、状态、延迟、费用）。
+- 不留请求体、不留响应体、不留 provider 密钥。唯一的持久化是记账所需的最小字段（模型名、token 数、状态、延迟、费用）。
 - `GET /api/v1/attestation` 返回：git commit、构建时间、Worker 产物 sha256、前端产物 sha256、GitHub Actions Run 链接。
 - 任何人 `git clone && pnpm i && pnpm build` 后算一次 sha256，与本页数字对比即可确认线上跑的代码就是这个仓库。
 - 发布走 GitHub Actions + Cloudflare API Token，`main` 合并即上线，没有手工 `wrangler deploy`。

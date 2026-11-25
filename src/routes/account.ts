@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Principal } from '../auth';
-import { findPrincipal, listCredentials } from '../store';
+import { findPrincipal, listProviders } from '../store';
 
 export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Principal } }>;
 
@@ -9,7 +9,7 @@ export const accountRoutes: AccountRoutes = new Hono<{ Bindings: Env; Variables:
 
 accountRoutes.get('/me', async (c) => {
   const principal = await findPrincipal(c.env, c.get('principal').address);
-  const credentials = await listCredentials(c.env, principal.address);
+  const providers = await listProviders(c.env, principal.address);
   // 余额、花费、请求数、token 三项，一次查询里取齐：页头那四张卡片不该各发一次请求。
   const totals = await c.env.DB.prepare(
     `SELECT COUNT(*) AS n,
@@ -39,7 +39,7 @@ accountRoutes.get('/me', async (c) => {
     granted_micros: principal.granted_micros,
     spend_micros: principal.spend_micros,
     requests: totals?.n ?? 0,
-    credentials: credentials.length,
+    providers: providers.length,
     usage: {
       input_tokens: totals?.input_tokens ?? 0,
       cached_tokens: totals?.cached_tokens ?? 0,
@@ -123,20 +123,20 @@ accountRoutes.get('/usage/by-consumer', async (c) => {
   return c.json({ items: results });
 });
 
-/** 按上游提供者聚合：钱花在哪个上游、打给哪个地址。 */
-accountRoutes.get('/usage/by-credential', async (c) => {
+/** 按 provider 聚合：钱花在哪个Provider、打给哪个地址。 */
+accountRoutes.get('/usage/by-provider', async (c) => {
   const { results } = await c.env.DB.prepare(
-    `SELECT requests.credential_id AS credential_id,
-            credentials.label AS credential_label,
+    `SELECT requests.provider_id AS provider_id,
+            providers.label AS provider_label,
             COUNT(*) AS requests,
             COALESCE(SUM(requests.input_tokens), 0) AS input_tokens,
             COALESCE(SUM(requests.cached_tokens), 0) AS cached_tokens,
             COALESCE(SUM(requests.output_tokens), 0) AS output_tokens,
             COALESCE(SUM(requests.fee_micros), 0) AS fee_micros
      FROM requests
-     LEFT JOIN credentials ON credentials.id = requests.credential_id
+     LEFT JOIN providers ON providers.id = requests.provider_id
      WHERE requests.address = ?
-     GROUP BY requests.credential_id
+     GROUP BY requests.provider_id
      ORDER BY fee_micros DESC`,
   )
     .bind(c.get('principal').address)

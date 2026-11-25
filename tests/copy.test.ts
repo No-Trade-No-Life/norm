@@ -11,7 +11,7 @@ import { COPY, LANGS, translate, type CopyKey } from '../web/src/copy';
 const entries = Object.entries(COPY) as Array<[CopyKey, Record<string, unknown>]>;
 
 /** 操作列表头故意留空（按钮自己会说是干什么的），但仍然两种语言都要有一条。 */
-const BLANK_OK = new Set<CopyKey>(['cr.col_actions', 'co.col_actions']);
+const BLANK_OK = new Set<CopyKey>(['pr.col_actions', 'co.col_actions']);
 
 describe('COPY 字典', () => {
   it('每条都恰好有 zh 与 en，且都是非空字符串', () => {

@@ -1,14 +1,14 @@
 /**
  * 四条方言，两侧同名。
  *
- * Norm 的转发是 4×4 的：客户端用哪种方言说话（入口）× 上游说哪种协议（凭证）。
- * 因为两侧用的是同一套名字，「入口方言 === 上游协议」就是一句字符串相等——
+ * Norm 的转发是 4×4 的：客户端用哪种方言说话（入口）× provider 说哪种协议（Provider）。
+ * 因为两侧用的是同一套名字，「入口方言 === provider 协议」就是一句字符串相等——
  * 而那 4 格**不转换**：请求体原样发出去，响应体原样还回来，一个字段都不碰。
  *
- * 只有其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 上游适配器（见
- * upstreams.ts，它只管 ChatBody 到四种上游）→ 回来时再渲染成入口方言。
- * 桥只在这一侧出现，所以「4 入口 × 4 上游」不是 16 条路径，而是 4 段入口翻译
- * 加 4 段上游适配，互不相干。
+ * 只有其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 协议适配器（见
+ * providers.ts，它只管 ChatBody 到四种 provider）→ 回来时再渲染成入口方言。
+ * 桥只在这一侧出现，所以「4 入口 × 4 Provider 」不是 16 条路径，而是 4 段入口翻译
+ * 加 4 段 provider 适配，互不相干。
  *
  * 不做的事：**跨方言的工具调用**。同格式直通时 tools 免费穿过（我们不碰它），
  * 但跨方言时三家的 tools 形状各不相同，硬拼一个「尽力而为」的映射，只会在客户端
@@ -16,16 +16,16 @@
  */
 import { fail } from './http';
 import type { Usage } from './pricing';
-import type { ChatBody, ChatMessage, UpstreamProtocol } from './upstreams';
+import type { ChatBody, ChatMessage, Protocol } from './protocols';
 
-export type Dialect = UpstreamProtocol;
+export type Dialect = Protocol;
 
 /**
  * 从任意一种方言的响应里读出的、记账与渲染都需要的那点东西。
  *
  * `usage` 只有三项，因为账本只认这三种 token：
  *   input   输入 token 总量（**含**缓存命中的那部分）
- *   cached  其中命中上游缓存的
+ *   cached  其中命中 provider 缓存的
  *   output  输出 token
  * 四家的口径各不相同（Anthropic 的 `input_tokens` 不含缓存读，OpenAI 的
  * `prompt_tokens` 含），归一化只发生在下面四个 extract 里，别处不再判断方言。
@@ -244,7 +244,7 @@ export function readAnswer(dialect: Dialect, json: Raw): AnswerCore {
 /* ── 规范形式 → 出口方言（只用在跨方言那 12 格） ───────────────────── */
 
 /**
- * 上游适配器已经把响应翻译成 OpenAI Chat 形状，这里再落到客户端要的方言。
+ * 协议适配器已经把响应翻译成 OpenAI Chat 形状，这里再落到客户端要的方言。
  * `norm` 只加在顶层：它是附加字段，按已知字段反序列化的客户端会忽略它。
  */
 export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMeta): unknown {
