@@ -12,7 +12,7 @@ describe('ratesFor：最长前缀匹配', () => {
     expect(ratesFor('gpt-4o').match).toBe('gpt-4o');
   });
 
-  it('带 provider 前缀的模型名也能命中（deepseek/deepseek-chat）', () => {
+  it('带上游提供商前缀的模型名也能命中（deepseek/deepseek-chat）', () => {
     expect(ratesFor('deepseek/deepseek-chat').match).toBe('deepseek-chat');
   });
 
@@ -60,7 +60,7 @@ describe('quote：三项 token 各自折钱', () => {
     expect(q.total_nanos).toBe(75);
   });
 
-  it('缓存数大于输入数时不为负（Provider 口径坏掉也不会倒扣钱）', () => {
+  it('缓存数大于输入数时不为负（上游提供商口径坏掉也不会倒扣钱）', () => {
     const q = quote('gpt-4o', { input: 100, cached: 500, output: 0 });
     expect(q.uncached_tokens).toBe(0);
     expect(q.cached_nanos).toBeGreaterThanOrEqual(0);

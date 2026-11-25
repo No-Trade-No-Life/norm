@@ -81,13 +81,13 @@ export function PlaygroundPage() {
         path: '/v1/chat/completions',
         method: 'POST',
         body,
-        // 密钥在服务端：这里只说用哪条Provider。明文密钥从不出现在浏览器里。
+        // 密钥在服务端：这里只说用哪条上游提供商。明文密钥从不出现在浏览器里。
         headers: { 'X-Norm-Provider': provider.id },
         signal: controller.signal,
       });
 
       if (!response.ok) {
-        // provider 的错误体原样回来（这是设计：改写它只会让 provider 的报错更难查），
+        // 上游提供商的错误体原样回来（这是设计：改写它只会让上游提供商的报错更难查），
         // 所以这里的活儿是把它压成一句话——`error` 常常是一个对象，
         // 直接塞进 JSX 会让整页白屏，用户看到的就是「点了没反应」。
         const text = await response.text();
@@ -257,7 +257,7 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
       <span>
         {t('pg.latency')} <code className="text-foreground">{latency(meta.latency_ms)}</code>
       </span>
-      {/* 只报事实：这次请求打到了哪台主机。是否可信交给 provider 页的清单去说。 */}
+      {/* 只报事实：这次请求打到了哪台主机。是否可信交给上游提供商页的清单去说。 */}
       <span className="flex items-center gap-1">
         <ServerIcon className="size-3.5" />
         {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>

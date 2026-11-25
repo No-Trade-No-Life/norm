@@ -1,14 +1,14 @@
 /**
- * Provider：只有四种协议，其余都是它们的变体。
+ * 上游提供商：只有四种协议，其余都是它们的变体。
  *
  *   openai-chat         {base}/chat/completions
  *   openai-responses    {base}/responses
  *   anthropic-messages  {base}/v1/messages
  *   google-gemini       {base}/v1beta/models/{model}:generateContent
  *
- * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**Provider**的属性，
- * 由 provider 配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
- * 这样「换一家 provider 」只是换一张 provider，客户端一行都不用改。
+ * 客户端**一律**说 OpenAI Chat（/v1/chat/completions）。协议是**上游提供商**的属性，
+ * 由上游提供商配置；Norm 在边界处把请求翻译过去、把响应翻译回来。
+ * 这样「换一家上游提供商」只是换一张上游提供商，客户端一行都不用改。
  */
 export type Protocol =
   | 'openai-chat'
@@ -27,7 +27,7 @@ export function isProtocol(value: string): value is Protocol {
   return (PROTOCOLS as string[]).includes(value);
 }
 
-/** provider 是否对公众可用，由用户声明。私有不代表掺水，只代表不对外。 */
+/** 上游提供商是否对公众可用，由用户声明。私有不代表掺水，只代表不对外。 */
 export type Visibility = 'public' | 'private';
 
 export function isVisibility(value: string): value is Visibility {
@@ -52,9 +52,9 @@ export type Adapter = {
   path: (model: string) => string;
   headers: (apiKey: string) => Record<string, string>;
   request: (body: ChatBody, model: string) => unknown;
-  /** 非流式：把 provider JSON 翻译回 OpenAI Chat 形状。 */
+  /** 非流式：把上游提供商 JSON 翻译回 OpenAI Chat 形状。 */
   response: (json: unknown, model: string) => unknown;
-  /** 流式：把 provider 一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
+  /** 流式：把上游提供商一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
   streamData: (data: string, model: string) => string[];
 };
 

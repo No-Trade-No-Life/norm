@@ -5,7 +5,7 @@ import type { Env } from './env';
  *
  * 这里不做任何判断，只做事实查找：主机名是否在 `TRUSTED_BASE_URLS` 里。
  * 「官方 key」不是后端的类型，而是前端按这份清单渲染出来的标签——
- * 换一份清单，同一个 provider 就换个说法，数据层不需要动。
+ * 换一份清单，同一个上游提供商就换个说法，数据层不需要动。
  *
  * 清单用「精确主机名」而不是后缀：`api.openai.com` 与 `api.openai.com.evil.tld`
  * 是两台完全不同的机器，后缀匹配会把后者也放进来。
@@ -49,8 +49,8 @@ type GroupRow = {
 };
 
 /**
- * 按 base_url 聚合：同一个 provider 被多少条 provider 用着、其中有几条公开、说过哪些协议。
- * 这是后端唯一关于「 provider」的视图——没有官方/第三方，只有地址与计数。
+ * 按 base_url 聚合：同一个上游提供商被多少条上游提供商用着、其中有几条公开、说过哪些协议。
+ * 这是后端唯一关于「上游提供商」的视图——没有官方/第三方，只有地址与计数。
  */
 export async function groupByBaseUrl(env: Env): Promise<BaseUrlGroup[]> {
   const { results } = await env.DB.prepare(

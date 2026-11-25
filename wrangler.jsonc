@@ -31,7 +31,7 @@
     "GRANT_NANOS": "1000000000",
     // 签名时间窗。
     "SIGNATURE_WINDOW_SECONDS": "120",
-    // 信任清单：只有落在这些主机上的 provider 才会被前端标成「官方」。
+    // 信任清单：只有落在这些主机上的上游提供商才会被前端标成「官方」。
     // 精确主机名匹配，不做后缀匹配（api.openai.com.evil.tld 不该被放进来）。
     "TRUSTED_BASE_URLS": "api.openai.com,api.deepseek.com,api.anthropic.com,generativelanguage.googleapis.com,api.x.ai,api.moonshot.cn,open.bigmodel.cn,dashscope.aliyuncs.com",
     // 可信发布证明：CI 在 deploy 时用 --var 覆盖，公开在 /api/v1/attestation。

@@ -73,7 +73,7 @@ export async function listProviders(env: Env, address: string): Promise<Provider
   )
     .bind(address)
     .all<ProviderRow>();
-  // trusted 由同一份清单算出，不落库：清单改了，所有 provider 的说法立刻跟着变。
+  // trusted 由同一份清单算出，不落库：清单改了，所有上游提供商的说法立刻跟着变。
   return results.map((row) => ({ ...row, trusted: isTrusted(row.base_url, env) }));
 }
 
@@ -87,12 +87,12 @@ export async function findProvider(env: Env, address: string, id: string): Promi
  * 一次调用的全部记账：扣钱、记流水、记请求，三步只描述同一件事。
  *
  * 余额的扣减用一条 `UPDATE ... MIN(?, balance)` 完成：扣掉的是「该付的」与「还剩下的」
- * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：Provider 已经执行完了，
+ * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：上游提供商已经执行完了，
  * 这笔钱该记下来，而账不能变成负数——差的那部分记成 `unbilled_nanos`，
  * 由站点承担，并在页面上如实显示。
  *
  * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = service_fee_nanos + token_nanos`。
- * 失败（Provider 报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
+ * 失败（上游提供商报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
  */
 export type Bill = {
   requestId: string;
@@ -137,7 +137,7 @@ export async function recordRequest(env: Env, row: RequestRecord): Promise<void>
 }
 
 /**
- * 这次转发用哪条 provider：头里点了名就用它，没点名就用账户里唯一的那条。
+ * 这次转发用哪条上游提供商：头里点了名就用它，没点名就用账户里唯一的那条。
  *
  * 多条又不指名是 409 而不是猜一条——「钱付给谁」是这个服务里失败代价最高的选择，
  * 不该由一个默认值替用户决定。签名身份与消费者 Token 走同一个判定点。
@@ -152,9 +152,9 @@ export async function resolveProviderId(env: Env, address: string, requested: st
     .bind(address)
     .all<{ id: string }>();
 
-  if (results.length === 0) fail(400, 'provider_missing', '还没有 provider：先去「 provider」页添加一条');
+  if (results.length === 0) fail(400, 'provider_missing', '还没有上游提供商：先去「上游提供商」页添加一条');
   if (results.length > 1) {
-    fail(409, 'provider_ambiguous', '账户里有多条 provider，请用 X-Norm-Provider 指名用哪一条');
+    fail(409, 'provider_ambiguous', '账户里有多条上游提供商，请用 X-Norm-Provider 指名用哪一条');
   }
   return results[0].id;
 }
@@ -163,7 +163,7 @@ export async function resolveProviderId(env: Env, address: string, requested: st
  * 扣费 + 流水 + 请求记录：一次调用的三件事，写在一起。
  *
  * 扣多少：该付多少就扣多少，余额不够时把剩下的全扣掉（余额落到 0），
- * 差的那部分记成 `unbilled_nanos` 由站点承担——Provider 已经执行完了，账要记，
+ * 差的那部分记成 `unbilled_nanos` 由站点承担——上游提供商已经执行完了，账要记，
  * 但余额不能变成负数。
  *
  * 为什么是「先读再带条件更新」而不是一条 `UPDATE ... RETURNING`：

@@ -97,7 +97,7 @@ export async function signedFetch({ path, method = 'GET', body, headers, signal 
 }
 
 /**
- * 非 2xx 一律变成 ApiError。文案统一过 `errorText`：provider 的错误体是各家方言，
+ * 非 2xx 一律变成 ApiError。文案统一过 `errorText`：上游提供商的错误体是各家方言，
  * 里面常嵌着对象，直接当字符串用的结果就是白屏。
  */
 async function readError(response: Response): Promise<ApiError> {

@@ -35,8 +35,8 @@ app.post('/api/v1/auth/login', async (c) => {
 /**
  * 管理面 `/api/v1/*`：只接受 Ed25519 签名。
  *
- * 账户、Provider、消费者密钥都是「浏览器里的人在操作」，所以一把下游密钥不该能
- * 凭空再铸一把下游密钥，也不该能撤销别人的Provider。
+ * 账户、上游提供商、消费者密钥都是「浏览器里的人在操作」，所以一把下游密钥不该能
+ * 凭空再铸一把下游密钥，也不该能撤销别人的上游提供商。
  */
 function signedOnly() {
   const signed = new Hono<App>();

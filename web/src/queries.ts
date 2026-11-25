@@ -92,7 +92,7 @@ export function useUsageByConsumer(enabled: boolean) {
   });
 }
 
-/** 按 provider 聚合的用量：钱花在哪个Provider。 */
+/** 按上游提供商聚合的用量：钱花在哪个上游提供商。 */
 export function useUsageByProvider(enabled: boolean) {
   return useQuery({
     queryKey: ['usage-by-provider'],

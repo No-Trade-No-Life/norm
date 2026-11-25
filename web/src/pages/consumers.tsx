@@ -24,10 +24,10 @@ import type { Consumer, Provider } from '../types';
 /**
  * 下游消费者：给程序用的 `sk-norm-…`。
  *
- * 与「 provider」页的区别是「谁在说话」：那一页管资源（钱付给谁、Provider 在哪），
+ * 与「上游提供商」页的区别是「谁在说话」：那一页管资源（钱付给谁、上游提供商在哪），
  * 这一页管消费（谁的代码拿着 Token 来敲门）。
  *
- * 一条 Token 在建的时候就绑死一条 provider，所以程序侧一次调用只要
+ * 一条 Token 在建的时候就绑死一条上游提供商，所以程序侧一次调用只要
  * `Authorization: Bearer sk-norm-…`——再没有第二个 Norm 专有的头。
  */
 export function ConsumersPage() {
@@ -206,7 +206,7 @@ function NewConsumerDialog({
   const [providerId, setProviderId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // 默认选中第一条：绝大多数人只有一条 provider，让他少点一次。
+  // 默认选中第一条：绝大多数人只有一条上游提供商，让他少点一次。
   const selected = providerId || providers[0]?.id || '';
 
   const submit = async () => {
@@ -254,7 +254,7 @@ function NewConsumerDialog({
 
             <div className="flex flex-col gap-1.5">
               <Label>{t('co.field_provider')}</Label>
-              {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条Provider、打到哪台主机。 */}
+              {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条上游提供商、打到哪台主机。 */}
               <Select
                 value={selected}
                 onValueChange={(value) => setProviderId(String(value))}

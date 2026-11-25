@@ -24,7 +24,7 @@ import type { ConsumerUsage, LedgerRow, Pricing, ProviderUsage, RequestRow } fro
  *   1. 余额与累计花费           —— 我欠多少、花了多少
  *   2. 三项 token 与费用构成     —— 钱花在什么上（输入 / 缓存命中 / 输出 / 服务费）
  *   3. 请求记录                 —— 逐条明细，每条都能回到一次调用
- *   4. 按钥匙 / 按 provider          —— 谁花的、花在哪
+ *   4. 按钥匙 / 按上游提供商          —— 谁花的、花在哪
  *   5. 记账流水                 —— 余额是怎么一步步变到现在的
  *   6. 价目表                   —— 价格是公开的，谁都能自己重算一遍
  */
@@ -302,7 +302,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
               <span className="block truncate font-mono text-xs" title={row.model}>
                 {row.model || '—'}
               </span>
-              {/* 第二行回答「打给哪台机器、走哪条 provider」——账本的一半意义在这里。 */}
+              {/* 第二行回答「打给哪台机器、走哪条上游提供商」——账本的一半意义在这里。 */}
               <span className="block truncate text-[11px] text-muted-foreground" title={row.base_url}>
                 {safeHost(row.base_url) || '—'}
                 {row.provider_id ? ` · ${labelOf.get(row.provider_id) || shortAddress(row.provider_id)}` : ''}

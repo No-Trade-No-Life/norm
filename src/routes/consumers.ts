@@ -34,10 +34,10 @@ consumerRoutes.get('/', async (c) => {
 });
 
 /**
- * 建钥只要一个名字：它回答的是「这段代码是谁」，与「走哪条 provider」无关。
+ * 建钥只要一个名字：它回答的是「这段代码是谁」，与「走哪条上游提供商」无关。
  *
- * 少一个必填字段就少一次配置错误——provider 在转发时才决定（见 store.resolveProviderId），
- * 所以给一个新程序发钥匙不必先想清楚它会用哪个 provider，也不会因为后来换了 provider 而作废。
+ * 少一个必填字段就少一次配置错误——上游提供商在转发时才决定（见 store.resolveProviderId），
+ * 所以给一个新程序发钥匙不必先想清楚它会用哪个上游提供商，也不会因为后来换了上游提供商而作废。
  * 请求体里若还带着旧的 provider_id，直接忽略：那是上一版的形状，不是错误。
  */
 consumerRoutes.post('/', async (c) => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { errorText } from '../web/src/lib/error-text';
 
 describe('errorText', () => {
-  it('取 provider error.message（OpenAI / DeepSeek 兼容的形状）', () => {
+  it('取上游提供商 error.message（OpenAI / DeepSeek 兼容的形状）', () => {
     const body = {
       error: {
         message: 'Authentication Fails, Your api key: ****-key is invalid',
@@ -37,7 +37,7 @@ describe('errorText', () => {
     expect(errorText(new Error('boom'))).toBe('boom');
   });
 
-  it('纯文本原样返回（Provider 偶而回 HTML / 散文）', () => {
+  it('纯文本原样返回（上游提供商偶而回 HTML / 散文）', () => {
     expect(errorText('<html>502 Bad Gateway</html>')).toBe('<html>502 Bad Gateway</html>');
   });
 

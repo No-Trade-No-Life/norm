@@ -1,13 +1,13 @@
 import type { Env } from './env';
 
 /**
- * Provider 密钥在库里的封装：AES-256-GCM，密钥来自 Worker secret `NORM_MASTER_KEY`。
+ * 上游提供商密钥在库里的封装：AES-256-GCM，密钥来自 Worker secret `NORM_MASTER_KEY`。
  *
  * 为什么放在服务端而不是让用户记口令：口令那一层只保护「存储中的副本」，
  * 而中转站每次调用都必然看见明文——它防不住运行期，只能防拖库。
  * 既然目标是拖库，那用一把由系统配置的高熵密钥就够了，且没有弱口令问题。
  *
- * 代价要说清：拿到这把密钥又拿到库，就能解开所有 provider 密钥。所以它是
+ * 代价要说清：拿到这把密钥又拿到库，就能解开所有上游提供商密钥。所以它是
  * Worker secret（不进仓库、不进 D1、不进日志），轮换即全量重封（见 docs/rotate-key.md）。
  */
 const IV_BYTES = 12;
@@ -28,7 +28,7 @@ async function masterKey(env: Env): Promise<CryptoKey> {
 }
 
 /**
- * AAD 把密文绑到「哪个账户的哪条 provider」。这样即使两条记录被互换，
+ * AAD 把密文绑到「哪个账户的哪条上游提供商」。这样即使两条记录被互换，
  * 解密也会失败——不需要额外的完整性字段。
  */
 function aad(address: string, providerId: string): Uint8Array {

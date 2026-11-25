@@ -14,10 +14,10 @@ import type { BaseUrlGroup } from '../types';
 type Filter = 'all' | 'trusted' | 'untrusted';
 
 /**
- * provider 看板：按 base_url 聚合。
+ * 上游提供商看板：按 base_url 聚合。
  *
  * 这里不判「官方还是掺水」——只在端上一句事实：这个地址在不在信任清单里，
- * 以及它被多少条 provider 用着、其中几条愿意挂到公开看板。判断留给读者。
+ * 以及它被多少条上游提供商用着、其中几条愿意挂到公开看板。判断留给读者。
  */
 export function ProvenancePage() {
   const { t, lang } = useI18n();
