@@ -33,10 +33,10 @@ export type Me = {
   created_at: number;
 };
 
-/** 一次调用里关于 provider 的唯一事实：它落在哪台主机上。 */
+/** 一次调用里关于上游提供商的唯一事实：它落在哪台主机上。 */
 export type CallFacts = { host: string };
 
-/** 按 base_url 聚合的Provider。后端不做价值判断，trusted 只是清单命中与否。 */
+/** 按 base_url 聚合的上游提供商。后端不做价值判断，trusted 只是清单命中与否。 */
 export type BaseUrlGroup = {
   base_url: string;
   host: string;
@@ -106,9 +106,9 @@ export type Consumer = {
   id: string;
   address: string;
   name: string;
-  /** 建的时候就绑死的 provider：调用时一条 Bearer 就够，不用再带第二个头。 */
+  /** 建的时候就绑死的上游提供商：调用时一条 Bearer 就够，不用再带第二个头。 */
   provider_id: string;
-  /** LEFT JOIN 带上来的昵称与地址；Provider 被撤销后为 null。 */
+  /** LEFT JOIN 带上来的昵称与地址；上游提供商被撤销后为 null。 */
   provider_label: string | null;
   provider_base_url: string | null;
   key_hint: string;
@@ -157,7 +157,7 @@ export type ConsumerUsage = {
   fee_nanos: number;
 };
 
-/** 按 provider 聚合的用量：钱花在哪个Provider。 */
+/** 按上游提供商聚合的用量：钱花在哪个上游提供商。 */
 export type ProviderUsage = {
   provider_id: string | null;
   provider_label: string | null;
@@ -222,12 +222,12 @@ export type ChatChunk = {
 };
 
 /**
- * Provider 说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
+ * 上游提供商说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
  * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
  */
 export const PROTOCOLS = ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
-/** Provider 本身是否对公众可用。私有不代表掺水，只代表不对外。 */
+/** 上游提供商本身是否对公众可用。私有不代表掺水，只代表不对外。 */
 export const VISIBILITIES = ['public', 'private'] as const;
 export type Visibility = (typeof VISIBILITIES)[number];

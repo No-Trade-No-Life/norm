@@ -23,15 +23,15 @@ import { adapterFor, protocolUrlFor, type Protocol } from '../protocols';
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
 
 /**
- * 转发面：四条入口方言 × 四种provider 协议。
+ * 转发面：四条入口方言 × 四种上游提供商协议。
  *
- * 入口与 provider 用的是同一套名字，所以「入口方言 === provider 协议」就是字符串相等，
+ * 入口与上游提供商用的是同一套名字，所以「入口方言 === 上游提供商协议」就是字符串相等，
  * 而那 4 格**不转换**：请求体按原始字节发出去，响应体原样回来（只多一个 `norm` 字段）。
  *
  * 其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 协议适配器 → 回来时渲染成入口方言。
- * 桥只在一侧出现，所以矩阵是 4 段入口翻译 + 4 段 provider 适配，而不是 16 条路径。
+ * 桥只在一侧出现，所以矩阵是 4 段入口翻译 + 4 段上游提供商适配，而不是 16 条路径。
  *
- * 两件事只在本请求的作用域里成立，不落库：provider 明文密钥（BYOK）、请求与响应内容（ZDR）。
+ * 两件事只在本请求的作用域里成立，不落库：上游提供商明文密钥（BYOK）、请求与响应内容（ZDR）。
  */
 export const relayRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
@@ -57,12 +57,12 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
 
-  // 身份只说「谁在用」，走哪条 provider 是这次转发自己的选择：头里点了名就用它，
+  // 身份只说「谁在用」，走哪条上游提供商是这次转发自己的选择：头里点了名就用它，
   // 没点名就用账户里唯一的那条（多条又不指名是 409，见 store.resolveProviderId）。
   const providerId = await resolveProviderId(c.env, address, c.req.header('X-Norm-Provider') ?? null);
 
   const provider = await findProvider(c.env, address, providerId);
-  if (!provider) fail(404, 'provider_not_found', 'provider 不存在或已撤销');
+  if (!provider) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
 
   // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
   // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。
@@ -87,7 +87,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const stream = entry.stream ?? raw.stream === true;
   const sameShape = entry.dialect === protocol;
 
-  // 目的地只能来自 provider：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
+  // 目的地只能来自上游提供商：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
   const baseUrl = provider.base_url;
   const adapter = adapterFor(protocol);
   const outbound = sameShape ? rawBody : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
@@ -101,7 +101,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     fail(402, 'insufficient_balance', `余额不足：需要 ${serviceFee} 纳美元，当前 ${account.balance_nanos}`);
   }
 
-  // 唯一关于 provider 的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
+  // 唯一关于上游提供商的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
   const host = hostOf(baseUrl);
   const accounting: Accounting = {
     env: c.env,
@@ -131,7 +131,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
   if (!reply.ok) {
     // 失败不扣钱：隔离执行的成本由站点承担，用户只看到一条诚实的失败记录。
-    // provider 的错误体原样返回——它不是记账数据，改写它只会让 provider 的报错更难查。
+    // 上游提供商的错误体原样返回——它不是记账数据，改写它只会让上游提供商的报错更难查。
     const text = await reply.text();
     await recordFailure(accounting, 'provider_error', reply.status);
     return new Response(text, {
@@ -163,7 +163,7 @@ type Accounting = {
   address: string;
   providerId: string;
   consumerId: string | null;
-  /** 打到的 provider 地址：账本要能回答「这一笔打给哪台机器」。 */
+  /** 打到的上游提供商地址：账本要能回答「这一笔打给哪台机器」。 */
   baseUrl: string;
   requestId: string;
   startedAt: number;
@@ -210,7 +210,7 @@ async function bill(accounting: Accounting, answer: AnswerCore, statusCode: numb
 /**
  * 失败不扣钱：隔离执行的成本由站点承担，用户只看到一条诚实的失败记录。
  * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少，
- * 只是 token 与费用都是 0（Provider 没给出答案，也就没有可计价的量）。
+ * 只是 token 与费用都是 0（上游提供商没给出答案，也就没有可计价的量）。
  */
 async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<void> {
   await recordRequest(accounting.env, recordOf(accounting, {
@@ -225,8 +225,8 @@ function recordOf(
   accounting: Accounting,
   parts: { status: string; statusCode: number; tokenNanos: number; answer?: AnswerCore; usage?: Usage },
 ): RequestRecord {
-  // 记客户端要的那个模型名，不记 provider 回的那个：价格跟着它算，两者必须是同一个字符串，
-  // 否则一个把自己响应改写成便宜模型的 provider 就顺手给自己定了价。 provider 实际跑的版本
+  // 记客户端要的那个模型名，不记上游提供商回的那个：价格跟着它算，两者必须是同一个字符串，
+  // 否则一个把自己响应改写成便宜模型的上游提供商就顺手给自己定了价。 上游提供商实际跑的版本
   // 是它的私事，账本不需要为此多一列。
   // 用量可能显式传（流式收尾时已经算好了），也可能藏在回答里（非流式）。
   const usage = parts.usage ?? parts.answer?.usage ?? { input: 0, cached: 0, output: 0 };
@@ -255,7 +255,7 @@ function recordOf(
 /* ── 流式：同格式直通 ─────────────────────────────────────────────── */
 
 /**
- * 同格式直通：provider 的 SSE 原样往下走，我们只在末尾记账。
+ * 同格式直通：上游提供商的 SSE 原样往下走，我们只在末尾记账。
  *
  * 用量在流里只出现一两次（见 dialects.ts 的 usageSniffer），所以这里一边转发一边嗅，
  * 到收尾时才计价——流式的 token 数只有末帧才知道。
@@ -267,7 +267,7 @@ function recordOf(
 function passThroughStream(accounting: Accounting & { reply: Response; dialect: Dialect }): Response {
   const { env, reply, dialect } = accounting;
   const source = reply.body;
-  if (!source) return new Response('provider 没有返回流', { status: 502 });
+  if (!source) return new Response('上游提供商没有返回流', { status: 502 });
   const reader = source.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -298,7 +298,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
           const lines = buffer.split('\n');
           buffer = lines.pop() ?? '';
           for (const line of lines) {
-            // provider 的 `[DONE]` 由我们自己发：这样 norm 一定排在它前面。
+            // 上游提供商的 `[DONE]` 由我们自己发：这样 norm 一定排在它前面。
             if (line.trim() === 'data: [DONE]') continue;
             if (line.startsWith('data:')) sniffer.push(line.slice(5).trim());
             controller.enqueue(encoder.encode(`${line}\n`));
@@ -336,7 +336,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 /* ── 流式：跨方言 ─────────────────────────────────────────────────── */
 
 /**
- * 跨方言流：Provider SSE → OpenAI chat chunk（协议适配器负责）→ 入口方言的帧（dialects 负责）。
+ * 跨方言流：上游提供商 SSE → OpenAI chat chunk（协议适配器负责）→ 入口方言的帧（dialects 负责）。
  *
  * 用量同样一边嗅一边转发。这里比直通多一件事：入口若是 Gemini / Anthropic / Responses，
  * 收尾帧必须带上最终 token 数——那正是我们记账用的那一份，于是「账」与「回给客户端的
@@ -345,7 +345,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; protocol: Protocol }): Response {
   const { env, reply, entry, protocol } = accounting;
   const source = reply.body;
-  if (!source) return new Response('provider 没有返回流', { status: 502 });
+  if (!source) return new Response('上游提供商没有返回流', { status: 502 });
 
   const adapter = adapterFor(protocol);
   const emitter = streamEmitter(entry, accounting.requestId, accounting.model);

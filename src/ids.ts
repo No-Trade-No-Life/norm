@@ -11,7 +11,7 @@ export function randomToken(bytes = 16): string {
  * 三种 id 各有各的排序需求，选型只由这一点决定：
  *
  *   request_id   UUID v7  账本按时间翻页，「最近 20 条」就是 id 序，主键即时间索引
- *   provider_id  UUID v4  一条 provider 被引用而不是被按时间扫描，时间序没有意义
+ *   provider_id  UUID v4  一条上游提供商被引用而不是被按时间扫描，时间序没有意义
  *   consumer_id  UUID v4  同上
  *
  * 不用自增整数：id 会出现在 URL 里，自增等于把全站的量、增长速度与写入节奏公开。

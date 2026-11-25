@@ -11,7 +11,7 @@ import { findProvider, listProviders } from '../store';
 type Body = {
   label?: string;
   base_url?: string;
-  /** provider 明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
+  /** 上游提供商明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
   provider_key?: string;
   protocol?: string;
   visibility?: string;
@@ -38,7 +38,7 @@ providerRoutes.post('/', async (c) => {
   if (!body.provider_key?.trim()) fail(400, 'provider_key_missing', '缺少 provider_key');
 
   const now = nowSeconds();
-  // Provider 不按时间被扫描，只是一个被引用的名字：UUID v4。
+  // 上游提供商不按时间被扫描，只是一个被引用的名字：UUID v4。
   const id = uuidv4();
 
   // 明文只活在这几行里：封装后立刻丢弃，既不进 D1 也不进日志。
@@ -77,7 +77,7 @@ providerRoutes.post('/:id/visibility', async (c) => {
   const { public_listed } = await c.req.json<{ public_listed?: boolean }>();
   const address = c.get('principal').address;
   const existing = await findProvider(c.env, address, c.req.param('id'));
-  if (!existing) fail(404, 'provider_not_found', 'provider 不存在或已撤销');
+  if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
   await c.env.DB.prepare('UPDATE providers SET public_listed = ? WHERE id = ? AND address = ?')
     .bind(public_listed ? 1 : 0, existing.id, address)
     .run();
@@ -87,7 +87,7 @@ providerRoutes.post('/:id/visibility', async (c) => {
 providerRoutes.delete('/:id', async (c) => {
   const address = c.get('principal').address;
   const existing = await findProvider(c.env, address, c.req.param('id'));
-  if (!existing) fail(404, 'provider_not_found', 'provider 不存在或已撤销');
+  if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
   await c.env.DB.prepare('UPDATE providers SET revoked_at = ? WHERE id = ? AND address = ?')
     .bind(nowSeconds(), existing.id, address)
     .run();

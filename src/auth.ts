@@ -23,7 +23,7 @@ export type Principal = {
  *   x-goog-api-key: sk-norm-…          Google SDK
  *
  * 只认带 `sk-norm-` 前缀的值——没有前缀的 api key 不是我们的身份，交给签名那条路去失败，
- * 免得把「 provider 密钥错放进请求头」误报成「身份无效」。
+ * 免得把「上游提供商密钥错放进请求头」误报成「身份无效」。
  */
 function bearerOf(request: Request): string | null {
   const authorization = request.headers.get('Authorization');

@@ -21,7 +21,7 @@ publicRoutes.get('/stats', async (c) => {
 });
 
 /**
- * provider 看板：按 base_url 聚合。
+ * 上游提供商看板：按 base_url 聚合。
  *
  * 这里没有「官方 / 第三方」这类判断——后端只回事实与一个 `trusted` 布尔
  * （主机名是否在 `TRUSTED_BASE_URLS` 清单里）。「官方 key」是前端按这个布尔

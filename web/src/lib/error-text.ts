@@ -1,7 +1,7 @@
 /**
  * 把任何「错误的形状」压成一句能显示的话。
  *
- * 为什么需要它：Provider 不是我们说哪句就回哪句。OpenAI 与 DeepSeek 回的是
+ * 为什么需要它：上游提供商不是我们说哪句就回哪句。OpenAI 与 DeepSeek 回的是
  * `{"error":{"message":…,"type":…}}`，Norm 自己回的是 `{"error":"code","message":…}`，
  * 有人回纯文本，有人回 HTML。之前 Playground 直接拿 `parsed.error` 当字符串用，
  * 于是把一个**对象**交给了 React——整页白屏，用户看到的就是「点了没反应」。

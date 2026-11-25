@@ -123,7 +123,7 @@ accountRoutes.get('/usage/by-consumer', async (c) => {
   return c.json({ items: results });
 });
 
-/** 按 provider 聚合：钱花在哪个Provider、打给哪个地址。 */
+/** 按上游提供商聚合：钱花在哪个上游提供商、打给哪个地址。 */
 accountRoutes.get('/usage/by-provider', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT requests.provider_id AS provider_id,
