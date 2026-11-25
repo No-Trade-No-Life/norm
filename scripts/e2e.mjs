@@ -91,8 +91,46 @@ const provider = createServer((request, response) => {
       return;
     }
 
+    // 工具调用：请求里声明了哪个工具，假上游就按**这一家的形状**要一次调用。
+    // 名字取自请求体，所以「声明有没有被翻译对」也一并验到了。
+    const declared = {
+      chat: parsed.tools?.[0]?.function?.name ?? parsed.tools?.[0]?.name,
+      responses: parsed.tools?.[0]?.name,
+      anthropic: parsed.tools?.[0]?.name,
+      gemini: parsed.tools?.[0]?.functionDeclarations?.[0]?.name,
+    };
+
     // 1) openai-chat
     if (url.pathname.endsWith('/chat/completions')) {
+      if (declared.chat) {
+        if (parsed.stream) {
+          sse(response, [
+            { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: declared.chat, arguments: '' } }] } }] },
+            { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"city":"上海"}' } }] } }] },
+            { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
+            ...(parsed.stream_options?.include_usage
+              ? [{ choices: [], usage: { prompt_tokens: 12, completion_tokens: 4 } }]
+              : []),
+          ]);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({
+          id: 'chatcmpl-tool',
+          model: parsed.model,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [{ id: 'call_1', type: 'function', function: { name: declared.chat, arguments: '{"city":"上海"}' } }],
+            },
+            finish_reason: 'tool_calls',
+          }],
+          usage: { prompt_tokens: 12, completion_tokens: 4 },
+        }));
+        return;
+      }
       if (parsed.model === 'flaky-model') {
         response.writeHead(400, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({
@@ -124,6 +162,26 @@ const provider = createServer((request, response) => {
 
     // 2) openai-responses
     if (url.pathname.endsWith('/responses')) {
+      if (declared.responses) {
+        if (parsed.stream) {
+          sse(response, [
+            { type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', call_id: 'call_1', name: declared.responses } },
+            { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"city":"上海"}' },
+            { type: 'response.completed', response: { usage: { input_tokens: 20, output_tokens: 6 } } },
+          ]);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({
+          id: 'resp_tool',
+          object: 'response',
+          status: 'completed',
+          model: parsed.model,
+          output: [{ type: 'function_call', call_id: 'call_1', name: declared.responses, arguments: '{"city":"上海"}' }],
+          usage: { input_tokens: 20, output_tokens: 6 },
+        }));
+        return;
+      }
       if (parsed.stream) {
         sse(response, [
           { type: 'response.output_text.delta', delta: '你' },
@@ -147,6 +205,29 @@ const provider = createServer((request, response) => {
 
     // 3) anthropic-messages
     if (url.pathname.endsWith('/v1/messages')) {
+      if (declared.anthropic) {
+        if (parsed.stream) {
+          sse(response, [
+            { type: 'message_start', message: { usage: { input_tokens: 15, output_tokens: 1 } } },
+            { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_1', name: declared.anthropic } },
+            { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"city":"上海"}' } },
+            { type: 'content_block_stop', index: 0 },
+            { type: 'message_delta', usage: { output_tokens: 6 } },
+          ]);
+          return;
+        }
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({
+          id: 'msg_tool',
+          type: 'message',
+          role: 'assistant',
+          model: parsed.model,
+          content: [{ type: 'tool_use', id: 'toolu_1', name: declared.anthropic, input: { city: '上海' } }],
+          stop_reason: 'tool_use',
+          usage: { input_tokens: 15, output_tokens: 6 },
+        }));
+        return;
+      }
       if (parsed.stream) {
         sse(response, [
           { type: 'message_start', message: { usage: { input_tokens: 25, cache_read_input_tokens: 10, output_tokens: 1 } } },
@@ -171,6 +252,15 @@ const provider = createServer((request, response) => {
 
     // 4) google-gemini（含流式端点）
     if (url.pathname.includes(':streamGenerateContent')) {
+      if (declared.gemini) {
+        sse(response, [
+          {
+            candidates: [{ content: { parts: [{ functionCall: { name: declared.gemini, args: { city: '上海' } } }] } }],
+            usageMetadata: { promptTokenCount: 14, candidatesTokenCount: 5 },
+          },
+        ]);
+        return;
+      }
       sse(response, [
         { candidates: [{ content: { parts: [{ text: '你' }] } }] },
         { candidates: [{ content: { parts: [{ text: '好' }] } }], usageMetadata: { promptTokenCount: 18, cachedContentTokenCount: 12, candidatesTokenCount: 4 } },
@@ -178,6 +268,15 @@ const provider = createServer((request, response) => {
       return;
     }
     if (url.pathname.includes(':generateContent')) {
+      if (declared.gemini) {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({
+          candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: declared.gemini, args: { city: '上海' } } }] }, finishReason: 'STOP', index: 0 }],
+          usageMetadata: { promptTokenCount: 14, candidatesTokenCount: 5 },
+          modelVersion: parsed.model ?? 'gemini-test',
+        }));
+        return;
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({
         candidates: [{ content: { role: 'model', parts: [{ text: '你好' }] }, finishReason: 'STOP', index: 0 }],
@@ -1127,15 +1226,17 @@ console.log('12. 4×4 矩阵：入口方言 × 上游提供商协议');
     }
   }
 
-  // 跨方言的工具调用不翻译：早拒绝，而不是让客户端收到一段散文。
+  // 跨方言的工具调用会翻译：Anthropic 入口的 tools → Chat 上游的 function 包装，回来是 tool_use。
   {
     const payload = JSON.stringify({
       model: 'gpt-test',
+      max_tokens: 128,
       tools: [{ name: 'get_weather', input_schema: { type: 'object' } }],
       messages: [{ role: 'user', content: 'hi' }],
     });
     const result = await relayVia('openai-chat', aliceKey, 'POST', '/v1/messages', payload);
-    check('跨方言带 tools → 400 tools_unsupported', result.status === 400 && result.json.error === 'tools_unsupported', result.json);
+    check('跨方言带 tools → 200，且回来的是 tool_use 块', result.status === 200 && result.json?.content?.[0]?.type === 'tool_use', result.json);
+    check('跨方言的工具调用带 stop_reason=tool_use', result.json?.stop_reason === 'tool_use', result.json?.stop_reason);
 
     // 同格式直通时 tools 免费穿过：我们不碰请求体，也就没有「支持不支持」的问题。
     const same = JSON.stringify({ model: 'gpt-test', tools: [{ type: 'function', function: { name: 'w' } }], messages: [{ role: 'user', content: 'hi' }] });
@@ -1352,9 +1453,6 @@ console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协
   await call(alice, 'DELETE', `/api/v1/providers/${fixed.json.id}`);
 }
 
-provider.close();
-console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
-process.exit(failures === 0 ? 0 : 1);
 
 console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打');
 {
@@ -1437,3 +1535,150 @@ console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打')
     (bulk.json?.models ?? []).filter((item) => item.id.startsWith('bulk-')).length,
   );
 }
+
+console.log('\nN+1. 工具调用的翻译：跨方言也能用');
+{
+  // 干净身份：先只给一条 Responses 方言的上游（DeepSeek 那一族说的就是它）。
+  const tooler = identity();
+  await call(tooler, 'POST', '/api/v1/auth/login');
+  const responses = await call(tooler, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'responses only', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-responses', visibility: 'private',
+  }));
+  check('建一条 Responses 方言的上游 201', responses.status === 201, responses.json);
+  const key = (await createConsumer(tooler, 'tools bot')).json.key;
+
+  /** 上游最近收到的那一帧（按路径认，免得被建上游时的清单同步抢走）。 */
+  const lastTo = (suffix) => seen.filter((entry) => entry.path.endsWith(suffix)).at(-1);
+
+  const weatherTool = {
+    type: 'function',
+    function: { name: 'get_weather', description: '查天气', parameters: { type: 'object', properties: { city: { type: 'string' } } } },
+  };
+  const weatherCall = { id: 'call_1', type: 'function', function: { name: 'get_weather', arguments: '{"city":"上海"}' } };
+  const askWeather = {
+    model: 'gpt-test',
+    messages: [{ role: 'user', content: '上海几度？' }],
+    tools: [weatherTool],
+    tool_choice: { type: 'function', function: { name: 'get_weather' } },
+  };
+
+  // 1) Chat 入口（带 tools）→ Responses 上游：声明翻过去，工具调用翻回来。
+  const answered = await relay(key, 'POST', '/v1/chat/completions', JSON.stringify(askWeather));
+  check('Chat 入口带 tools → Responses 上游 200', answered.status === 200, answered.json);
+  const backToChat = answered.json?.choices?.[0];
+  check(
+    '回到 Chat 方言：tool_calls 的名字与参数都在',
+    backToChat?.message?.tool_calls?.[0]?.function?.name === 'get_weather'
+      && backToChat?.message?.tool_calls?.[0]?.function?.arguments === '{"city":"上海"}',
+    backToChat?.message,
+  );
+  check('finish_reason 是 tool_calls（不是 stop）', backToChat?.finish_reason === 'tool_calls', backToChat?.finish_reason);
+
+  const toResponses = lastTo('/responses');
+  check(
+    '上游收到的是 Responses 形状的 tools（扁平，没有 function 包装）',
+    toResponses?.body?.tools?.[0]?.name === 'get_weather' && toResponses.body.tools[0].function === undefined,
+    toResponses?.body?.tools,
+  );
+  check(
+    'tool_choice 翻成 Responses 的说法',
+    toResponses?.body?.tool_choice?.type === 'function' && toResponses?.body?.tool_choice?.name === 'get_weather',
+    toResponses?.body?.tool_choice,
+  );
+
+  // 2) 把工具结果带回去：Chat 的 role=tool → Responses 的 function_call_output。
+  const roundTrip = await relay(key, 'POST', '/v1/chat/completions', JSON.stringify({
+    ...askWeather,
+    messages: [
+      { role: 'user', content: '上海几度？' },
+      { role: 'assistant', content: null, tool_calls: [weatherCall] },
+      { role: 'tool', tool_call_id: 'call_1', content: '{"temp":21}' },
+    ],
+  }));
+  check('带工具结果的第二轮 200', roundTrip.status === 200, roundTrip.json);
+  const secondAsk = lastTo('/responses');
+  check(
+    '工具结果翻成 function_call_output，call_id 对得上',
+    secondAsk?.body?.input?.some((item) => item.type === 'function_call_output' && item.call_id === 'call_1' && item.output === '{"temp":21}'),
+    secondAsk?.body?.input,
+  );
+  check(
+    'assistant 的调用翻成 function_call 条目',
+    secondAsk?.body?.input?.some((item) => item.type === 'function_call' && item.name === 'get_weather' && item.call_id === 'call_1'),
+    secondAsk?.body?.input,
+  );
+
+  // 3) 反向：Anthropic 入口 → Chat 上游。
+  await call(tooler, 'POST', `/api/v1/providers/${responses.json.id}/enabled`, JSON.stringify({ enabled: false }));
+  const chatProvider = await call(tooler, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'chat upstream', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-chat', visibility: 'private',
+  }));
+  check('换成一条 Chat 方言的上游 201', chatProvider.status === 201, chatProvider.json);
+
+  const viaAnthropic = await relay(key, 'POST', '/v1/messages', JSON.stringify({
+    model: 'gpt-test',
+    max_tokens: 256,
+    tools: [{ name: 'get_weather', description: '查天气', input_schema: { type: 'object', properties: { city: { type: 'string' } } } }],
+    tool_choice: { type: 'any' },
+    messages: [{ role: 'user', content: '上海几度？' }],
+  }));
+  check('Anthropic 入口带 tools → Chat 上游 200', viaAnthropic.status === 200, viaAnthropic.json);
+  const block = viaAnthropic.json?.content?.[0];
+  check(
+    '回到 Anthropic 方言：tool_use 块，input 是对象',
+    block?.type === 'tool_use' && block?.name === 'get_weather' && block?.input?.city === '上海',
+    block,
+  );
+  check('stop_reason 是 tool_use', viaAnthropic.json?.stop_reason === 'tool_use', viaAnthropic.json?.stop_reason);
+
+  const toChat = lastTo('/chat/completions');
+  check(
+    '上游收到的是 Chat 形状的 tools（套一层 function）',
+    toChat?.body?.tools?.[0]?.type === 'function' && toChat?.body?.tools?.[0]?.function?.parameters?.type === 'object',
+    toChat?.body?.tools,
+  );
+  check('tool_choice 的 any 翻成 required', toChat?.body?.tool_choice === 'required', toChat?.body?.tool_choice);
+
+  // 4) Gemini 入口 → Chat 上游：functionCall 与 functionResponse 都要落地。
+  const viaGemini = await relay(key, 'POST', '/v1/models/gpt-test:generateContent', JSON.stringify({
+    tools: [{ functionDeclarations: [{ name: 'get_weather', description: '查天气', parameters: { type: 'object', properties: { city: { type: 'string' } } } }] }],
+    toolConfig: { functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['get_weather'] } },
+    contents: [{ role: 'user', parts: [{ text: '上海几度？' }] }],
+  }));
+  check('Gemini 入口带工具 → Chat 上游 200', viaGemini.status === 200, viaGemini.json);
+  const part = viaGemini.json?.candidates?.[0]?.content?.parts?.[0];
+  check(
+    '回到 Gemini 方言：functionCall part，args 是对象',
+    part?.functionCall?.name === 'get_weather' && part?.functionCall?.args?.city === '上海',
+    part,
+  );
+  const toChatFromGemini = lastTo('/chat/completions');
+  check(
+    '声明翻成 Chat 的 function 包装（Gemini → Chat）',
+    toChatFromGemini?.body?.tools?.[0]?.function?.name === 'get_weather',
+    toChatFromGemini?.body?.tools,
+  );
+
+  // 5) Gemini 的 functionResponse 只说得出函数名：翻成 Chat 的 role=tool 要补上调用 id。
+  const geminiRoundTrip = await relay(key, 'POST', '/v1/models/gpt-test:generateContent', JSON.stringify({
+    tools: [{ functionDeclarations: [{ name: 'get_weather', parameters: { type: 'object' } }] }],
+    contents: [
+      { role: 'user', parts: [{ text: '上海几度？' }] },
+      { role: 'model', parts: [{ functionCall: { name: 'get_weather', args: { city: '上海' } } }] },
+      { role: 'user', parts: [{ functionResponse: { name: 'get_weather', response: { temp: 21 } } }] },
+    ],
+  }));
+  check('Gemini 带工具结果的第二轮 200', geminiRoundTrip.status === 200, geminiRoundTrip.json);
+  const chatRoundTrip = lastTo('/chat/completions');
+  const assistantTurn = chatRoundTrip?.body?.messages?.find((message) => message.role === 'assistant' && message.tool_calls?.length);
+  const toolTurn = chatRoundTrip?.body?.messages?.find((message) => message.role === 'tool');
+  check(
+    '按函数名找回了调用 id：assistant.tool_calls 与 tool.tool_call_id 一致',
+    assistantTurn?.tool_calls?.[0]?.id !== undefined && assistantTurn.tool_calls[0].id === toolTurn?.tool_call_id,
+    { assistantTurn, toolTurn },
+  );
+}
+
+provider.close();
+console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
+process.exit(failures === 0 ? 0 : 1);

@@ -171,9 +171,13 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 **非对角线才过桥**：入口方言 → OpenAI Chat → 协议适配器 → 回来时渲染成入口方言。
 桥只在一侧出现，所以矩阵是 4 段入口翻译加 4 段上游提供商适配，不是 16 条路径。
 
-**跨方言不翻译工具调用。** 三家的 tools 形状不同，硬拼一个「尽力而为」的映射，只会在
-客户端以为有 function calling 时收到一段散文。所以跨方言带 `tools` / `functions` 会直接
-`400 tools_unsupported`；同格式直通不受影响（我们不碰请求体）。
+**跨方言翻译工具调用。** 四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果形状各不相同，
+Norm 把它们归一成一份扁平的规范形式再各自说回去：Chat 套一层 `function`、Anthropic 用
+`tool_use` / `tool_result` 块、Responses 用独立的 `function_call` 条目、Gemini 用
+`functionCall` / `functionResponse`。工具结果按调用 id 对齐（Gemini 只说得出函数名，按名字回溯）。
+有工具调用的回答，Chat 的 `finish_reason` 是 `tool_calls`、Anthropic 的 `stop_reason` 是
+`tool_use`；`tool_choice` 的四种说法（`auto` / `none` / `required` / 点名一个）同样互译。
+同格式直通不受影响（我们不碰请求体）。
 
 流式：`stream: true` 或 Gemini 的 `:streamGenerateContent`。跨方言时上游提供商 SSE 被翻译成
 入口方言自己的帧（`response.output_text.delta` / `content_block_delta` / `candidates`

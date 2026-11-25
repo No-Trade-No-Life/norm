@@ -4,7 +4,7 @@ import { gasFeeNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import {
-  carriesText,
+  carriesOutput,
   parseInbound,
   readAnswer,
   renderInbound,
@@ -433,7 +433,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
    */
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
-    if (accounting.firstTokenMs === undefined && carriesText(dialect, payload)) {
+    if (accounting.firstTokenMs === undefined && carriesOutput(dialect, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
   };
@@ -443,7 +443,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 
   const finish = async (): Promise<NormMeta> => {
     const usage = sniffer.usage();
-    const answer: AnswerCore = { text: '', model: accounting.model, usage, createdAt: 0 };
+    const answer: AnswerCore = { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 };
     const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenNanos: price.total_nanos }));
     return normMeta(accounting, usage, settled);
@@ -555,10 +555,18 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   const sniffer = usageSniffer(adapter.dialect);
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
-    if (accounting.firstTokenMs === undefined && carriesText(adapter.dialect, payload)) {
+    if (accounting.firstTokenMs === undefined && carriesOutput(adapter.dialect, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
   };
+  /**
+   * 这次回答里的工具调用，按上游给的序号攒着：参数是增量的，收尾时要用完整的那一份，
+   * 而 emitter 各家的编号与拼装方式都不同，不能反过来从它那儿读。
+   *
+   * `forwarded` 是已经发给客户端的参数长度：有的上游把 id 与名字分两帧发，名字到齐之前
+   * 参数就已经在路上了，那一段要等 tool_start 开出去之后再补发，不能丢。
+   */
+  const calls = new Map<number, { id: string; name: string; arguments: string; started: boolean; forwarded: number }>();
   let buffer = '';
   let done = false;
 
@@ -566,7 +574,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
     const usage = sniffer.usage();
     const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, {
-      answer: { text: '', model: accounting.model, usage, createdAt: 0 },
+      answer: { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 },
       status: 'ok',
       statusCode: 200,
       tokenNanos: price.total_nanos,
@@ -588,14 +596,34 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
           const data = line.slice(5).trim();
           if (data.length === 0 || data === '[DONE]') continue;
           noteFrame(data);
-          for (const chunk of adapter.streamData(data, accounting.model)) {
-            // 入口也是 chat 时直接透传 chunk，不含任何二次解读。
-            if (toChat) {
-              controller.enqueue(encoder.encode(`data: ${chunk}\n\n`));
+          for (const event of adapter.streamEvents(data)) {
+            if (event.kind === 'text') {
+              emit(emitter.delta(event.text)).forEach((bytes) => controller.enqueue(bytes));
               continue;
             }
-            const delta = (JSON.parse(chunk) as { choices?: Array<{ delta?: { content?: string } }> }).choices?.[0]?.delta?.content;
-            if (delta) emit(emitter.delta(delta)).forEach((bytes) => controller.enqueue(bytes));
+            if (event.kind === 'tool_start') {
+              const call = calls.get(event.index) ?? { id: '', name: '', arguments: '', started: false, forwarded: 0 };
+              call.id = event.id || call.id;
+              call.name = event.name || call.name;
+              calls.set(event.index, call);
+              if (!call.started && call.name.length > 0) {
+                call.started = true;
+                emit(emitter.toolStart(event.index, { id: call.id, name: call.name })).forEach((bytes) => controller.enqueue(bytes));
+                const pending = call.arguments.slice(call.forwarded);
+                if (pending.length > 0) {
+                  call.forwarded = call.arguments.length;
+                  emit(emitter.toolArgs(event.index, pending)).forEach((bytes) => controller.enqueue(bytes));
+                }
+              }
+              continue;
+            }
+            const call = calls.get(event.index);
+            if (!call) continue;
+            call.arguments += event.args;
+            if (call.started) {
+              call.forwarded = call.arguments.length;
+              emit(emitter.toolArgs(event.index, event.args)).forEach((bytes) => controller.enqueue(bytes));
+            }
           }
         }
       }
@@ -609,6 +637,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
       } else {
         const core: AnswerCore = {
           text: '',
+          toolCalls: [...calls.values()].map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })),
           model: accounting.model,
           usage: { input: meta.input_tokens, cached: meta.cached_tokens, output: meta.output_tokens },
           createdAt: Math.floor(Date.now() / 1000),

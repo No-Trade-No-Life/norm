@@ -143,11 +143,12 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 客户端没要就不转发。
 
 其余 12 格才经过 OpenAI Chat 这座桥。桥只在一侧出现，所以矩阵是 4 段入口翻译
-加 4 段上游提供商适配（`src/providers.ts` 只管 ChatBody → 四种上游提供商），不是 16 条路径。
+加 4 段上游提供商适配（`src/protocols.ts` 只管 ChatBody → 四种上游方言），不是 16 条路径。
 
-**不做跨方言的工具调用**：三家的 tools 形状不同，硬拼一个「尽力而为」的映射，
-只会在客户端以为有 function calling 时收到一段散文。所以跨方言带 tools 直接 400。
-同格式直通不受影响，因为那一路我们根本不看请求体。
+**工具调用同样过桥**：四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果的形状各不相同，
+所以规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 `src/protocols.ts` 的
+`ChatTool` / `ChatToolCall`）。入口读进来、出口说回去，`finish_reason` / `stop_reason` 也跟着
+改成「在等工具」。同格式直通不受影响，因为那一路我们根本不看请求体。
 
 这条边界是为了让「直通」有意义：如果一切都先归一化再重建，`responses → responses`
 这种本来一致的调用也会丢字段、白费 CPU，那 4 格就成了借口而不是承诺。
