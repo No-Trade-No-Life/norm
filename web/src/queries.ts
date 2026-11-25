@@ -10,8 +10,8 @@ import type {
   LoginResponse,
   Me,
   Pricing,
-  Provider,
-  ProviderUsage,
+  Credential,
+  CredentialUsage,
   RequestRow,
 } from './types';
 
@@ -36,12 +36,12 @@ export function useMe(enabled: boolean) {
   });
 }
 
-export function useProviders(enabled: boolean) {
+export function useCredentials(enabled: boolean) {
   return useQuery({
-    queryKey: ['providers'],
+    queryKey: ['credentials'],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: Provider[] }>({ path: '/api/v1/providers' }),
+    queryFn: () => requestJson<{ items: Credential[] }>({ path: '/api/v1/credentials' }),
   });
 }
 
@@ -93,12 +93,12 @@ export function useUsageByConsumer(enabled: boolean) {
 }
 
 /** 按上游提供者聚合的用量：钱花在哪个上游。 */
-export function useUsageByProvider(enabled: boolean) {
+export function useUsageByCredential(enabled: boolean) {
   return useQuery({
-    queryKey: ['usage-by-provider'],
+    queryKey: ['usage-by-credential'],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: ProviderUsage[] }>({ path: '/api/v1/account/usage/by-provider' }),
+    queryFn: () => requestJson<{ items: CredentialUsage[] }>({ path: '/api/v1/account/usage/by-credential' }),
     select: (data) => data.items,
   });
 }
@@ -124,8 +124,8 @@ export function useConsumers(enabled: boolean) {
 export function useCreateConsumer() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; provider_id: string }) =>
-      requestJson<{ id: string; name: string; provider_id: string; key: string; key_hint: string }>({
+    mutationFn: (body: { name: string; credential_id: string }) =>
+      requestJson<{ id: string; name: string; credential_id: string; key: string; key_hint: string }>({
         path: '/api/v1/consumers',
         method: 'POST',
         body: JSON.stringify(body),
@@ -177,13 +177,13 @@ export function useAttestation() {
   });
 }
 
-export function useCreateProvider() {
+export function useCreateCredential() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      requestJson<{ id: string }>({ path: '/api/v1/providers', method: 'POST', body: JSON.stringify(body) }),
+      requestJson<{ id: string }>({ path: '/api/v1/credentials', method: 'POST', body: JSON.stringify(body) }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['credentials'] });
       void queryClient.invalidateQueries({ queryKey: ['me'] });
     },
   });
@@ -194,23 +194,23 @@ export function useSetVisibility() {
   return useMutation({
     mutationFn: ({ id, publicListed }: { id: string; publicListed: boolean }) =>
       requestJson<{ id: string; public_listed: number }>({
-        path: `/api/v1/providers/${id}/visibility`,
+        path: `/api/v1/credentials/${id}/visibility`,
         method: 'POST',
         body: JSON.stringify({ public_listed: publicListed }),
       }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['credentials'] });
       void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
     },
   });
 }
 
-export function useRevokeProvider() {
+export function useRevokeCredential() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => requestJson<{ id: string; revoked: boolean }>({ path: `/api/v1/providers/${id}`, method: 'DELETE' }),
+    mutationFn: (id: string) => requestJson<{ id: string; revoked: boolean }>({ path: `/api/v1/credentials/${id}`, method: 'DELETE' }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['credentials'] });
       void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
       void queryClient.invalidateQueries({ queryKey: ['me'] });
     },

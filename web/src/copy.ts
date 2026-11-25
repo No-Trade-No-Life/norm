@@ -9,7 +9,7 @@ export const COPY = {
 
   'nav.group_main': { zh: '控制台', en: 'Console' },
   'nav.playground': { zh: 'Playground', en: 'Playground' },
-  'nav.providers': { zh: '上游提供者', en: 'Upstream providers' },
+  'nav.credentials': { zh: '上游提供者', en: 'Upstream credentials' },
   'nav.consumers': { zh: '下游消费者', en: 'Downstream consumers' },
   'nav.usage': { zh: '用量与账本', en: 'Usage & Ledger' },
   'nav.group_trust': { zh: '可信', en: 'Trust' },
@@ -32,7 +32,7 @@ export const COPY = {
   'action.relogin': { zh: '重新登录', en: 'Sign in again' },
   'action.export_seed': { zh: '导出种子', en: 'Export seed' },
   'action.import_seed': { zh: '导入种子', en: 'Import seed' },
-  'action.new_provider': { zh: '添加上游提供者', en: 'Add upstream provider' },
+  'action.new_credential': { zh: '添加上游提供者', en: 'Add upstream credential' },
   'action.revoke': { zh: '撤销', en: 'Revoke' },
   'action.revoke_confirm': { zh: '确认撤销？', en: 'Confirm revoke?' },
   'action.reveal': { zh: '显示', en: 'Reveal' },
@@ -74,11 +74,11 @@ export const COPY = {
   'pg.title': { zh: 'Playground', en: 'Playground' },
   'pg.desc': {
     zh: '选上游提供者、选模型、发一句话，流式看结果。每笔调用都会带着 request_id 记账。',
-    en: 'Pick an upstream provider and a model, send a prompt, watch it stream. Every call is billed with a request_id.',
+    en: 'Pick an upstream credential and a model, send a prompt, watch it stream. Every call is billed with a request_id.',
   },
-  'pg.provider': { zh: '上游提供者', en: 'Upstream provider' },
-  'pg.provider_empty': { zh: '还没有上游提供者', en: 'No upstream providers yet' },
-  'pg.provider_none': { zh: '先添加上游提供者', en: 'Add an upstream provider first' },
+  'pg.credential': { zh: '上游提供者', en: 'Upstream credential' },
+  'pg.credential_empty': { zh: '还没有上游提供者', en: 'No upstream credentials yet' },
+  'pg.credential_none': { zh: '先添加上游提供者', en: 'Add an upstream credential first' },
   'pg.model': { zh: '模型', en: 'Model' },
   'pg.model_placeholder': { zh: '例如 gpt-4o-mini', en: 'e.g. gpt-4o-mini' },
   'pg.prompt': { zh: 'Prompt', en: 'Prompt' },
@@ -93,14 +93,14 @@ export const COPY = {
   'pg.balance': { zh: '余额', en: 'Balance' },
   'pg.latency': { zh: '延迟', en: 'Latency' },
   'pg.upstream_host': { zh: '打往', en: 'Went to' },
-  'pg.need_provider': { zh: '请先选择上游提供者', en: 'Choose an upstream provider first' },
+  'pg.need_credential': { zh: '请先选择上游提供者', en: 'Choose an upstream credential first' },
   'pg.need_model': { zh: '请填写模型名', en: 'Enter a model name' },
   'pg.need_prompt': { zh: '请输入 prompt', en: 'Enter a prompt' },
   'pg.streaming': { zh: '生成中…', en: 'Streaming…' },
   'pg.failed': { zh: '请求失败', en: 'Request failed' },
   'pg.fee_zero_failed': { zh: '失败请求不扣费，但仍记一条诚实记录。', en: 'Failed requests are not charged, but still recorded.' },
 
-  'cr.title': { zh: '上游提供者', en: 'Upstream providers' },
+  'cr.title': { zh: '上游提供者', en: 'Upstream credentials' },
   'cr.desc': {
     zh: '上游密钥由服务端用一把 Worker secret 封进库里，页面只保留提示；调用时现解现用，不写日志、不进响应。',
     en: 'The server seals each upstream key into the database with a Worker secret. Pages only ever see a hint; the key is unsealed per call and never logged or echoed.',
@@ -113,10 +113,10 @@ export const COPY = {
   'cr.col_hint': { zh: '密钥提示', en: 'Key hint' },
   'cr.col_public': { zh: '公开', en: 'Public' },
   'cr.col_actions': { zh: '', en: '' },
-  'cr.empty': { zh: '还没有上游提供者。先加一个，Playground 才能用。', en: 'No upstream providers yet. Add one to use the Playground.' },
+  'cr.empty': { zh: '还没有上游提供者。先加一个，Playground 才能用。', en: 'No upstream credentials yet. Add one to use the Playground.' },
   'cr.public_on': { zh: '公开', en: 'Public' },
   'cr.public_off': { zh: '未公开', en: 'Private' },
-  'cr.new_title': { zh: '添加上游提供者', en: 'Add upstream provider' },
+  'cr.new_title': { zh: '添加上游提供者', en: 'Add upstream credential' },
   'cr.new_desc': {
     zh: '密钥经这一次请求交给服务端封装，之后只能看到前后各四位。',
     en: 'The key is handed to the server once for sealing. After that, only the first and last four characters remain visible.',
@@ -153,11 +153,11 @@ export const COPY = {
   'co.title': { zh: '下游消费者', en: 'Downstream consumers' },
   'co.desc': {
     zh: '给下游程序用的 sk-norm-… Token，建的时候就绑死一条上游提供者：调用时只要一个 Bearer，不用再带别的头。库里只存 sha256，明文只在创建与轮换时出现一次。',
-    en: 'sk-norm-… tokens for downstream programs. Each one is bound to a single upstream provider when created, so a call needs nothing but a Bearer header. Only the sha256 is stored; the plaintext appears once, at creation or rotation.',
+    en: 'sk-norm-… tokens for downstream programs. Each one is bound to a single upstream credential when created, so a call needs nothing but a Bearer header. Only the sha256 is stored; the plaintext appears once, at creation or rotation.',
   },
   'co.col_name': { zh: '备注名', en: 'Name' },
   'co.col_hint': { zh: '密钥', en: 'Key' },
-  'co.col_provider': { zh: '上游提供者', en: 'Upstream provider' },
+  'co.col_credential': { zh: '上游提供者', en: 'Upstream credential' },
   'co.col_created': { zh: '创建时间', en: 'Created' },
   'co.col_last_used': { zh: '最近使用', en: 'Last used' },
   'co.col_actions': { zh: '', en: '' },
@@ -169,12 +169,12 @@ export const COPY = {
     zh: '起个能认出来的名字，并选好这条 Token 走哪条上游；绑定建好后不再改动，要换就轮换或新建。',
     en: 'Name it and pick which upstream this token uses. The binding is fixed after creation — to change it, rotate or create another.',
   },
-  'co.field_provider': { zh: '上游提供者', en: 'Upstream provider' },
-  'co.field_provider_placeholder': { zh: '选一条上游提供者', en: 'Pick an upstream provider' },
-  'co.provider_missing': { zh: '请先选一条上游提供者。', en: 'Pick an upstream provider first.' },
-  'co.no_provider': {
+  'co.field_credential': { zh: '上游提供者', en: 'Upstream credential' },
+  'co.field_credential_placeholder': { zh: '选一条上游提供者', en: 'Pick an upstream credential' },
+  'co.credential_missing': { zh: '请先选一条上游提供者。', en: 'Pick an upstream credential first.' },
+  'co.no_credential': {
     zh: '还没有上游提供者，先去「上游提供者」页添加一条，再回来建 Token。',
-    en: 'No upstream providers yet. Add one on the Upstream providers page, then come back.',
+    en: 'No upstream credentials yet. Add one on the Upstream credentials page, then come back.',
   },
   'co.or_revoked': { zh: '（已撤销）', en: '(revoked)' },
   'co.field_name': { zh: '备注名', en: 'Name' },
@@ -194,7 +194,7 @@ export const COPY = {
   'co.entries_title': { zh: '四个入口 · 四种上游', en: 'Four entries · four upstreams' },
   'co.entries_body': {
     zh: '入口方言与上游提供者的协议同名时不做转换（请求体按原始字节转发，响应原样回来）；不同的 12 格才翻译。跨方言不翻译工具调用。',
-    en: 'When the entry dialect matches the provider\'s protocol nothing is converted — the body goes out byte-for-byte and the response comes back untouched. Only the other 12 cells are translated. Tool calling is never translated across dialects.',
+    en: 'When the entry dialect matches the credential\'s protocol nothing is converted — the body goes out byte-for-byte and the response comes back untouched. Only the other 12 cells are translated. Tool calling is never translated across dialects.',
   },
   'co.rotate': { zh: '轮换', en: 'Rotate' },
   'co.rotate_confirm': { zh: '确认轮换？', en: 'Confirm rotate?' },
@@ -238,7 +238,7 @@ export const COPY = {
   'us.requests_title': { zh: '请求记录', en: 'Request log' },
   'us.ledger_title': { zh: '记账流水', en: 'Ledger entries' },
   'us.by_consumer_title': { zh: '按下游消费者', en: 'By consumer key' },
-  'us.by_provider_title': { zh: '按上游提供者', en: 'By provider' },
+  'us.by_credential_title': { zh: '按上游提供者', en: 'By credential' },
   'us.pricing_title': { zh: '价目表', en: 'Price list' },
   'us.pricing_note': {
     zh: '单位：微美元 / 每百万 Token。价格随代码发布，改价就是一次可审查的合并。',
@@ -252,7 +252,7 @@ export const COPY = {
   'us.col_tokens': { zh: '输入 / 命中 / 输出', en: 'In / hit / out' },
   'us.col_fee': { zh: '扣费', en: 'Fee' },
   'us.col_request_id': { zh: 'request_id', en: 'request_id' },
-  'us.col_provider': { zh: '上游提供者', en: 'Provider' },
+  'us.col_credential': { zh: '上游提供者', en: 'Credential' },
   'us.col_base_url': { zh: 'Base URL', en: 'Base URL' },
   'us.col_consumer': { zh: '下游消费者', en: 'Consumer' },
   'us.col_kind': { zh: '类型', en: 'Kind' },
@@ -267,7 +267,7 @@ export const COPY = {
   'us.requests_empty': { zh: '还没有请求。到 Playground 发一次就会出现在这里。', en: 'No requests yet. Send one from the Playground.' },
   'us.ledger_empty': { zh: '还没有流水。', en: 'No ledger entries yet.' },
   'us.by_consumer_empty': { zh: '还没有按钥匙记账的调用。', en: 'No calls billed to a consumer key yet.' },
-  'us.by_provider_empty': { zh: '还没有调用。', en: 'No calls yet.' },
+  'us.by_credential_empty': { zh: '还没有调用。', en: 'No calls yet.' },
   'us.page': { zh: '第 {page} 页', en: 'Page {page}' },
   'us.page_of_hint': { zh: '每页 20 行', en: '20 rows per page' },
   'us.ledger_charges': { zh: 'charge（扣费）', en: 'charge' },
@@ -279,15 +279,15 @@ export const COPY = {
     zh: '按 base_url 聚合。是否「可信」只看主机名在不在清单里——清单外不等于掺水，只等于没人担保。',
     en: 'Grouped by base_url. "Trusted" only means the host is on the list — off-list is not watered down, just unvouched.',
   },
-  'pv.col_label': { zh: '提供者', en: 'Provider' },
+  'pv.col_label': { zh: '提供者', en: 'Credential' },
   'pv.col_trust': { zh: '信任清单', en: 'Trust list' },
   'pv.col_base_url': { zh: 'base_url', en: 'Base URL' },
-  'pv.col_providers': { zh: '提供者数', en: 'Providers' },
+  'pv.col_credentials': { zh: '提供者数', en: 'Credentials' },
   'pv.col_public': { zh: '公开看板', en: 'Listed' },
   'pv.col_protocols': { zh: '协议', en: 'Protocols' },
   'pv.col_last_seen': { zh: '最近添加', en: 'Last added' },
   'pv.col_verdict': { zh: '结论', en: 'Verdict' },
-  'pv.empty': { zh: '还没有任何上游。添加一个上游提供者就会出现在这里。', en: 'No upstreams yet. Adding an upstream provider puts one here.' },
+  'pv.empty': { zh: '还没有任何上游。添加一个上游提供者就会出现在这里。', en: 'No upstreams yet. Adding an upstream credential puts one here.' },
   'pv.hit': { zh: '命中', en: 'hit' },
   'pv.miss': { zh: '未命中', en: 'miss' },
   'pv.unknown': { zh: '未测', en: 'not probed' },
@@ -349,7 +349,7 @@ export const COPY = {
   'ab.p5_title': { zh: '来源可核验', en: 'Verifiable provenance' },
   'ab.p5_body': {
     zh: '每个上游提供者都要声明来源，平台做信号核验并公开。信号不是证明，所以 base_url 与核验时间也一并公开。',
-    en: 'Every provider declares its source; signals are checked and published. Signals are not proofs, so raw base_url and check time are published too.',
+    en: 'Every credential declares its source; signals are checked and published. Signals are not proofs, so raw base_url and check time are published too.',
   },
   'ab.not_title': { zh: '这一版不做什么', en: 'What this version does not do' },
   'ab.not_1': { zh: '不做协议转换：只做 OpenAI 兼容转发。', en: 'No protocol translation: OpenAI-compatible relay only.' },
@@ -376,11 +376,41 @@ export const COPY = {
   'common.theme': { zh: '主题', en: 'Theme' },
   'common.language': { zh: '语言', en: 'Language' },
   'common.address_copied': { zh: '地址已复制', en: 'Address copied' },
+
+  /* ── 以下来自 main：语言菜单、64 字节密钥与参数化文案 ── */
+  'nav.title': { zh: '导航', en: 'Navigation' },
+  'action.copy_json': { zh: '复制 JSON 数组', en: 'Copy JSON array' },
+  'identity.keypair_note': {
+    zh: '密钥是本机 localStorage 里的 64 字节（32 字节种子 + 32 字节公钥，与 Solana 的密钥种子同形）。换设备请导出后导入。',
+    en: 'The key is 64 bytes in this browser\'s storage: a 32-byte seed plus its 32-byte public key — the same shape as a Solana keypair. Export it to move devices.',
+  },
+  'identity.migrated_note': {
+    zh: '已把本机的旧 32 字节种子升级为 64 字节展开形式。地址与账户都没变，只是备份格式变了——顺手重新导出一份吧。',
+    en: 'This browser\'s old 32-byte seed was upgraded to the 64-byte expanded form. Address and account are unchanged; only the backup format is — re-export a fresh copy.',
+  },
+  'identity.export_json_note': {
+    zh: '也可以复制成 JSON 数组——那就是 Solana id.json 的形状，能直接喂给 solana-keygen 或 @solana/web3.js。',
+    en: 'You can also copy it as a JSON array — that is the shape of a Solana id.json, ready for solana-keygen or @solana/web3.js.',
+  },
+  'co.default_name': { zh: '未命名消费者', en: 'Consumer' },
+  'us.kind_grant': { zh: '授信', en: 'Grant' },
+  'us.kind_charge': { zh: '扣费', en: 'Charge' },
+  'at.policy_logs_none': { zh: '不留请求体、不留响应体、不留上游密钥', en: 'No request bodies, no responses, no upstream keys' },
+  'at.policy_storage_billing_only': { zh: 'D1 只存记账所需的最小字段（模型名、token 数、状态、延迟、费用）', en: 'D1 keeps only the minimum billing fields (model, token counts, status, latency, fee)' },
+  'at.policy_keys_sealed': { zh: '上游密钥只在请求头里经过，不落库；库里只有客户端加密后的密文', en: 'Upstream keys only pass through request headers and are never stored; the database holds client-side ciphertext' },
 } as const;
+
+export type CopyParams = Record<string, string | number>;
 
 export type CopyKey = keyof typeof COPY;
 export type Lang = 'zh' | 'en';
 
-export function translate(lang: Lang, key: CopyKey): string {
-  return COPY[key][lang];
+export const LANGS: readonly Lang[] = ['zh', 'en'];
+
+export function translate(lang: Lang, key: CopyKey, params?: CopyParams): string {
+  const template: string = COPY[key][lang];
+  if (!params) return template;
+  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
+    name in params ? String(params[name]) : whole,
+  );
 }

@@ -2,6 +2,7 @@ import type { Env } from './env';
 import type { UpstreamProtocol, UpstreamVisibility } from './upstreams';
 import { grantMicros } from './env';
 import { isTrusted } from './base-urls';
+import { fail } from './http';
 import { randomToken } from './ids';
 
 export type PrincipalRow = {
@@ -13,12 +14,12 @@ export type PrincipalRow = {
   spend_micros: number;
 };
 
-export type ProviderView = ProviderRow & {
+export type CredentialView = CredentialRow & {
   /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
   trusted: boolean;
 };
 
-export type ProviderRow = {
+export type CredentialRow = {
   id: string;
   address: string;
   label: string;
@@ -26,7 +27,7 @@ export type ProviderRow = {
   key_hint: string;
   sealed_key: string;
   kdf: string;
-  // INVARIANT: 这两列只由 providers 路由写入，写入前已校验枚举；
+  // INVARIANT: 这两列只由 credentials 路由写入，写入前已校验枚举；
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
   upstream_protocol: UpstreamProtocol;
   upstream_visibility: UpstreamVisibility;
@@ -66,20 +67,20 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
   return row;
 }
 
-export async function listProviders(env: Env, address: string): Promise<ProviderView[]> {
+export async function listCredentials(env: Env, address: string): Promise<CredentialView[]> {
   const { results } = await env.DB.prepare(
-    'SELECT * FROM providers WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
+    'SELECT * FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
   )
     .bind(address)
-    .all<ProviderRow>();
+    .all<CredentialRow>();
   // trusted 由同一份清单算出，不落库：清单改了，所有凭证的说法立刻跟着变。
   return results.map((row) => ({ ...row, trusted: isTrusted(row.base_url, env) }));
 }
 
-export async function findProvider(env: Env, address: string, id: string): Promise<ProviderRow | null> {
-  return env.DB.prepare('SELECT * FROM providers WHERE id = ? AND address = ? AND revoked_at IS NULL')
+export async function findCredential(env: Env, address: string, id: string): Promise<CredentialRow | null> {
+  return env.DB.prepare('SELECT * FROM credentials WHERE id = ? AND address = ? AND revoked_at IS NULL')
     .bind(id, address)
-    .first<ProviderRow>();
+    .first<CredentialRow>();
 }
 
 /**
@@ -112,7 +113,7 @@ export type Settled = {
 export type RequestRecord = {
   requestId: string;
   address: string;
-  providerId: string | null;
+  credentialId: string | null;
   /** 这次调用由哪把下游消费者密钥发起；签名直连时为空。 */
   consumerId: string | null;
   baseUrl: string;
@@ -133,6 +134,29 @@ export type RequestRecord = {
 /** 只写请求记录、不扣费：失败路径用它，代价由站点承担。 */
 export async function recordRequest(env: Env, row: RequestRecord): Promise<void> {
   await requestInsert(env, row).run();
+}
+
+/**
+ * 这次转发用哪条上游：头里点了名就用它，没点名就用账户里唯一的那条。
+ *
+ * 多条又不指名是 409 而不是猜一条——「钱付给谁」是这个服务里失败代价最高的选择，
+ * 不该由一个默认值替用户决定。签名身份与消费者 Token 走同一个判定点。
+ */
+export async function resolveCredentialId(env: Env, address: string, requested: string | null): Promise<string> {
+  const named = requested?.trim();
+  if (named) return named;
+
+  const { results } = await env.DB.prepare(
+    'SELECT id FROM credentials WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC LIMIT 2',
+  )
+    .bind(address)
+    .all<{ id: string }>();
+
+  if (results.length === 0) fail(400, 'credential_missing', '还没有上游提供者：先去「上游提供者」页添加一条');
+  if (results.length > 1) {
+    fail(409, 'credential_ambiguous', '账户里有多条上游提供者，请用 X-Norm-Credential 指名用哪一条');
+  }
+  return results[0].id;
 }
 
 /**
@@ -195,14 +219,14 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
 function requestInsert(env: Env, row: RequestRecord) {
   return env.DB.prepare(
     `INSERT INTO requests
-       (id, address, provider_id, consumer_id, base_url, model, status, status_code, latency_ms,
+       (id, address, credential_id, consumer_id, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
         service_fee_micros, token_micros, fee_micros, unbilled_micros, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
-    row.providerId,
+    row.credentialId,
     row.consumerId,
     row.baseUrl,
     row.model,

@@ -1,61 +1,70 @@
-import { ed25519 } from '@noble/curves/ed25519.js';
 import { base58 } from '@scure/base';
 
+import {
+  encodeKeypair,
+  keypairFromSeed,
+  loadStoredKeypair,
+  parseKeypairText,
+  publicKeyOf,
+  randomKeypair,
+  seedKeyOf,
+  signWithKeypair,
+  storeKeypair,
+  type SeedStore,
+  type StoredKeypair,
+} from './seed';
+
 /**
- * 身份 = 32 字节种子。地址 = base58(ed25519 公钥)。
- * 种子只落在 localStorage['norm.identity.seed']（base58 文本），从不发往任何服务端。
+ * 身份 = 64 字节展开密钥（`seed || publicKey`，与 Solana 的密钥种子同形）。
+ * 地址 = base58(publicKey)。
+ * 密钥只落在 localStorage，从不发往任何服务端。
+ *
+ * 编解码与旧格式迁移都在 `./seed`——这个文件只负责把字节折成「有地址的身份」。
  */
-export const SEED_STORAGE_KEY = 'norm.identity.seed';
 
 export type Identity = {
-  seed: Uint8Array;
+  keypair: Uint8Array;
   address: string;
   publicKey: Uint8Array;
 };
 
-export function randomSeed(): Uint8Array {
-  const seed = new Uint8Array(32);
-  crypto.getRandomValues(seed);
-  return seed;
+/** 64 字节密钥 → 身份。地址取内嵌公钥，不再重新派生。 */
+export function identityFromKeypair(keypair: Uint8Array): Identity {
+  const publicKey = publicKeyOf(keypair);
+  return { keypair, address: base58.encode(publicKey), publicKey };
 }
 
 export function identityFromSeed(seed: Uint8Array): Identity {
-  if (seed.length !== 32) throw new Error('seed 必须是 32 字节');
-  const publicKey = ed25519.getPublicKey(seed);
-  return { seed, address: base58.encode(publicKey), publicKey };
+  return identityFromKeypair(keypairFromSeed(seed));
 }
 
-export function loadStoredSeed(): Uint8Array | null {
-  try {
-    const text = localStorage.getItem(SEED_STORAGE_KEY);
-    if (!text) return null;
-    const bytes = base58.decode(text.trim());
-    return bytes.length === 32 ? bytes : null;
-  } catch {
-    return null;
-  }
+export function randomIdentity(): Identity {
+  return identityFromKeypair(randomKeypair());
 }
 
-export function storeSeed(seed: Uint8Array): void {
-  localStorage.setItem(SEED_STORAGE_KEY, base58.encode(seed));
+/** 读本机密钥；旧版 32 字节种子会被原地升级为 64 字节。 */
+export function loadStoredIdentity(store: SeedStore): StoredKeypair | null {
+  return loadStoredKeypair(store);
 }
 
-/** 导出给用户备份：base58 文本。 */
-export function exportSeed(seed: Uint8Array): string {
-  return base58.encode(seed);
+export function persistIdentity(store: SeedStore, keypair: Uint8Array): void {
+  storeKeypair(store, keypair);
 }
 
-/** 导入：解析并校验长度，返回种子（不落盘，调用方决定何时 storeSeed）。 */
-export function parseSeed(text: string): Uint8Array {
-  const bytes = base58.decode(text.trim());
-  if (bytes.length !== 32) throw new Error('seed 必须是 32 字节（base58 文本）');
-  return bytes;
+/** 导出给用户备份：base58 的 64 字节。 */
+export function exportIdentity(keypair: Uint8Array): string {
+  return encodeKeypair(keypair);
 }
 
-export function sign(seed: Uint8Array, message: Uint8Array): Uint8Array {
-  return ed25519.sign(message, seed);
+/** 导入：解析并校验，返回密钥（不落盘，调用方决定何时 persistIdentity）。 */
+export function parseIdentity(text: string): Uint8Array {
+  return parseKeypairText(text);
 }
 
-export function verify(publicKey: Uint8Array, signature: Uint8Array, message: Uint8Array): boolean {
-  return ed25519.verify(signature, message, publicKey);
+export function sign(keypair: Uint8Array, message: Uint8Array): Uint8Array {
+  return signWithKeypair(keypair, message);
+}
+
+export function seedOf(keypair: Uint8Array): Uint8Array {
+  return seedKeyOf(keypair);
 }

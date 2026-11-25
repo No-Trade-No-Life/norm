@@ -17,7 +17,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { quote, type Usage } from '../pricing';
 import { unsealUpstreamKey } from '../seal';
-import { findPrincipal, findProvider, recordRequest, settle, type RequestRecord } from '../store';
+import { findCredential, findPrincipal, recordRequest, resolveCredentialId, settle, type RequestRecord } from '../store';
 import { adapterFor, upstreamUrlFor, type UpstreamProtocol } from '../upstreams';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -57,21 +57,20 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
 
-  // 下游消费者密钥自带绑定的上游；只有人是签名来的，才需要在头里指名用哪一条。
-  // 这条规矩就是「密钥即完整调用」：程序侧永远不用再拼第二个头。
-  const providerId = principal.providerId ?? c.req.header('X-Norm-Provider');
-  if (!providerId) fail(400, 'provider_required', '缺少 X-Norm-Provider');
+  // 身份只说「谁在用」，走哪条上游是这次转发自己的选择：头里点了名就用它，
+  // 没点名就用账户里唯一的那条（多条又不指名是 409，见 store.resolveCredentialId）。
+  const credentialId = await resolveCredentialId(c.env, address, c.req.header('X-Norm-Credential') ?? null);
 
-  const provider = await findProvider(c.env, address, providerId);
-  if (!provider) fail(404, 'provider_not_found', '凭证不存在或已撤销');
+  const credential = await findCredential(c.env, address, credentialId);
+  if (!credential) fail(404, 'credential_not_found', '凭证不存在或已撤销');
 
   // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
   // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。
   const upstreamKey = await unsealUpstreamKey({
     env: c.env,
     address,
-    providerId: provider.id,
-    sealed: provider.sealed_key,
+    credentialId: credential.id,
+    sealed: credential.sealed_key,
   });
 
   // 原始字节先留住：同格式直通要把它一个字节不改地发出去。
@@ -83,13 +82,13 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     fail(400, 'body_invalid', '请求体必须是 JSON');
   }
 
-  const protocol = provider.upstream_protocol;
+  const protocol = credential.upstream_protocol;
   const model = entry.model ?? (typeof raw.model === 'string' ? raw.model : '');
   const stream = entry.stream ?? raw.stream === true;
   const sameShape = entry.dialect === protocol;
 
   // 目的地只能来自凭证：不读任何请求头。少了这一条，「钉死的 base_url」就只是句口号。
-  const baseUrl = provider.base_url;
+  const baseUrl = credential.base_url;
   const adapter = adapterFor(protocol);
   const outbound = sameShape ? rawBody : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
 
@@ -107,7 +106,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const accounting: Accounting = {
     env: c.env,
     address,
-    providerId: provider.id,
+    credentialId: credential.id,
+    // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
     consumerId: principal.consumerId ?? null,
     baseUrl,
     requestId,
@@ -161,7 +161,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 type Accounting = {
   env: Env;
   address: string;
-  providerId: string;
+  credentialId: string;
   consumerId: string | null;
   /** 打到的上游地址：账本要能回答「这一笔打给哪台机器」。 */
   baseUrl: string;
@@ -233,7 +233,7 @@ function recordOf(
   return {
     requestId: accounting.requestId,
     address: accounting.address,
-    providerId: accounting.providerId,
+    credentialId: accounting.credentialId,
     consumerId: accounting.consumerId,
     baseUrl: accounting.baseUrl,
     model: accounting.model,

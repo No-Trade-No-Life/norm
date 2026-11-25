@@ -22,7 +22,7 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 |---|---|
 | **Serverless，单一部署** | 一个 Worker（Hono）+ 一个 D1 + 同源静态资源。没有运维机器、没有后台进程 |
 | **BYOK** | 上游密钥只在请求头里经过。库里只有客户端加密后的密文，服务端读不懂 |
-| **身份与消费分开** | 身份 = Ed25519 公钥（管资源，私钥永不离开浏览器，无注册无密码无 cookie）；消费 = 绑好上游的 `sk-norm-…` Token，一条 Bearer 就够 |
+| **身份与消费分开** | 身份 = Ed25519 公钥（管资源，私钥永不离开浏览器，无注册无密码无 cookie；密钥是 64 字节拓展形式 `seed‖publicKey`，与 Solana 密钥种子同形）；消费 = `sk-norm-…` Token（只记名字，不绑上游），一条 Bearer 就够 |
 | **ZDR + 可信发布** | 不留请求体、响应体、上游密钥；构建哈希公开，任何人可 `pnpm build` 复算 |
 | **上游来源可核验** | 每个上游提供者必须声明来源，平台自动核验并**公开**，掺水立刻可见 |
 
@@ -40,12 +40,13 @@ Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一�
 | | 用来 | 凭据 |
 |---|---|---|
 | **身份** | 管理自己的资源：账户、上游提供者、下游 Token | Ed25519 逐请求签名（私钥在浏览器里） |
-| **Token** | 真正消费：调用模型 | `sk-norm-…`，建的时候绑死一条上游提供者 |
+| **Token** | 真正消费：调用模型 | `sk-norm-…`，只记一个名字 |
 
-所以程序侧不需要懂签名、也不需要懂 Norm 的任何专有头：**一个 api key 就是一次完整调用**。
+所以程序侧不需要懂签名、也不需要懂 Norm 的任何专有头：账户里只有一条上游提供者时，
+**一个 api key 就是一次完整调用**。
 
 ```bash
-# 在「下游消费者」页建一条 Token（选好上游提供者），之后当普通 OpenAI key 用
+# 在「下游消费者」页起个名字建一条 Token，之后当普通 OpenAI key 用
 curl https://norm.ntnl.io/v1/chat/completions \
   -H "Authorization: Bearer sk-norm-…" \
   -H "Content-Type: application/json" \
@@ -53,7 +54,8 @@ curl https://norm.ntnl.io/v1/chat/completions \
 ```
 
 `x-api-key`（Anthropic SDK / Claude Code）与 `x-goog-api-key`（Google SDK）同样认——各家 SDK 发什么就用什么。
-换上游不用改程序：轮换或新建一条绑到另一条上游的 Token 即可。
+换上游不用改程序、也不用换 Token：账户里只有一条上游时它自动就是那一条，有多条时在请求里加
+`X-Norm-Credential: <上游 id>` 指名即可。
 
 ## 自己部署一份
 

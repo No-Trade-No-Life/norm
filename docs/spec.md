@@ -20,7 +20,9 @@ Norm 不是「一台你租给我的机器」，而是**一份公开可复现的�
 ## 3. 身份
 
 - 用户身份 = Ed25519 密钥对。地址 = `base58(publicKey)`（32 字节公钥 → 44 字符左右）。
-- 私钥只存在于用户浏览器（IndexedDB/localStorage），可导出为 base58 以便换设备。
+- 私钥以**拓展形式**存在：64 字节的 `seed || publicKey`，与 Solana 的密钥种子一致。
+  只存在于用户浏览器（localStorage），可导出为 base58 或 Solana `id.json` 的 JSON 数组以便换设备。
+  旧版 32 字节种子在首次读取时原地升级，地址不变。
 - 没有注册、没有邮箱、没有密码、没有 cookie 会话。
 - 每个 API 请求自带签名：
 
@@ -40,7 +42,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 ### 4.1 上游密钥的存放
 
 - 添加一个上游提供者时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
-  做 AES-256-GCM 封装，AAD 绑 `address|providerId`。库里存：label、base_url、
+  做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、base_url、
   `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（上游协议、上游是否公开可用）。
   没有 provider 一列：谁家的上游由 base_url 说话，品牌名只是 label 里的一段字。
 - 调用模型时 Worker 现解现用，明文只在本次请求的作用域里存在——不写日志、不进 D1、不回响应。
@@ -58,14 +60,17 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | **身份** | Ed25519 逐请求签名（公钥即地址） | 人 | 自己的资源：账户、上游提供者、下游 Token | 种子在浏览器里，可导出换设备 |
 | **消费** | `Authorization: Bearer sk-norm-…` | 代码 | 一次模型调用 | 库里只存 sha256；明文只在创建/轮换时出现一次 |
 
-**Token 在创建时就绑死一条上游提供者**，因此程序侧一次调用只要一个 api key
+**Token 只回答「谁的代码在调用」，不绑定上游。** 因此程序侧一次调用只要一个 api key
 （Bearer、`x-api-key`、`x-goog-api-key` 三选一，取决于用哪家 SDK），
-不需要签名、也不需要任何 Norm 专有的头。绑定之后不可改写：换上游就轮换或新建一条 Token。
+不需要签名、也不需要任何 Norm 专有的头。
+
+走哪条上游是**每次转发自己的决定**，规则只有一条：请求带了 `X-Norm-Credential` 就用它，
+没带就用账户里唯一的那条上游；账户里有多条又没有指名，是 `409 credential_ambiguous`——
+猜一条会把钱打到别的上游去，所以不猜。这样「添一条上游、建一条 Token、当普通 api key 用」
+就是全部；换上游也不必重新发钥匙，因为绑定从来不是身份的一部分。
 
 这条边界同时是权限边界：前缀把两者划开，`/api/v1/*` 只认签名（管理面），`/v1/*` 两者都认（转发面）。
 一把 Token 因此不能凭空再铸一把 Token，也撤销不了凭证。
-
-签名身份在转发面仍然要带 `X-Norm-Provider` 指名上游——**它管资源，消费的时候还是该拿一条 Token**。
 
 ## 5. 计费：按 Token 记，外加一笔服务费
 
@@ -92,7 +97,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 - 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`（UUID v7），可以逐条回溯。
 - 余额单位为微美元（integer），不用浮点。新地址自动获得 $1.00 演示授信（`GRANT_MICROS = 1000000`）。
 - 失败不扣费：上游报错或不可达时 `fee_micros = 0`，只留一条诚实的记录。
-- 余额付不起时把剩下的扣到 0，差额记在 `unbilled_micros`（站点承担），余额永不变成负数。
+- 余额付不起时扣到 0，差额记在 `unbilled_micros`（站点承担），余额永不变成负数。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
 ## 6. 上游渠道

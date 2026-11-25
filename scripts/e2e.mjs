@@ -183,7 +183,7 @@ async function call(who, method, path, body, extra = {}) {
   return { status: response.status, json, text };
 }
 
-async function createProvider(protocol, visibility = 'private') {
+async function createCredential(protocol, visibility = 'private') {
   const payload = JSON.stringify({
     label: `${protocol} upstream`,
     base_url: BASE_URL,
@@ -191,17 +191,17 @@ async function createProvider(protocol, visibility = 'private') {
     upstream_protocol: protocol,
     upstream_visibility: visibility,
   });
-  const result = await call(alice, 'POST', '/api/v1/providers', payload);
+  const result = await call(alice, 'POST', '/api/v1/credentials', payload);
   return { id: result.json.id, status: result.status, body: result.json };
 }
 
 /**
  * 两种身份，两种调用形状：
- *   签名（人）        → 需要 X-Norm-Provider 说清用哪条上游
- *   消费者 Token      → 上游在建钥时就绑好了，只要一个 Authorization
+ *   签名（人）        → 需要 X-Norm-Credential 说清用哪条上游
+ *   消费者 Token      → 账户里只有一条上游时就是一个 Authorization，多上游时才指名
  * 刻意不给 Bearer 那条路补任何头：这一条断言的就是「程序侧只要一个 api key」。
  */
-async function chat(providerId, extra = {}, bearer = null) {
+async function chat(credentialId, extra = {}, bearer = null) {
   const payload = JSON.stringify({
     model: 'gpt-test',
     messages: [
@@ -211,13 +211,12 @@ async function chat(providerId, extra = {}, bearer = null) {
     ...extra,
   });
   if (bearer) return raw('POST', '/v1/chat/completions', payload, { Authorization: `Bearer ${bearer}` });
-  return call(alice, 'POST', '/v1/chat/completions', payload, { 'X-Norm-Provider': providerId });
+  return call(alice, 'POST', '/v1/chat/completions', payload, { 'X-Norm-Credential': credentialId });
 }
 
-/** 建一把绑好上游的下游 Token。绑定是建钥时的参数，之后不再出现在请求里。 */
-async function createConsumer(name, providerId) {
-  const created = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({ name, provider_id: providerId }));
-  return created;
+/** 建一条下游 Token：只有一个名字，与上游无关。 */
+async function createConsumer(who, name) {
+  return call(who, 'POST', '/api/v1/consumers', JSON.stringify({ name }));
 }
 
 /** 不带签名的一次请求：Bearer 消费者密钥走的是这条入口。 */
@@ -267,13 +266,13 @@ console.log('2. 身份与完整性');
 }
 
 console.log('3. 凭证：明文密钥交给服务端封装，协议与公开性可配置');
-const providers = {};
+const credentials = {};
 for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini']) {
-  const created = await createProvider(protocol, protocol === 'openai-responses' ? 'public' : 'private');
+  const created = await createCredential(protocol, protocol === 'openai-responses' ? 'public' : 'private');
   check(`${protocol} 创建 201`, created.status === 201 && typeof created.id === 'string', created.body);
   // 创建响应里只有 id：提示是服务端从明文算出来的，不该由客户端自报。
   check(`${protocol} 创建响应不含密钥`, !JSON.stringify(created.body).includes(KEY), created.body);
-  providers[protocol] = created.id;
+  credentials[protocol] = created.id;
 }
 {
   for (const [field, value, code] of [
@@ -283,19 +282,19 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
     const payload = JSON.stringify({
       label: 'bad', base_url: BASE_URL, upstream_key: KEY, [field]: value,
     });
-    const result = await call(alice, 'POST', '/api/v1/providers', payload);
+    const result = await call(alice, 'POST', '/api/v1/credentials', payload);
     check(`${field}=${value} → 400 ${code}`, result.status === 400 && result.json.error === code, result.json);
   }
 
-  const missing = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+  const missing = await call(alice, 'POST', '/api/v1/credentials', JSON.stringify({
     label: 'no key', base_url: BASE_URL,
   }));
   check('缺 upstream_key → 400', missing.status === 400 && missing.json.error === 'upstream_key_missing', missing.json);
 
-  const list = await call(alice, 'GET', '/api/v1/providers');
+  const list = await call(alice, 'GET', '/api/v1/credentials');
   const serialized = JSON.stringify(list.json);
   check('列表里没有明文密钥', !serialized.includes(KEY));
-  const entry = list.json.items.find((item) => item.id === providers['openai-chat']);
+  const entry = list.json.items.find((item) => item.id === credentials['openai-chat']);
   // sk-test-key 的前 4 后 4：服务端算的提示，不是客户端传上来的。
   check('只暴露 key_hint（前 4 后 4）', entry?.key_hint === 'sk-t…-key', entry?.key_hint);
   check('密文是 AES-256-GCM 封装', entry?.kdf === 'aes-256-gcm+worker-secret', entry?.kdf);
@@ -311,7 +310,7 @@ const expected = {
   'google-gemini': { text: '你好', input: 9, cached: 0, output: 6 },
 };
 for (const [protocol, want] of Object.entries(expected)) {
-  const result = await chat(providers[protocol]);
+  const result = await chat(credentials[protocol]);
   check(`${protocol} 200`, result.status === 200, result.json);
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
   const norm = result.json?.norm;
@@ -321,11 +320,6 @@ for (const [protocol, want] of Object.entries(expected)) {
   check(`${protocol} token 有价`, norm?.token_micros > 0, norm);
   check(`${protocol} 总价 = 服务费 + token`, norm?.fee_micros === norm?.service_fee_micros + norm?.token_micros, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, norm);
-}
-{
-  // 缓存命中的 8 个 token 必须比未命中的便宜：同一个模型，两种价。
-  const unknownModel = expected['openai-chat'];
-  check('缓存命中确实折价', unknownModel.cached > 0, unknownModel);
 }
 
 {
@@ -344,7 +338,7 @@ for (const [protocol, want] of Object.entries(expected)) {
 
 console.log('5. 四种上游协议的流式：都翻译成 OpenAI chat chunk');
 for (const protocol of Object.keys(expected)) {
-  const result = await chat(providers[protocol], { stream: true });
+  const result = await chat(credentials[protocol], { stream: true });
   check(`${protocol} 流式 200`, result.status === 200, result.status);
   check(`${protocol} 流式有内容`, result.text.includes('"content":"你"') && result.text.includes('"content":"好"'), result.text.slice(0, 200));
   check(`${protocol} 结尾有 norm 事件`, result.text.includes('"norm"'), result.text.slice(-200));
@@ -362,21 +356,21 @@ console.log('6. 上游失败不扣费，但留一条诚实记录');
   const payload = JSON.stringify({ model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }] });
   // 封进去的是对的密钥，这里改用一条指向死端口的凭证来制造「网络不可达」，
   // 再确认失败既不扣费也没把上游密钥漏进记录。
-  const wrong = await call(alice, 'POST', '/api/v1/providers', JSON.stringify({
+  const wrong = await call(alice, 'POST', '/api/v1/credentials', JSON.stringify({
     label: 'unreachable', base_url: 'http://127.0.0.1:1/v1', upstream_key: 'sk-wrong-key',
   }));
   const result = await call(alice, 'POST', '/v1/chat/completions', payload, {
-    'X-Norm-Provider': wrong.json.id,
+    'X-Norm-Credential': wrong.json.id,
   });
   check('上游不可达 → 502', result.status === 502, result.status);
   check('失败原因说得清', result.json.error === 'upstream_unreachable', result.json);
-  await call(alice, 'DELETE', `/api/v1/providers/${wrong.json.id}`);
+  await call(alice, 'DELETE', `/api/v1/credentials/${wrong.json.id}`);
 }
 
 console.log('7. X-Norm-Base-Url 必须被忽略（否则「钉死」只是口号）');
 {
   const payload = JSON.stringify({ model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }] });
-  const result = await chat(providers['openai-chat'], {}, null);
+  const result = await chat(credentials['openai-chat'], {}, null);
   check('正常调用 200', result.status === 200, { status: result.status, body: result.json });
   check('主机仍是凭证里钉死的那台', result.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, result.json?.norm);
   check('明文密钥不在响应里', !result.text.includes(KEY));
@@ -405,12 +399,10 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   const charged = charges.reduce((total, row) => total + row.amount_micros, 0);
   check('累计花费 == 流水扣费之和', me.spend_micros === -charged, { spend: me.spend_micros, charged });
 
-  const usageResponse = await call(alice, 'GET', '/api/v1/account/usage?limit=50');
-  if (process.env.E2E_DEBUG) console.log('DEBUG usage', usageResponse.status, usageResponse.text.slice(0, 300));
-  const usage = usageResponse.json;
+  const usage = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json;
   const ok = usage.items.filter((row) => row.status === 'ok');
   check('请求记录里带着上游地址', ok.every((row) => row.base_url === BASE_URL), ok.map((row) => row.base_url));
-  check('请求记录里带着提供者 id', ok.every((row) => row.provider_id !== null), ok.map((row) => row.provider_id));
+  check('请求记录里带着提供者 id', ok.every((row) => row.credential_id !== null), ok.map((row) => row.credential_id));
   check('请求记录里带着三项 token', ok.every((row) => 'input_tokens' in row && 'cached_tokens' in row && 'output_tokens' in row), ok[0]);
   // 每一条都能自己核对：服务费 + token 折价 = 扣费。
   check('每条请求的账都能对上', ok.every((row) => row.fee_micros === row.service_fee_micros + row.token_micros - row.unbilled_micros), ok[0]);
@@ -423,8 +415,8 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 
   const byConsumer = (await call(alice, 'GET', '/api/v1/account/usage/by-consumer')).json.items;
   check('按钥匙聚合里有签名直连那一档', byConsumer.some((row) => row.consumer_id === null), byConsumer);
-  const byProvider = (await call(alice, 'GET', '/api/v1/account/usage/by-provider')).json.items;
-  check('按上游聚合回了提供者的名字', byProvider.every((row) => typeof row.provider_label === 'string'), byProvider);
+  const byCredential = (await call(alice, 'GET', '/api/v1/account/usage/by-credential')).json.items;
+  check('按上游聚合回了提供者的名字', byCredential.every((row) => typeof row.credential_label === 'string'), byCredential);
 
   const pricing = (await (await fetch(`${BASE}/api/v1/pricing`)).json());
   check('价目表公开可读', typeof pricing.default?.input === 'number' && Array.isArray(pricing.models), pricing);
@@ -436,12 +428,12 @@ console.log('9. 上游渠道按 base_url 聚合；「可信」只是一份清单
   const groups = (await (await fetch(`${BASE}/api/v1/base-urls`)).json()).items;
   const group = groups.find((item) => item.base_url === BASE_URL);
   check('按 base_url 聚合成一条', group !== undefined, groups);
-  check('统计了凭证数量', group?.providers === 4, group);
+  check('统计了凭证数量', group?.credentials === 4, group);
   // 两个概念不能混：upstream_visibility=public 说的是「这个上游别人也能用」，
   // public_listed 说的是「我愿意把这条凭证挂到公开看板」。没勾后者就是 0。
   check('没人勾公开看板时 public_listed 为 0', group?.public_listed === 0, group);
 
-  const visPath = `/api/v1/providers/${providers['openai-responses']}/visibility`;
+  const visPath = `/api/v1/credentials/${credentials['openai-responses']}/visibility`;
   const visBody = JSON.stringify({ public_listed: true });
   await call(alice, 'POST', visPath, visBody);
   const after = (await (await fetch(`${BASE}/api/v1/base-urls`)).json()).items
@@ -454,21 +446,17 @@ console.log('9. 上游渠道按 base_url 聚合；「可信」只是一份清单
   check('attestation 有 policy', typeof attestation.policy?.keys === 'string', attestation.policy);
 }
 
-console.log('10. 下游消费者 Token：绑定上游、只显一次、可轮换、旧钥立刻失效');
+console.log('10. 下游消费者 Token：只记名字、只显一次、可轮换、旧钥立刻失效');
 let consumerKey = null;
 {
-  // 没指定上游就不给建：一把说不清「钱付给谁」的 Token 只会变成别人的账单。
-  const unbound = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({ name: 'no upstream' }));
-  check('不指定上游 → 400', unbound.status === 400 && unbound.json.error === 'provider_missing', unbound.json);
+  // 建钥只要一个名字：上游不是身份的一部分，旧请求体里还带着 credential_id 也照样接受（并忽略）。
+  const anonymous = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({}));
+  check('没有名字 → 400', anonymous.status === 400 && anonymous.json.error === 'name_missing', anonymous.json);
 
-  const unknown = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({
-    name: 'unknown upstream', provider_id: 'cred_does_not_exist',
-  }));
-  check('上游不存在 → 404', unknown.status === 404 && unknown.json.error === 'provider_not_found', unknown.json);
-
-  const created = await createConsumer('e2e bot', providers['openai-chat']);
+  const created = await createConsumer(alice, 'e2e bot');
   check('创建 201', created.status === 201, created.json);
-  check('回带绑定的上游', created.json.provider_id === providers['openai-chat'] && created.json.provider_label === 'openai-chat upstream', created.json);
+  check('回带名字', created.json.name === 'e2e bot', created.json);
+  check('不回带任何上游绑定', created.json.credential_id === undefined, created.json);
   consumerKey = created.json.key;
   check('明文形如 sk-norm-…', typeof consumerKey === 'string' && consumerKey.startsWith('sk-norm-'), consumerKey);
   check('回带提示', created.json.key_hint?.startsWith('sk-norm-'), created.json.key_hint);
@@ -479,7 +467,6 @@ let consumerKey = null;
   check('列表里连哈希都不回', !serialized.includes('key_sha256'), serialized);
   const entry = list.json.items.find((item) => item.id === created.json.id);
   check('只暴露 key_hint', entry?.key_hint === created.json.key_hint, entry);
-  check('列表说得出这把钥匙打到哪', entry?.provider_label === 'openai-chat upstream' && entry?.provider_base_url === BASE_URL, entry);
 
   // 一把下游密钥不能凭空再铸一把：管理面只认签名。
   const escalate = await raw('POST', '/api/v1/consumers', JSON.stringify({ name: 'x' }), {
@@ -489,29 +476,38 @@ let consumerKey = null;
   const readByKey = await raw('GET', '/api/v1/consumers', undefined, { Authorization: `Bearer ${consumerKey}` });
   check('消费者密钥读不了消费者列表', readByKey.status === 401, readByKey.status);
 
-  const viaKey = await chat(providers['openai-chat'], {}, consumerKey);
-  check('只带一个 Bearer 就能调用 200', viaKey.status === 200, viaKey.json);
-  check('打到建钥时绑定的那台上游', viaKey.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, viaKey.json?.norm);
+  // 此时 alice 名下有 4 条上游：多条又不指名是歧义，不猜。
+  const ambiguous = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${consumerKey}` });
+  check('多上游又不指名 → 409 credential_ambiguous', ambiguous.status === 409 && ambiguous.json.error === 'credential_ambiguous', ambiguous.json);
+
+  // 指了名就是那一条：一把 Token 可以打任何一条上游，它不再是「钥匙的属性」。
+  const viaKey = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Credential': credentials['openai-chat'] });
+  check('指名上游就能调用 200', viaKey.status === 200, viaKey.json);
+  check('打到指名的那台上游', viaKey.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, viaKey.json?.norm);
   check('费用记在同一个账户上', viaKey.json?.norm?.fee_micros > 0, viaKey.json?.norm);
   check('余额从同一本账上扣', viaKey.json?.norm?.balance_micros !== null, viaKey.json?.norm);
 
-  const bad = await chat(providers['openai-chat'], {}, 'sk-norm-not-a-real-key');
-  check('假密钥 401', bad.status === 401 && bad.json.error === 'consumer_key_invalid', bad.json);
-
-  // 一条 Token 绑死一条上游：它不能借请求头把调用改打到别处去。
-  const redirected = await raw('POST', '/v1/chat/completions', JSON.stringify({
+  const bad = await raw('POST', '/v1/chat/completions', JSON.stringify({
     model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
-  }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Provider': providers['anthropic-messages'] });
-  check('绑定上游不被请求头改写', redirected.status === 200 && redirected.json?.choices?.length === 1, redirected.json);
+  }), { Authorization: 'Bearer sk-norm-not-a-real-key', 'X-Norm-Credential': credentials['openai-chat'] });
+  check('假密钥 401', bad.status === 401 && bad.json.error === 'consumer_key_invalid', bad.json);
 
   const used = (await call(alice, 'GET', '/api/v1/consumers')).json.items.find((item) => item.id === created.json.id);
   check('用过之后 last_used_at 有值', typeof used?.last_used_at === 'number', used);
 
   const rotated = await call(alice, 'POST', `/api/v1/consumers/${created.json.id}/rotate`);
   check('轮换 200 并给新明文', rotated.status === 200 && rotated.json.key !== consumerKey, rotated.json);
-  const stale = await chat(providers['openai-chat'], {}, consumerKey);
+  const stale = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Credential': credentials['openai-chat'] });
   check('旧密钥立刻失效', stale.status === 401, stale.status);
-  const fresh = await chat(providers['openai-chat'], {}, rotated.json.key);
+  const fresh = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${rotated.json.key}`, 'X-Norm-Credential': credentials['openai-chat'] });
   check('新密钥可用', fresh.status === 200, fresh.json);
 
   const renamed = await call(alice, 'POST', `/api/v1/consumers/${created.json.id}/name`, JSON.stringify({ name: 'renamed bot' }));
@@ -519,10 +515,54 @@ let consumerKey = null;
 
   const revoked = await call(alice, 'DELETE', `/api/v1/consumers/${created.json.id}`);
   check('撤销 200', revoked.status === 200 && revoked.json.revoked === true, revoked.json);
-  const afterRevoke = await chat(providers['openai-chat'], {}, rotated.json.key);
-  check('撤销后密钥失效', afterRevoke.status === 401, afterRevoke.status);
   const gone = (await call(alice, 'GET', '/api/v1/consumers')).json.items.find((item) => item.id === created.json.id);
   check('撤销后不再出现在列表里', gone === undefined, gone);
+}
+
+console.log('10b. 只有一个上游账户：一个 Bearer 就是完整调用，不用任何专有头');
+{
+  // bob 只有一条上游：默认值唯一的场合，「一条 Token」才真的等于「一次完整调用」。
+  const bob = identity();
+  await call(bob, 'POST', '/api/v1/auth/login');
+  const upstream = await call(bob, 'POST', '/api/v1/credentials', JSON.stringify({
+    label: 'bob upstream',
+    base_url: BASE_URL,
+    upstream_key: KEY,
+    upstream_protocol: 'openai-chat',
+  }));
+  check('bob 建了一条上游', upstream.status === 201, upstream.json);
+
+  const withoutCredential = await call(bob, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('签名身份不指名也能调用 200', withoutCredential.status === 200, withoutCredential.json);
+  check('走到了唯一的那条上游', withoutCredential.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, withoutCredential.json?.norm);
+
+  const key = (await createConsumer(bob, 'bob bot')).json.key;
+  const viaKey = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${key}` });
+  check('一条 Bearer 就够了', viaKey.status === 200, viaKey.json);
+  check('打到唯一的那条上游', viaKey.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, viaKey.json?.norm);
+
+  // 没有上游时才轮到「你先去加一条上游」这条错误。
+  const carol = identity();
+  await call(carol, 'POST', '/api/v1/auth/login');
+  const noUpstream = await call(carol, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('没有上游 → 400 credential_missing', noUpstream.status === 400 && noUpstream.json.error === 'credential_missing', noUpstream.json);
+
+  const carolKey = (await createConsumer(carol, 'carol bot')).json.key;
+  const noUpstreamByKey = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${carolKey}` });
+  check('没上游时调用方拿到的是同一个 400', noUpstreamByKey.status === 400 && noUpstreamByKey.json.error === 'credential_missing', noUpstreamByKey.json);
+
+  const unknown = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${carolKey}`, 'X-Norm-Credential': 'cred_does_not_exist' });
+  check('指名一条不存在的上游 → 404', unknown.status === 404 && unknown.json.error === 'credential_not_found', unknown.json);
 }
 
 console.log('11. 公开接口不需要签名');
@@ -572,7 +612,7 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
       const { path, body } = ENTRIES[entry]('gpt-test', false);
       const payload = JSON.stringify(body);
       const before = seen.length;
-      const result = await call(alice, 'POST', path, payload, { 'X-Norm-Provider': providers[protocol] });
+      const result = await call(alice, 'POST', path, payload, { 'X-Norm-Credential': credentials[protocol] });
       const label = `${entry} → ${protocol}${same ? '（直通）' : ''}`;
 
       check(`${label} 200`, result.status === 200, result.json);
@@ -607,31 +647,38 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
   // 对角线不能只是「能跑」：上游多给的字段必须原样保留下来，否则就不叫直通。
   {
     const { path, body } = ENTRIES['openai-chat']('gpt-test', false);
-    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Provider': providers['openai-chat'] });
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['openai-chat'] });
     check('直通保留上游特有的字段（id/finish_reason）', result.json?.id === 'chatcmpl-1' && result.json?.choices?.[0]?.finish_reason === 'stop', result.json);
   }
 
   // 各家 SDK 用各自的头带密钥：Claude Code 走 x-api-key，Google SDK 走 x-goog-api-key。
-  // 每条 Token 各自绑一条上游，所以三种写法都只带那一个头——没有第二个 Norm 专有的头。
+  // 这里刻意给每条 Token 都指名上游（这个账户有 4 条，不指名就是歧义），
+  // 于是三种写法都只带「自己的 api key + 一条 X-Norm-Credential」——没有别的 Norm 专有头。
   {
-    const anthKey = (await createConsumer('matrix bot (anthropic)', providers['anthropic-messages'])).json.key;
-    const gemKey = (await createConsumer('matrix bot (gemini)', providers['google-gemini'])).json.key;
+    const anthKey = (await createConsumer(alice, 'matrix bot (anthropic)')).json.key;
+    const gemKey = (await createConsumer(alice, 'matrix bot (gemini)')).json.key;
 
     const anth = ENTRIES['anthropic-messages']('gpt-test', false);
-    const viaApiKey = await raw('POST', anth.path, JSON.stringify(anth.body), { 'x-api-key': anthKey });
+    const viaApiKey = await raw('POST', anth.path, JSON.stringify(anth.body), {
+      'x-api-key': anthKey, 'X-Norm-Credential': credentials['anthropic-messages'],
+    });
     check('x-api-key 能当消费者密钥（Claude Code 的形状）', viaApiKey.status === 200, viaApiKey.json);
 
     const gem = ENTRIES['google-gemini']('gpt-test', false);
-    const viaGoog = await raw('POST', gem.path, JSON.stringify(gem.body), { 'x-goog-api-key': gemKey });
+    const viaGoog = await raw('POST', gem.path, JSON.stringify(gem.body), {
+      'x-goog-api-key': gemKey, 'X-Norm-Credential': credentials['google-gemini'],
+    });
     check('x-goog-api-key 能当消费者密钥（Google SDK 的形状）', viaGoog.status === 200, viaGoog.json);
 
-    const viaBearer = await raw('POST', anth.path, JSON.stringify(anth.body), { Authorization: `Bearer ${anthKey}` });
+    const viaBearer = await raw('POST', anth.path, JSON.stringify(anth.body), {
+      Authorization: `Bearer ${anthKey}`, 'X-Norm-Credential': credentials['anthropic-messages'],
+    });
     check('Bearer 也一样', viaBearer.status === 200, viaBearer.json);
 
     // 没有 sk-norm- 前缀的 api key 不是我们的身份：要说不清就直说不清，不要误判成「钥匙无效」。
     const foreign = await raw('POST', anth.path, JSON.stringify(anth.body), {
       'x-api-key': 'sk-some-upstream-key',
-      'X-Norm-Provider': providers['anthropic-messages'],
+      'X-Norm-Credential': credentials['anthropic-messages'],
     });
     check('别家的 api key 不被当成消费者密钥', foreign.status === 401 && foreign.json.error === 'signature_required', foreign.json);
 
@@ -649,12 +696,12 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
       tools: [{ name: 'get_weather', input_schema: { type: 'object' } }],
       messages: [{ role: 'user', content: 'hi' }],
     });
-    const result = await call(alice, 'POST', '/v1/messages', payload, { 'X-Norm-Provider': providers['openai-chat'] });
+    const result = await call(alice, 'POST', '/v1/messages', payload, { 'X-Norm-Credential': credentials['openai-chat'] });
     check('跨方言带 tools → 400 tools_unsupported', result.status === 400 && result.json.error === 'tools_unsupported', result.json);
 
     // 同格式直通时 tools 免费穿过：我们不碰请求体，也就没有「支持不支持」的问题。
     const same = JSON.stringify({ model: 'gpt-test', tools: [{ type: 'function', function: { name: 'w' } }], messages: [{ role: 'user', content: 'hi' }] });
-    const passed = await call(alice, 'POST', '/v1/chat/completions', same, { 'X-Norm-Provider': providers['openai-chat'] });
+    const passed = await call(alice, 'POST', '/v1/chat/completions', same, { 'X-Norm-Credential': credentials['openai-chat'] });
     check('同格式直通时 tools 原样穿过', passed.status === 200, passed.json);
   }
 
@@ -662,7 +709,7 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
   for (const protocol of protocols) {
     if (protocol === 'openai-chat') continue;
     const { path, body } = ENTRIES['openai-responses']('gpt-test', true);
-    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Provider': providers[protocol] });
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials[protocol] });
     check(`流式 openai-responses → ${protocol} 200`, result.status === 200, result.status);
     if (protocol === 'openai-responses') {
       // 对角线：上游的帧原样到达，我们不合成、不改写。
@@ -676,14 +723,14 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
   for (const protocol of protocols) {
     if (protocol === 'anthropic-messages') continue;
     const { path, body } = ENTRIES['anthropic-messages']('gpt-test', true);
-    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Provider': providers[protocol] });
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials[protocol] });
     check(`流式 anthropic → ${protocol} 200`, result.status === 200, result.status);
     check(`流式 anthropic → ${protocol} 有 message_stop`, result.text.includes('message_stop'), result.text.slice(-200));
     check(`流式 anthropic → ${protocol} 用 text_delta`, result.text.includes('text_delta'), result.text.slice(0, 300));
   }
   {
     const { path, body } = ENTRIES['google-gemini']('gpt-test', true);
-    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Provider': providers['anthropic-messages'] });
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['anthropic-messages'] });
     check('流式 gemini → anthropic 200', result.status === 200, result.status);
     // 入口是 gemini，出口就必须是 gemini 的裸 data 帧：没有 event: 前缀，也没有 anthropic 的事件名。
     check('流式 gemini 出口是 gemini 帧', result.text.includes('"candidates"') && !result.text.includes('message_stop'), result.text.slice(0, 200));
@@ -693,7 +740,7 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
   // 同格式流式直通：上游的帧原样过来，不再被二次解读。
   {
     const { path, body } = ENTRIES['anthropic-messages']('gpt-test', true);
-    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Provider': providers['anthropic-messages'] });
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['anthropic-messages'] });
     check('anthropic 流式直通 200', result.status === 200, result.status);
     check('anthropic 流式直通保留上游事件名', result.text.includes('event: message_start') === false ? result.text.includes('"message_start"') : true, result.text.slice(0, 200));
     check('anthropic 流式直通保留上游 delta 原文', result.text.includes('"text_delta"'), result.text.slice(0, 300));

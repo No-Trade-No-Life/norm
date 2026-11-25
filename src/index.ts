@@ -6,7 +6,7 @@ import { nowSeconds } from './ids';
 import { publicRoutes } from './routes/public';
 import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
-import { providerRoutes } from './routes/providers';
+import { credentialRoutes } from './routes/credentials';
 import { consumerRoutes } from './routes/consumers';
 import { relayRoutes } from './routes/relay';
 
@@ -45,7 +45,7 @@ function signedOnly() {
     await next();
   });
   signed.route('/account', accountRoutes);
-  signed.route('/providers', providerRoutes);
+  signed.route('/credentials', credentialRoutes);
   signed.route('/consumers', consumerRoutes);
   return signed;
 }

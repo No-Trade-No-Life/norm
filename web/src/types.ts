@@ -27,7 +27,7 @@ export type Me = {
   granted_micros: number;
   spend_micros: number;
   requests: number;
-  providers: number;
+  credentials: number;
   usage: TokenTotals;
   billed: MoneyTotals;
   created_at: number;
@@ -41,13 +41,13 @@ export type BaseUrlGroup = {
   base_url: string;
   host: string;
   trusted: boolean;
-  providers: number;
+  credentials: number;
   public_listed: number;
   protocols: string[];
   last_seen_at: number;
 };
 
-export type Provider = {
+export type Credential = {
   id: string;
   address: string;
   label: string;
@@ -66,13 +66,13 @@ export type Provider = {
 
 /**
  * 一条请求记录。账本要回答的四件事都在这里：
- * 打给谁（base_url / provider_id）、谁发起（consumer_id）、用了多少 token、
+ * 打给谁（base_url / credential_id）、谁发起（consumer_id）、用了多少 token、
  * 钱怎么算出来的（service_fee + token − unbilled = fee）。
  */
 export type RequestRow = {
   id: string;
   address: string;
-  provider_id: string | null;
+  credential_id: string | null;
   consumer_id: string | null;
   base_url: string;
   model: string;
@@ -107,10 +107,10 @@ export type Consumer = {
   address: string;
   name: string;
   /** 建的时候就绑死的上游提供者：调用时一条 Bearer 就够，不用再带第二个头。 */
-  provider_id: string;
+  credential_id: string;
   /** LEFT JOIN 带上来的昵称与地址；凭证被撤销后为 null。 */
-  provider_label: string | null;
-  provider_base_url: string | null;
+  credential_label: string | null;
+  credential_base_url: string | null;
   key_hint: string;
   created_at: number;
   last_used_at: number | null;
@@ -158,9 +158,9 @@ export type ConsumerUsage = {
 };
 
 /** 按上游提供者聚合的用量：钱花在哪个上游。 */
-export type ProviderUsage = {
-  provider_id: string | null;
-  provider_label: string | null;
+export type CredentialUsage = {
+  credential_id: string | null;
+  credential_label: string | null;
   requests: number;
   input_tokens: number;
   cached_tokens: number;

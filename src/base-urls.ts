@@ -34,7 +34,7 @@ export type BaseUrlGroup = {
   base_url: string;
   host: string;
   trusted: boolean;
-  providers: number;
+  credentials: number;
   public_listed: number;
   protocols: string[];
   last_seen_at: number;
@@ -42,7 +42,7 @@ export type BaseUrlGroup = {
 
 type GroupRow = {
   base_url: string;
-  providers: number;
+  credentials: number;
   public_listed: number;
   protocols: string;
   last_seen_at: number;
@@ -55,21 +55,21 @@ type GroupRow = {
 export async function groupByBaseUrl(env: Env): Promise<BaseUrlGroup[]> {
   const { results } = await env.DB.prepare(
     `SELECT base_url,
-            COUNT(*) AS providers,
+            COUNT(*) AS credentials,
             SUM(public_listed) AS public_listed,
             GROUP_CONCAT(DISTINCT upstream_protocol) AS protocols,
             MAX(created_at) AS last_seen_at
-     FROM providers
+     FROM credentials
      WHERE revoked_at IS NULL
      GROUP BY base_url
-     ORDER BY providers DESC, base_url ASC`,
+     ORDER BY credentials DESC, base_url ASC`,
   ).all<GroupRow>();
 
   return results.map((row) => ({
     base_url: row.base_url,
     host: hostOf(row.base_url),
     trusted: isTrusted(row.base_url, env),
-    providers: row.providers,
+    credentials: row.credentials,
     public_listed: row.public_listed ?? 0,
     protocols: (row.protocols ?? '').split(',').filter((p) => p.length > 0),
     last_seen_at: row.last_seen_at,

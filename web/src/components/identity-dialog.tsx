@@ -5,6 +5,7 @@ import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { shortAddress, usd } from '../lib/format';
 import { useMe } from '../queries';
+import { encodeKeypairJson } from '../seed';
 import { Button } from './ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
 import { Input } from './ui/input';
@@ -13,20 +14,23 @@ import { Separator } from './ui/separator';
 import { ErrorNote } from './page';
 
 /**
- * 身份面板：地址、导出的 base58 种子、导入新种子。
- * 种子只有用户主动点「显示」时才写进 DOM——默认不落渲染树。
+ * 身份面板：地址、导出的密钥、导入新密钥。
+ *
+ * 密钥是本机看到的唯一私密物，只有用户主动点「导出密钥」时才写进 DOM——默认不落渲染树。
+ * 导出给两种形状：base58 的 64 字节（Norm 自己的备份格式），以及 JSON 数组
+ * （Solana 的 id.json 形状，方便拿去和钱包工具互通）。
  */
 export function IdentityDialog() {
   const { t } = useI18n();
-  const { identity, exportSeed, importSeed } = useIdentity();
+  const { identity, exportSeed, importIdentity, migratedFromLegacy } = useIdentity();
   const me = useMe(true);
   const [open, setOpen] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [seedText, setSeedText] = useState('');
   const [importError, setImportError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<'address' | 'seed' | null>(null);
+  const [copied, setCopied] = useState<'address' | 'seed' | 'json' | null>(null);
 
-  const copy = async (value: string, kind: 'address' | 'seed') => {
+  const copy = async (value: string, kind: 'address' | 'seed' | 'json') => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(kind);
@@ -42,10 +46,13 @@ export function IdentityDialog() {
     setImportError(null);
   };
 
+  /** Solana id.json 形状：只在用户点了「复制 JSON 数组」时才计算。 */
+  const keypairJson = () => encodeKeypairJson(identity.keypair);
+
   const submitImport = () => {
     setImportError(null);
     try {
-      importSeed(seedText);
+      importIdentity(seedText);
       setSeedText('');
       setOpen(false);
     } catch {
@@ -99,7 +106,13 @@ export function IdentityDialog() {
             </dl>
           </div>
 
-          <p className="text-[11px] leading-relaxed text-muted-foreground">{t('identity.seed_note')}</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">{t('identity.keypair_note')}</p>
+
+          {migratedFromLegacy ? (
+            <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+              {t('identity.migrated_note')}
+            </p>
+          ) : null}
 
           <Separator />
 
@@ -116,10 +129,19 @@ export function IdentityDialog() {
                 <p className="text-[11px] leading-relaxed text-destructive">{t('identity.export_warn')}</p>
               </>
             ) : null}
-            <Button variant="outline" size="sm" className="self-start" onClick={() => setRevealed((prev) => !prev)}>
-              {revealed ? <EyeOffIcon /> : <EyeIcon />}
-              {revealed ? t('action.hide') : t('action.export_seed')}
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setRevealed((prev) => !prev)}>
+                {revealed ? <EyeOffIcon /> : <EyeIcon />}
+                {revealed ? t('action.hide') : t('action.export_seed')}
+              </Button>
+              {revealed ? (
+                <Button variant="ghost" size="sm" onClick={() => void copy(keypairJson(), 'json')}>
+                  {copied === 'json' ? <CheckIcon /> : <CopyIcon />}
+                  {t('action.copy_json')}
+                </Button>
+              ) : null}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('identity.export_json_note')}</p>
           </div>
 
           <Separator />

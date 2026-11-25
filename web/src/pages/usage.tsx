@@ -14,9 +14,9 @@ import {
   usePricing,
   useUsage,
   useUsageByConsumer,
-  useUsageByProvider,
+  useUsageByCredential,
 } from '../queries';
-import type { ConsumerUsage, LedgerRow, Pricing, ProviderUsage, RequestRow } from '../types';
+import type { ConsumerUsage, LedgerRow, Pricing, CredentialUsage, RequestRow } from '../types';
 
 /**
  * 用量与账本。这一页的顺序就是一个人核对账单的顺序：
@@ -34,7 +34,7 @@ export function UsagePage() {
   const usage = useCursorPages<string>((cursor) => useUsage(true, cursor));
   const ledger = useCursorPages<number>((cursor) => useLedger(true, cursor));
   const byConsumer = useUsageByConsumer(true);
-  const byProvider = useUsageByProvider(true);
+  const byCredential = useUsageByCredential(true);
   const pricing = usePricing();
 
   const tokens_ = me.data?.usage;
@@ -130,7 +130,7 @@ export function UsagePage() {
         ) : usage.rows.length === 0 ? (
           <Empty className="border-0">{t('us.requests_empty')}</Empty>
         ) : (
-          <RequestTable rows={usage.rows} providers={byProvider.data ?? []} />
+          <RequestTable rows={usage.rows} credentials={byCredential.data ?? []} />
         )}
       </Section>
 
@@ -149,17 +149,17 @@ export function UsagePage() {
           )}
         </Section>
 
-        <Section title={t('us.by_provider_title')} bodyClassName="p-0">
-          {byProvider.isPending ? (
+        <Section title={t('us.by_credential_title')} bodyClassName="p-0">
+          {byCredential.isPending ? (
             <SkeletonRows rows={3} cols={4} />
-          ) : byProvider.isError ? (
+          ) : byCredential.isError ? (
             <div className="p-3">
-              <ErrorNote title={t('common.error')} message={(byProvider.error as Error).message} />
+              <ErrorNote title={t('common.error')} message={(byCredential.error as Error).message} />
             </div>
-          ) : (byProvider.data ?? []).length === 0 ? (
-            <Empty className="border-0">{t('us.by_provider_empty')}</Empty>
+          ) : (byCredential.data ?? []).length === 0 ? (
+            <Empty className="border-0">{t('us.by_credential_empty')}</Empty>
           ) : (
-            <ByProviderTable rows={byProvider.data ?? []} />
+            <ByCredentialTable rows={byCredential.data ?? []} />
           )}
         </Section>
       </div>
@@ -245,7 +245,7 @@ function Pager({
         <ChevronLeftIcon />
       </Button>
       <span className="min-w-14 text-center text-xs text-muted-foreground tabular-nums">
-        {t('us.page').replace('{page}', String(page + 1))}
+        {t('us.page', { page: page + 1 })}
       </span>
       <Button variant="ghost" size="icon-sm" disabled={!hasNext || loading} onClick={() => setPage(page + 1)} aria-label={t('action.next')}>
         <ChevronRightIcon />
@@ -273,13 +273,13 @@ function TokenTriple({ input, cached, output }: { input: number; cached: number;
   );
 }
 
-function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: ProviderUsage[] }) {
+function RequestTable({ rows, credentials }: { rows: RequestRow[]; credentials: CredentialUsage[] }) {
   const { t } = useI18n();
   const labelOf = useMemo(() => {
     const table = new Map<string, string>();
-    for (const entry of providers) if (entry.provider_id) table.set(entry.provider_id, entry.provider_label ?? '');
+    for (const entry of credentials) if (entry.credential_id) table.set(entry.credential_id, entry.credential_label ?? '');
     return table;
-  }, [providers]);
+  }, [credentials]);
 
   return (
     <Table>
@@ -305,7 +305,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
               {/* 第二行回答「打给哪台机器、走哪条上游」——账本的一半意义在这里。 */}
               <span className="block truncate text-[11px] text-muted-foreground" title={row.base_url}>
                 {safeHost(row.base_url) || '—'}
-                {row.provider_id ? ` · ${labelOf.get(row.provider_id) || shortAddress(row.provider_id)}` : ''}
+                {row.credential_id ? ` · ${labelOf.get(row.credential_id) || shortAddress(row.credential_id)}` : ''}
               </span>
             </TableCell>
             <TableCell className="hidden sm:table-cell">
@@ -365,13 +365,13 @@ function ByConsumerTable({ rows }: { rows: ConsumerUsage[] }) {
   );
 }
 
-function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
+function ByCredentialTable({ rows }: { rows: CredentialUsage[] }) {
   const { t } = useI18n();
   return (
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>{t('us.col_provider')}</TableHead>
+          <TableHead>{t('us.col_credential')}</TableHead>
           <TableHead className="w-16 text-right">{t('us.col_calls')}</TableHead>
           <TableHead className="w-28 text-right">{t('us.col_tokens')}</TableHead>
           <TableHead className="w-20 text-right">{t('us.col_fee')}</TableHead>
@@ -379,10 +379,10 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
-          <TableRow key={row.provider_id ?? 'none'}>
+          <TableRow key={row.credential_id ?? 'none'}>
             <TableCell className="max-w-40 truncate">
-              <span className="text-xs">{row.provider_label ?? shortAddress(row.provider_id ?? '')}</span>
-              <span className="block font-mono text-[11px] text-muted-foreground">{row.provider_id ?? '—'}</span>
+              <span className="text-xs">{row.credential_label ?? shortAddress(row.credential_id ?? '')}</span>
+              <span className="block font-mono text-[11px] text-muted-foreground">{row.credential_id ?? '—'}</span>
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{row.requests}</TableCell>
             <TableCell className="text-right">
@@ -415,7 +415,7 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
             <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
             <TableCell>
               <Badge variant={row.kind === 'grant' ? 'outline' : 'secondary'} className="whitespace-nowrap">
-                <span className="sm:hidden">{row.kind}</span>
+                <span className="sm:hidden">{row.kind === 'grant' ? t('us.kind_grant') : t('us.kind_charge')}</span>
                 <span className="hidden sm:inline">{row.kind === 'grant' ? t('us.ledger_grant') : t('us.ledger_charges')}</span>
               </Badge>
             </TableCell>

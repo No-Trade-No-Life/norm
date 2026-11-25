@@ -14,12 +14,12 @@ import { when } from '../lib/format';
 import {
   useConsumers,
   useCreateConsumer,
-  useProviders,
+  useCredentials,
   useRenameConsumer,
   useRevokeConsumer,
   useRotateConsumer,
 } from '../queries';
-import type { Consumer, Provider } from '../types';
+import type { Consumer, Credential } from '../types';
 
 /**
  * 下游消费者：给程序用的 `sk-norm-…`。
@@ -33,14 +33,14 @@ import type { Consumer, Provider } from '../types';
 export function ConsumersPage() {
   const { t } = useI18n();
   const consumers = useConsumers(true);
-  const providers = useProviders(true);
+  const credentials = useCredentials(true);
   const revoke = useRevokeConsumer();
   const [createOpen, setCreateOpen] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Consumer | null>(null);
 
   const items = consumers.data?.items ?? [];
-  const upstreams = providers.data?.items ?? [];
+  const upstreams = credentials.data?.items ?? [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -69,7 +69,7 @@ export function ConsumersPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>{t('co.col_name')}</TableHead>
-                <TableHead className="hidden md:table-cell">{t('co.col_provider')}</TableHead>
+                <TableHead className="hidden md:table-cell">{t('co.col_credential')}</TableHead>
                 <TableHead className="hidden sm:table-cell">{t('co.col_hint')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('co.col_created')}</TableHead>
                 <TableHead className="hidden md:table-cell">{t('co.col_last_used')}</TableHead>
@@ -133,18 +133,18 @@ function ConsumerRow({
         {/* 窄屏没有独立的密钥列，提示要贴在名字下面，事实不能被藏起来。 */}
         <code className="mt-0.5 block font-mono text-[11px] text-muted-foreground sm:hidden">{item.key_hint}</code>
         <span className="mt-0.5 block text-[11px] text-muted-foreground md:hidden">
-          {item.provider_label ?? `${t('co.or_revoked')} ${item.provider_id}`}
+          {item.credential_label ?? `${t('co.or_revoked')} ${item.credential_id}`}
         </span>
       </TableCell>
       <TableCell className="hidden md:table-cell">
-        {item.provider_label ? (
+        {item.credential_label ? (
           <div className="flex flex-col">
-            <span className="text-xs">{item.provider_label}</span>
-            <code className="text-[11px] break-all text-muted-foreground">{item.provider_base_url}</code>
+            <span className="text-xs">{item.credential_label}</span>
+            <code className="text-[11px] break-all text-muted-foreground">{item.credential_base_url}</code>
           </div>
         ) : (
           <span className="text-xs text-muted-foreground">
-            {t('co.or_revoked')} <code className="text-[11px]">{item.provider_id}</code>
+            {t('co.or_revoked')} <code className="text-[11px]">{item.credential_id}</code>
           </span>
         )}
       </TableCell>
@@ -196,18 +196,18 @@ function NewConsumerDialog({
   onCreated,
 }: {
   open: boolean;
-  upstreams: Provider[];
+  upstreams: Credential[];
   onOpenChange: (value: boolean) => void;
   onCreated: (key: string) => void;
 }) {
   const { t } = useI18n();
   const create = useCreateConsumer();
   const [name, setName] = useState('');
-  const [providerId, setProviderId] = useState('');
+  const [credentialId, setCredentialId] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   // 默认选中第一条：绝大多数人只有一条上游，让他少点一次。
-  const selected = providerId || upstreams[0]?.id || '';
+  const selected = credentialId || upstreams[0]?.id || '';
 
   const submit = async () => {
     setError(null);
@@ -216,11 +216,11 @@ function NewConsumerDialog({
       return;
     }
     if (!selected) {
-      setError(t('co.provider_missing'));
+      setError(t('co.credential_missing'));
       return;
     }
     try {
-      const result = await create.mutateAsync({ name: name.trim(), provider_id: selected });
+      const result = await create.mutateAsync({ name: name.trim(), credential_id: selected });
       setName('');
       onOpenChange(false);
       onCreated(result.key);
@@ -244,7 +244,7 @@ function NewConsumerDialog({
         </DialogHeader>
 
         {upstreams.length === 0 ? (
-          <Empty className="border-0">{t('co.no_provider')}</Empty>
+          <Empty className="border-0">{t('co.no_credential')}</Empty>
         ) : (
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5">
@@ -253,15 +253,15 @@ function NewConsumerDialog({
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label>{t('co.field_provider')}</Label>
+              <Label>{t('co.field_credential')}</Label>
               {/* 绑定只在建钥时定一次：它决定了这次调用的钱付给哪条上游、打到哪台主机。 */}
               <Select
                 value={selected}
-                onValueChange={(value) => setProviderId(String(value))}
+                onValueChange={(value) => setCredentialId(String(value))}
                 items={upstreams.map((item) => ({ value: item.id, label: item.label }))}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder={t('co.field_provider_placeholder')} />
+                  <SelectValue placeholder={t('co.field_credential_placeholder')} />
                 </SelectTrigger>
                 <SelectContent>
                   {upstreams.map((item) => (

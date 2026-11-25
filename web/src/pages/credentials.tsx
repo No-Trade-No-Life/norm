@@ -18,19 +18,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useCreateProvider, useProviders, useRevokeProvider, useSetVisibility } from '../queries';
-import { PROTOCOLS, VISIBILITIES, type Provider } from '../types';
+import { useCreateCredential, useCredentials, useRevokeCredential, useSetVisibility } from '../queries';
+import { PROTOCOLS, VISIBILITIES, type Credential } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
-export function ProvidersPage() {
+export function CredentialsPage() {
   const { t, lang } = useI18n();
-  const providers = useProviders(true);
+  const credentials = useCredentials(true);
   const setVisibility = useSetVisibility();
-  const revoke = useRevokeProvider();
+  const revoke = useRevokeCredential();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
-  const items = providers.data?.items ?? [];
+  const items = credentials.data?.items ?? [];
 
   return (
     <div className="flex flex-col gap-4">
@@ -40,17 +40,17 @@ export function ProvidersPage() {
         actions={
           <Button onClick={() => setDialogOpen(true)}>
             <PlusIcon />
-            {t('action.new_provider')}
+            {t('action.new_credential')}
           </Button>
         }
       />
 
       <Section bodyClassName="p-0">
-        {providers.isPending ? (
+        {credentials.isPending ? (
           <SkeletonRows rows={4} cols={5} />
-        ) : providers.isError ? (
+        ) : credentials.isError ? (
           <div className="p-3">
-            <ErrorNote title={t('common.error')} message={(providers.error as Error).message} />
+            <ErrorNote title={t('common.error')} message={(credentials.error as Error).message} />
           </div>
         ) : items.length === 0 ? (
           <Empty className="border-0">{t('cr.empty')}</Empty>
@@ -70,7 +70,7 @@ export function ProvidersPage() {
             </TableHeader>
             <TableBody>
               {items.map((item) => (
-                <ProviderRow
+                <CredentialRow
                   key={item.id}
                   item={item}
                   confirming={confirmId === item.id}
@@ -90,7 +90,7 @@ export function ProvidersPage() {
       {setVisibility.isError ? <ErrorNote title={t('common.error')} message={(setVisibility.error as Error).message} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
-      <NewProviderDialog
+      <NewCredentialDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onCreated={() => {
@@ -101,7 +101,7 @@ export function ProvidersPage() {
   );
 }
 
-function ProviderRow({
+function CredentialRow({
   item,
   lang,
   confirming,
@@ -109,7 +109,7 @@ function ProviderRow({
   onTogglePublic,
   onRevoke,
 }: {
-  item: Provider;
+  item: Credential;
   lang: 'zh' | 'en';
   confirming: boolean;
   onConfirm: (value: boolean) => void;
@@ -163,7 +163,7 @@ function ProviderRow({
   );
 }
 
-function NewProviderDialog({
+function NewCredentialDialog({
   open,
   onOpenChange,
   onCreated,
@@ -173,7 +173,7 @@ function NewProviderDialog({
   onCreated: () => void;
 }) {
   const { t, lang } = useI18n();
-  const create = useCreateProvider();
+  const create = useCreateCredential();
 
   const [label, setLabel] = useState('');
   const [upstreamKey, setUpstreamKey] = useState('');
