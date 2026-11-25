@@ -288,8 +288,8 @@ export const COPY = {
 
   'md.title': { zh: '模型列表', en: 'Models' },
   'md.desc': {
-    zh: '每条启用中的上游提供商现在真实返回的模型，按名字合并去重；同一个模型出现在几条上游里时，随便挑一条都能调。官方价是各家公开的按量付费价（每百万 token），只作锚点，不是这次调用要付的钱。',
-    en: 'What each enabled provider actually returns right now, merged by model name. When a model appears under several providers, any of them will serve it. The official price is each vendor’s published pay-as-you-go rate per 1M tokens — an anchor, not what this call costs.',
+    zh: '每条启用中的上游提供商现在真实返回的模型，按名字合并去重；同一个模型出现在几条上游里时，随便挑一条都能调。官方价是各家公开的按量付费价（每百万 token），只作锚点，不是这次调用要付的钱；按时段折价的上游取高峰价，低谷价见悬停提示。',
+    en: 'What each enabled provider actually returns right now, merged by model name. When a model appears under several providers, any of them will serve it. The official price is each vendor’s published pay-as-you-go rate per 1M tokens — an anchor, not what this call costs. Time-tiered vendors are shown at their peak rate; hover for off-peak.',
   },
   'md.search': { zh: '搜模型名或上游名', en: 'Search model or provider' },
   'md.filter_provider': { zh: '上游提供商', en: 'Provider' },
@@ -300,8 +300,12 @@ export const COPY = {
   'md.col_official': { zh: '官方价 /1M', en: 'Official /1M' },
   'md.official_missing': { zh: '未收录', en: 'Not in list' },
   'md.official_hint': {
-    zh: '官方按量付费价（每百万 token）：输入 {input} · 缓存 {cached} · 输出 {output}。锚点规则 {match}。',
-    en: 'Official pay-as-you-go price per 1M tokens: input {input} · cached {cached} · output {output}. Anchor rule: {match}.',
+    zh: '官方按量付费价（每百万 token，高峰时段）：输入 {input} · 缓存 {cached} · 输出 {output}。锚点规则 {match}。',
+    en: 'Official pay-as-you-go price per 1M tokens at peak: input {input} · cached {cached} · output {output}. Anchor rule: {match}.',
+  },
+  'md.official_off_peak': {
+    zh: '低谷价：输入 {input} · 缓存 {cached} · 输出 {output}。',
+    en: 'Off-peak: input {input} · cached {cached} · output {output}.',
   },
   'md.col_providers': { zh: '上游提供商', en: 'Providers' },
   'md.col_protocol': { zh: '协议', en: 'Protocol' },

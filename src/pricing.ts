@@ -27,6 +27,12 @@ export type Rates = {
 export type PriceEntry = Rates & {
   /** 模型名前缀（大小写不敏感）。最长匹配优先。 */
   match: string;
+  /**
+   * 低谷价：有的上游按时段折价（DeepSeek 的低谷价约为高峰价的一半）。
+   * `Rates` 只放**高峰价**——它是报价的上界，也是账本用的那一档；
+   * 低谷价单列在这里，页面自己决定怎么展示，`quote()` 不看它。
+   */
+  off_peak?: Rates;
 };
 
 /** 没有任何一条规则命中时的兜底价。写在这里，是为了「没定价」不会变成「免费」。 */
@@ -38,9 +44,12 @@ export const DEFAULT_RATES: Rates = { input: 500_000_000, cached: 50_000_000, ou
  * 价格会变，改这里就是改价；`GET /api/v1/pricing` 永远回这张表的当前值。
  */
 export const MODEL_RATES: PriceEntry[] = [
-  { match: 'deepseek-reasoner', input: 550_000_000, cached: 140_000_000, output: 2_190_000_000 },
-  { match: 'deepseek-chat', input: 270_000_000, cached: 70_000_000, output: 1_100_000_000 },
-  { match: 'deepseek', input: 270_000_000, cached: 70_000_000, output: 1_100_000_000 },
+  // DeepSeek：2026-11-25 按其官网 Model Details 核对，型号是 flash 与 v4-pro，
+  // 两个都有高峰 / 低谷两档（低谷约为高峰的一半）。这里写高峰价，低谷放进 off_peak。
+  { match: 'deepseek-v4-pro', input: 1_320_000_000, cached: 44_000_000, output: 3_960_000_000, off_peak: { input: 660_000_000, cached: 22_000_000, output: 1_980_000_000 } },
+  { match: 'deepseek-flash', input: 300_000_000, cached: 6_000_000, output: 1_200_000_000, off_peak: { input: 150_000_000, cached: 3_000_000, output: 600_000_000 } },
+  // 没点名型号的 deepseek 落到 mainstream 那档（flash 高峰价）：宁可高估，不按更便宜的一档漏收。
+  { match: 'deepseek', input: 300_000_000, cached: 6_000_000, output: 1_200_000_000, off_peak: { input: 150_000_000, cached: 3_000_000, output: 600_000_000 } },
   { match: 'gpt-4o-mini', input: 150_000_000, cached: 75_000_000, output: 600_000_000 },
   { match: 'gpt-4o', input: 2_500_000_000, cached: 1_250_000_000, output: 10_000_000_000 },
   { match: 'gpt-4.1-mini', input: 400_000_000, cached: 100_000_000, output: 1_600_000_000 },
@@ -77,7 +86,7 @@ export type Quote = {
 };
 
 /** 最长前缀匹配：`gpt-4o-mini` 必须赢过 `gpt-4o`，否则便宜模型按贵模型计价。 */
-export function ratesFor(model: string): { rates: Rates; match: string | null } {
+export function ratesFor(model: string): { rates: Rates; match: string | null; off_peak?: Rates } {
   const name = model.trim().toLowerCase();
   // `deepseek/deepseek-chat`、`openai/gpt-4o-mini`：名字常带一层提供者前缀，
   // 去掉前缀再匹配一次，否则这种写法会掉到兜底价上（贵 3 倍且没人看得出来）。
@@ -88,7 +97,13 @@ export function ratesFor(model: string): { rates: Rates; match: string | null } 
     if (!name.startsWith(entry.match) && !bare.startsWith(entry.match)) continue;
     if (best === null || entry.match.length > best.match.length) best = entry;
   }
-  return best ? { rates: best, match: best.match } : { rates: DEFAULT_RATES, match: null };
+  return best
+    ? {
+        rates: { input: best.input, cached: best.cached, output: best.output },
+        match: best.match,
+        ...(best.off_peak ? { off_peak: best.off_peak } : {}),
+      }
+    : { rates: DEFAULT_RATES, match: null };
 }
 
 /**

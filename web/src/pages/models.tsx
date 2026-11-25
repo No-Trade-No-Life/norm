@@ -118,12 +118,24 @@ export function ModelsPage() {
           return (
             <span
               className="whitespace-nowrap font-mono text-xs tabular-nums"
-              title={t('md.official_hint', {
-                match: official.match,
-                input: perMillion(official.input),
-                cached: perMillion(official.cached),
-                output: perMillion(official.output),
-              })}
+              title={[
+                t('md.official_hint', {
+                  match: official.match,
+                  input: perMillion(official.input),
+                  cached: perMillion(official.cached),
+                  output: perMillion(official.output),
+                }),
+                // 按时段计价的上游（DeepSeek）：单元格里是高峰价，低谷价写在这里。
+                official.off_peak
+                  ? t('md.official_off_peak', {
+                      input: perMillion(official.off_peak.input),
+                      cached: perMillion(official.off_peak.cached),
+                      output: perMillion(official.off_peak.output),
+                    })
+                  : null,
+              ]
+                .filter(Boolean)
+                .join('\n')}
             >
               {perMillion(official.input)} / {perMillion(official.output)}
             </span>

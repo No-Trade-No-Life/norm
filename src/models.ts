@@ -12,7 +12,7 @@
  * 它不扣费：列清单不是一次生成，没有 token，也没有人去改写它。
  */
 import type { Env } from './env';
-import { ratesFor } from './pricing';
+import { ratesFor, type Rates } from './pricing';
 import { adapterFor, type ModelInfo } from './protocols';
 import { unsealProviderKey } from './seal';
 import type { ProviderRow } from './store';
@@ -118,7 +118,7 @@ export type CatalogEntry = { provider_id: string; items: ModelInfo[] };
  */
 export type CatalogModelRow = ModelInfo & {
   providers: string[];
-  official: { match: string; input: number; cached: number; output: number } | null;
+  official: (Rates & { match: string; off_peak?: Rates }) | null;
 };
 
 /**
@@ -141,7 +141,10 @@ export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
         byId.set(item.id, {
           id: item.id,
           providers: [entry.provider_id],
-          official: anchor.match === null ? null : { match: anchor.match, ...anchor.rates },
+          official:
+            anchor.match === null
+              ? null
+              : { match: anchor.match, ...anchor.rates, ...(anchor.off_peak ? { off_peak: anchor.off_peak } : {}) },
           ...(item.created === undefined ? {} : { created: item.created }),
           ...(item.owned_by === undefined ? {} : { owned_by: item.owned_by }),
         });
