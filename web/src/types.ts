@@ -35,7 +35,6 @@ export type Credential = {
   id: string;
   address: string;
   label: string;
-  provider: string;
   base_url: string;
   key_hint: string;
   sealed_key: string;
@@ -116,19 +115,6 @@ export type ChatChunk = {
   error?: { message?: string } | string;
   message?: string;
 };
-
-export const PROVIDERS = [
-  'openai',
-  'deepseek',
-  'anthropic',
-  'google',
-  'xai',
-  'moonshot',
-  'zhipu',
-  'qwen',
-  'self-hosted',
-  'other',
-] as const;
 
 /**
  * 上游说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。

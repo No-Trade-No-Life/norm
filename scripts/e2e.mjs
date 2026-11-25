@@ -183,7 +183,6 @@ async function call(who, method, path, body, extra = {}) {
 async function createCredential(protocol, visibility = 'private') {
   const payload = JSON.stringify({
     label: `${protocol} upstream`,
-    provider: protocol === 'google-gemini' ? 'google' : 'openai',
     base_url: BASE_URL,
     upstream_key: KEY,
     upstream_protocol: protocol,
@@ -269,14 +268,14 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
     ['upstream_visibility', 'maybe', 'visibility_invalid'],
   ]) {
     const payload = JSON.stringify({
-      label: 'bad', provider: 'openai', base_url: BASE_URL, upstream_key: KEY, [field]: value,
+      label: 'bad', base_url: BASE_URL, upstream_key: KEY, [field]: value,
     });
     const result = await call(alice, 'POST', '/api/v1/credentials', payload);
     check(`${field}=${value} → 400 ${code}`, result.status === 400 && result.json.error === code, result.json);
   }
 
   const missing = await call(alice, 'POST', '/api/v1/credentials', JSON.stringify({
-    label: 'no key', provider: 'openai', base_url: BASE_URL,
+    label: 'no key', base_url: BASE_URL,
   }));
   check('缺 upstream_key → 400', missing.status === 400 && missing.json.error === 'upstream_key_missing', missing.json);
 
@@ -340,7 +339,7 @@ console.log('6. 上游失败不扣费，但留一条诚实记录');
   // 封进去的是对的密钥，这里改用一条指向死端口的凭证来制造「网络不可达」，
   // 再确认失败既不扣费也没把上游密钥漏进记录。
   const wrong = await call(alice, 'POST', '/api/v1/credentials', JSON.stringify({
-    label: 'unreachable', provider: 'other', base_url: 'http://127.0.0.1:1/v1', upstream_key: 'sk-wrong-key',
+    label: 'unreachable', base_url: 'http://127.0.0.1:1/v1', upstream_key: 'sk-wrong-key',
   }));
   const result = await call(alice, 'POST', '/v1/chat/completions', payload, {
     'X-Norm-Credential': wrong.json.id,

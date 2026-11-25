@@ -40,8 +40,9 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 ### 4.1 上游密钥的存放
 
 - 添加一个上游提供者时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
-  做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、provider、base_url、
+  做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、base_url、
   `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（上游协议、上游是否公开可用）。
+  没有 provider 一列：谁家的上游由 base_url 说话，品牌名只是 label 里的一段字。
 - 调用模型时 Worker 现解现用，明文只在本次请求的作用域里存在——不写日志、不进 D1、不回响应。
 - 结论：单拿数据库拿不到任何上游密钥；拿到 `NORM_MASTER_KEY` 又拿到库才能解开，所以它是 secret 而不是配置项。
 

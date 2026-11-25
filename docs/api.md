@@ -54,10 +54,8 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 ```jsonc
 // POST /api/v1/credentials  → 201 { id }
 {
-  "label": "OpenAI 个人",
-  "provider": "openai",                       // 只是个标签：openai | deepseek | anthropic | google | xai
-                                              // | moonshot | zhipu | qwen | self-hosted | other
-  "base_url": "https://api.openai.com/v1",    // 任意上游，创建后钉死，转发时不可改写
+  "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
+  "base_url": "https://api.openai.com/v1",    // 任意上游，创建后不可改写
   "upstream_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
   // 可选，默认最保守：openai-chat / private

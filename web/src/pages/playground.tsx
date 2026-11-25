@@ -20,16 +20,6 @@ import type { ChatChunk, Credential } from '../types';
 
 type NormMeta = NonNullable<ChatChunk['norm']>;
 
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  openai: ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini'],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-  anthropic: ['claude-3-5-haiku-latest', 'claude-sonnet-4-20250514'],
-  google: ['gemini-2.0-flash', 'gemini-1.5-pro'],
-  xai: ['grok-2-latest'],
-  moonshot: ['moonshot-v1-8k'],
-  qwen: ['qwen-plus', 'qwen-turbo'],
-};
-
 export function PlaygroundPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -53,10 +43,6 @@ export function PlaygroundPage() {
     () => list.find((item) => item.id === credentialId) ?? list[0],
     [list, credentialId],
   );
-
-  useEffect(() => {
-    if (!model && credential) setModel(MODEL_SUGGESTIONS[credential.provider]?.[0] ?? '');
-  }, [credential, model]);
 
   useEffect(() => {
     if (!outputRef.current) return;
@@ -136,8 +122,6 @@ export function PlaygroundPage() {
     }
   }, [credential, model, prompt, queryClient, stream, t]);
 
-  const suggestions = credential ? (MODEL_SUGGESTIONS[credential.provider] ?? []) : [];
-
   return (
     <div className="flex min-h-full flex-col gap-4">
       <PageHeader
@@ -184,16 +168,6 @@ export function PlaygroundPage() {
               <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder={t('pg.model_placeholder')} spellCheck={false} />
             </div>
           </div>
-
-          {suggestions.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {suggestions.map((name) => (
-                <Button key={name} size="xs" variant={model === name ? 'default' : 'outline'} onClick={() => setModel(name)}>
-                  {name}
-                </Button>
-              ))}
-            </div>
-          ) : null}
 
           <div className="flex flex-col gap-1.5">
             <Label>{t('pg.prompt')}</Label>

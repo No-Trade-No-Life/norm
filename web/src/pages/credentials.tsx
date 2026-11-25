@@ -19,7 +19,7 @@ import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
 import { useCreateCredential, useCredentials, useRevokeCredential, useSetVisibility } from '../queries';
-import { PROVIDERS, PROTOCOLS, VISIBILITIES, type Credential } from '../types';
+import { PROTOCOLS, VISIBILITIES, type Credential } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
 export function CredentialsPage() {
@@ -59,7 +59,6 @@ export function CredentialsPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>{t('cr.col_label')}</TableHead>
-                <TableHead className="hidden xl:table-cell">{t('cr.col_provider')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('cr.col_base_url')}</TableHead>
                 <TableHead className="hidden md:table-cell">{t('cr.col_protocol')}</TableHead>
                 <TableHead className="hidden xl:table-cell">{t('cr.col_visibility')}</TableHead>
@@ -122,9 +121,6 @@ function CredentialRow({
   return (
     <TableRow>
       <TableCell className="font-medium">{item.label}</TableCell>
-      <TableCell className="hidden xl:table-cell">
-        <Badge variant="outline">{item.provider}</Badge>
-      </TableCell>
       <TableCell className="hidden max-w-64 lg:table-cell">
         <span className="block truncate font-mono text-xs text-muted-foreground" title={item.base_url}>
           {item.base_url}
@@ -181,8 +177,7 @@ function NewCredentialDialog({
 
   const [label, setLabel] = useState('');
   const [upstreamKey, setUpstreamKey] = useState('');
-  const [provider, setProvider] = useState<string>('openai');
-  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1');
+  const [baseUrl, setBaseUrl] = useState('');
   const [protocol, setProtocol] = useState<string>('openai-chat');
   const [visibility, setVisibility] = useState<string>('private');
   const [error, setError] = useState<string | null>(null);
@@ -203,7 +198,6 @@ function NewCredentialDialog({
       // 明文密钥这一次经过请求体，服务端立刻用 Worker secret 封装，之后只剩提示。
       await create.mutateAsync({
         label: label.trim(),
-        provider,
         base_url: baseUrl.trim(),
         upstream_key: upstreamKey.trim(),
         upstream_protocol: protocol,
@@ -230,46 +224,35 @@ function NewCredentialDialog({
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('cr.field_label_placeholder')} />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label>{t('cr.field_provider')}</Label>
-              <Select value={provider} onValueChange={(value) => setProvider(String(value))} items={PROVIDERS.map((p) => ({ value: p, label: p }))}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>{t('cr.field_protocol')}</Label>
-              <Select
-                value={protocol}
-                onValueChange={(value) => setProtocol(String(value))}
-                items={PROTOCOLS.map((p) => ({ value: p, label: protocolLabel(p, lang) }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROTOCOLS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {protocolLabel(p, lang)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('cr.field_base_url')}</Label>
+            <Input
+              value={baseUrl}
+              onChange={(event) => setBaseUrl(event.target.value)}
+              placeholder={t('cr.field_base_url_placeholder')}
+              spellCheck={false}
+            />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_base_url_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">
-            <Label>{t('cr.field_base_url')}</Label>
-            <Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} spellCheck={false} />
+            <Label>{t('cr.field_protocol')}</Label>
+            <Select
+              value={protocol}
+              onValueChange={(value) => setProtocol(String(value))}
+              items={PROTOCOLS.map((p) => ({ value: p, label: protocolLabel(p, lang) }))}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROTOCOLS.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {protocolLabel(p, lang)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('cr.field_protocol_hint')}</p>
           </div>
 

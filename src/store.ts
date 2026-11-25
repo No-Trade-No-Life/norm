@@ -22,7 +22,6 @@ export type CredentialRow = {
   id: string;
   address: string;
   label: string;
-  provider: string;
   base_url: string;
   key_hint: string;
   sealed_key: string;
