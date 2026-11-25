@@ -18,7 +18,11 @@ accountRoutes.get('/me', async (c) => {
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
             COALESCE(SUM(gas_fee_nanos), 0) AS gas_fee_nanos,
             COALESCE(SUM(token_nanos), 0) AS token_nanos,
-            COALESCE(SUM(unbilled_nanos), 0) AS unbilled_nanos
+            COALESCE(SUM(unbilled_nanos), 0) AS unbilled_nanos,
+            -- 延迟分两个数：首字只对成功的流式调用有值，平均只在有值的那部分上算。
+            COALESCE(AVG(CASE WHEN first_token_ms IS NOT NULL THEN first_token_ms END), 0) AS avg_first_token_ms,
+            COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
+            COUNT(first_token_ms) AS streamed_requests
      FROM requests WHERE address = ?`,
   )
     .bind(principal.address)
@@ -30,6 +34,9 @@ accountRoutes.get('/me', async (c) => {
       gas_fee_nanos: number;
       token_nanos: number;
       unbilled_nanos: number;
+      avg_first_token_ms: number;
+      avg_latency_ms: number;
+      streamed_requests: number;
     }>();
 
   return c.json({
@@ -50,6 +57,12 @@ accountRoutes.get('/me', async (c) => {
       gas_fee_nanos: totals?.gas_fee_nanos ?? 0,
       token_nanos: totals?.token_nanos ?? 0,
       unbilled_nanos: totals?.unbilled_nanos ?? 0,
+    },
+    // 延迟与缓存率：一个是体感，一个是钱；两者都只在有值的那部分上取平均。
+    latency: {
+      avg_first_token_ms: Math.round(totals?.avg_first_token_ms ?? 0),
+      avg_latency_ms: Math.round(totals?.avg_latency_ms ?? 0),
+      streamed_requests: totals?.streamed_requests ?? 0,
     },
     created_at: principal.created_at,
   });

@@ -74,8 +74,11 @@ export function UsagePage() {
         // 正常情况这里是 0：余额不够时才会出现，而那不是一件好事，所以要能被看见。
         note: null,
       },
+      // 体感：首字是「等多久」，总耗时是「这一笔要多久」。首字只对流式有值。
+      { label: t('us.avg_ttft'), value: latency(me.data?.latency?.avg_first_token_ms), note: t('us.ttft_only_stream') },
+      { label: t('us.avg_total'), value: latency(me.data?.latency?.avg_latency_ms), note: null },
     ],
-    [billed, t],
+    [billed, me.data, t],
   );
 
   return (
@@ -265,10 +268,12 @@ function StatusBadge({ status, statusCode }: { status: string; statusCode: numbe
 
 /** 输入 / 命中 / 输出三个数并排：`11 / 0 / 3` 就是这次调用真正花掉的量。 */
 function TokenTriple({ input, cached, output }: { input: number; cached: number; output: number }) {
+  // 缓存率就写在这三个数下面：它决定同样的活要花多少钱，是这一页最该被盯住的比值。
   return (
     <span className="font-mono text-xs tabular-nums">
       {tokens(input)} <span className="text-muted-foreground">/</span> {tokens(cached)}{' '}
       <span className="text-muted-foreground">/</span> {tokens(output)}
+      <span className="ml-1 text-[11px] text-muted-foreground">{percent(cached, input)}</span>
     </span>
   );
 }
@@ -311,7 +316,11 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
             <TableCell className="hidden sm:table-cell">
               <StatusBadge status={row.status} statusCode={row.status_code} />
             </TableCell>
-            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{latency(row.latency_ms)}</TableCell>
+            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">
+              {/* 首字是体感、总耗时是账单：分开显示，才看得出慢在哪一头。 */}
+              <span className="block">{row.first_token_ms === null ? '—' : latency(row.first_token_ms)}</span>
+              <span className="block text-[11px] text-muted-foreground">{latency(row.latency_ms)}</span>
+            </TableCell>
             <TableCell className="hidden text-right xl:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>

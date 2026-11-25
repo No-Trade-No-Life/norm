@@ -4,6 +4,7 @@ import { gasFeeNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import {
+  carriesText,
   parseInbound,
   readAnswer,
   renderInbound,
@@ -224,6 +225,8 @@ type Accounting = {
   gasFee: number;
   host: string;
   model: string;
+  /** 首字延迟：流式里第一个文本增量到达的时刻；非流式没有这个事件，留空。 */
+  firstTokenMs?: number | null;
 };
 
 /**
@@ -302,6 +305,7 @@ function recordOf(
     status: parts.status,
     statusCode: parts.statusCode,
     latencyMs: Date.now() - accounting.startedAt,
+    firstTokenMs: accounting.firstTokenMs ?? null,
     inputTokens: usage.input,
     cachedTokens: usage.cached,
     outputTokens: usage.output,
@@ -335,6 +339,16 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
   const decoder = new TextDecoder();
   const injectNorm = dialect === 'openai-chat';
   const sniffer = usageSniffer(dialect);
+  /**
+   * 每读到一帧就做两件事：喂用量嗅探器，并把「第一个字」的时刻记下来。
+   * 首字按真正的文本增量算，不按第一帧算——第一帧往往只有一个空的 delta.role。
+   */
+  const noteFrame = (payload: string) => {
+    sniffer.push(payload);
+    if (accounting.firstTokenMs === undefined && carriesText(dialect, payload)) {
+      accounting.firstTokenMs = Date.now() - accounting.startedAt;
+    }
+  };
   const requestId = accounting.requestId;
   let buffer = '';
   let finished = false;
@@ -363,7 +377,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
             if (!line.startsWith('data:')) continue;
             const payload = line.slice(5).trim();
             if (payload.length === 0 || payload === '[DONE]') continue;
-            sniffer.push(payload);
+            noteFrame(payload);
           }
           controller.enqueue(value);
         } else {
@@ -373,7 +387,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
           for (const line of lines) {
             // 上游提供商的 `[DONE]` 由我们自己发：这样 norm 一定排在它前面。
             if (line.trim() === 'data: [DONE]') continue;
-            if (line.startsWith('data:')) sniffer.push(line.slice(5).trim());
+            if (line.startsWith('data:')) noteFrame(line.slice(5).trim());
             controller.enqueue(encoder.encode(`${line}\n`));
           }
         }
@@ -384,7 +398,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 
       if (injectNorm) {
         if (buffer.length > 0 && buffer.trim() !== 'data: [DONE]') {
-          if (buffer.startsWith('data:')) sniffer.push(buffer.slice(5).trim());
+          if (buffer.startsWith('data:')) noteFrame(buffer.slice(5).trim());
           // 我们自己要来记账的那条用量帧：客户端没要就不转发。
           if (wantsUsage || !usageOnlyFrame(buffer.slice(5).trim())) controller.enqueue(encoder.encode(buffer));
         }
@@ -409,7 +423,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
       } else {
         // 上游有时不补换行，最后一段留在 buffer 里——它可能就是那条 response.completed。
         const rest = buffer.startsWith('data:') ? buffer.slice(5).trim() : '';
-        if (rest.length > 0 && rest !== '[DONE]') sniffer.push(rest);
+        if (rest.length > 0 && rest !== '[DONE]') noteFrame(rest);
         await finish();
       }
       controller.close();
@@ -451,6 +465,12 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   const emit = (chunks: string[]) => chunks.map((chunk) => encoder.encode(chunk));
   const toChat = entry === 'openai-chat';
   const sniffer = usageSniffer(protocol);
+  const noteFrame = (payload: string) => {
+    sniffer.push(payload);
+    if (accounting.firstTokenMs === undefined && carriesText(protocol, payload)) {
+      accounting.firstTokenMs = Date.now() - accounting.startedAt;
+    }
+  };
   let buffer = '';
   let done = false;
 
@@ -479,7 +499,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
           if (!line.startsWith('data:')) continue;
           const data = line.slice(5).trim();
           if (data.length === 0 || data === '[DONE]') continue;
-          sniffer.push(data);
+          noteFrame(data);
           for (const chunk of adapter.streamData(data, accounting.model)) {
             // 入口也是 chat 时直接透传 chunk，不含任何二次解读。
             if (toChat) {
