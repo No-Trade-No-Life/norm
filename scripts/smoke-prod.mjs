@@ -40,14 +40,12 @@ const attestation = await (await fetch(`${BASE}/api/v1/attestation`)).json();
 check('线上带上了构建哈希', typeof attestation.source_sha256 === 'string' && attestation.source_sha256.length === 64, attestation.source_sha256);
 
 console.log('1. 开户');
-let granted = 0;
 {
   const response = await fetch(`${BASE}/api/v1/auth/login`, { method: 'POST', headers: sign('POST', '/api/v1/auth/login') });
   const body = await response.json();
   check('login 200', response.status === 200, body);
   check('地址与本地公钥一致', body.address === address, body);
   check('演示授信已到账', body.balance_nanos > 0, body);
-  granted = body.balance_nanos;
 }
 
 console.log('2. 未签名与重放');
@@ -138,6 +136,8 @@ console.log('4. 下游消费者 Token：只记名字、只显一次、能调用�
 
 console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端点）');
 {
+  // 只比「这一次」的差额：前面那条 Bearer 调用（同样被上游 401 拒）也扣了 Gas。
+  const before = (await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json()).balance_nanos;
   const path = '/v1/chat/completions';
   const payload = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
   const response = await fetch(`${BASE}${path}`, {
@@ -151,7 +151,7 @@ console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端�
   });
   check('上游提供商 401 原样返回', response.status === 401, response.status);
   const me = await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json();
-  check('只扣了 300 纳美元 Gas', me.balance_nanos === granted - 300, me);
+  check('这一次只扣 300 纳美元 Gas', me.balance_nanos === before - 300, { before, after: me.balance_nanos });
   check('但留下了失败记录', me.requests === 2, me);
 }
 
