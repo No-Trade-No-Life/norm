@@ -22,12 +22,12 @@ app.route('/api/v1/pricing', pricingRoutes);
 /** 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。 */
 app.post('/api/v1/auth/login', async (c) => {
   const principal = await authenticate(c.req.raw, c.env);
-  const row = await c.env.DB.prepare('SELECT balance_micros, created_at FROM principals WHERE address = ?')
+  const row = await c.env.DB.prepare('SELECT balance_nanos, created_at FROM principals WHERE address = ?')
     .bind(principal.address)
-    .first<{ balance_micros: number; created_at: number }>();
+    .first<{ balance_nanos: number; created_at: number }>();
   return c.json({
     address: principal.address,
-    balance_micros: row?.balance_micros ?? 0,
+    balance_nanos: row?.balance_nanos ?? 0,
     created: (row?.created_at ?? 0) >= nowSeconds() - 5,
   });
 });

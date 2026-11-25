@@ -27,7 +27,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/health` | `{ok, service, version, now}` |
-| GET | `/api/v1/stats` | `{principals, providers, requests, spend_micros, window_hours}` |
+| GET | `/api/v1/stats` | `{principals, providers, requests, spend_nanos, window_hours}` |
 | GET | `/api/v1/base-urls` | 按 base_url 聚合的 provider（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
@@ -45,30 +45,30 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/auth/login` | 签名访问一次即开户。返回 `{address, balance_micros, created}` |
+| POST | `/api/v1/auth/login` | 签名访问一次即开户。返回 `{address, balance_nanos, created}` |
 
 ## 账户（签名）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_micros, granted_micros, spend_micros, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{service_fee_micros,token_micros,unbilled_micros}}` |
+| GET | `/api/v1/account/me` | `{address, label, balance_nanos, granted_nanos, spend_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{service_fee_nanos,token_nanos,unbilled_nanos}}` |
 | GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
 | GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 记账流水，游标是上一页最后一行的 `cursor` |
-| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_micros}` |
+| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_nanos}` |
 | GET | `/api/v1/account/usage/by-provider` | 按 provider 聚合（同上，`provider_id` / `provider_label`） |
 
 请求记录里每一行都能自己重算一遍：
 
 ```
-fee_micros = service_fee_micros + token_micros − unbilled_micros
+fee_nanos = service_fee_nanos + token_nanos − unbilled_nanos
 ```
 
 `input_tokens` **含**缓存命中，`cached_tokens` 是其中命中 provider 缓存的量（按便宜的价算），
-`output_tokens` 单独计价。余额不够时 `unbilled_micros` 大于 0——那是站点承担的部分，如实记账。
+`output_tokens` 单独计价。余额不够时 `unbilled_nanos` 大于 0——那是站点承担的部分，如实记账。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, service_fee}`，单位是**微美元 / 每百万 token** |
+| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, service_fee}`，单位是**纳美元 / 每百万 token** |
 
 ## Provider（签名）
 
@@ -186,7 +186,7 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 ```jsonc
 {
   "...": "OpenAI 响应原样",
-  "norm": { "request_id": "req_…", "fee_micros": 500, "balance_micros": 999500, "latency_ms": 812,
+  "norm": { "request_id": "req_…", "fee_nanos": 500, "balance_nanos": 999500, "latency_ms": 812,
             "host": "api.openai.com" }
 }
 ```

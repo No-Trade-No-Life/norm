@@ -2,7 +2,7 @@
 
 export type LoginResponse = {
   address: string;
-  balance_micros: number;
+  balance_nanos: number;
   created: boolean;
 };
 
@@ -15,17 +15,17 @@ export type TokenTotals = {
 
 /** 钱的构成：一次服务费 + 三项 token 折出来的钱，以及没收上来的部分。 */
 export type MoneyTotals = {
-  service_fee_micros: number;
-  token_micros: number;
-  unbilled_micros: number;
+  service_fee_nanos: number;
+  token_nanos: number;
+  unbilled_nanos: number;
 };
 
 export type Me = {
   address: string;
   label: string;
-  balance_micros: number;
-  granted_micros: number;
-  spend_micros: number;
+  balance_nanos: number;
+  granted_nanos: number;
+  spend_nanos: number;
   requests: number;
   providers: number;
   usage: TokenTotals;
@@ -82,10 +82,10 @@ export type RequestRow = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
-  service_fee_micros: number;
-  token_micros: number;
-  fee_micros: number;
-  unbilled_micros: number;
+  service_fee_nanos: number;
+  token_nanos: number;
+  fee_nanos: number;
+  unbilled_nanos: number;
   created_at: number;
 };
 
@@ -96,8 +96,8 @@ export type LedgerRow = {
   address: string;
   request_id: string | null;
   kind: 'grant' | 'charge';
-  amount_micros: number;
-  balance_after_micros: number;
+  amount_nanos: number;
+  balance_after_nanos: number;
   created_at: number;
 };
 
@@ -132,15 +132,15 @@ export type Attestation = {
 export type CallBill = {
   request_id: string;
   /** 真正从余额里扣掉的数 = service_fee + token − unbilled。 */
-  fee_micros: number;
-  service_fee_micros: number;
-  token_micros: number;
+  fee_nanos: number;
+  service_fee_nanos: number;
+  token_nanos: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
   /** 余额不足时没能收上来的部分；正常为 0。 */
-  unbilled_micros: number;
-  balance_micros: number | null;
+  unbilled_nanos: number;
+  balance_nanos: number | null;
   latency_ms: number;
   host: string;
 };
@@ -154,7 +154,7 @@ export type ConsumerUsage = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
-  fee_micros: number;
+  fee_nanos: number;
 };
 
 /** 按 provider 聚合的用量：钱花在哪个Provider。 */
@@ -165,15 +165,15 @@ export type ProviderUsage = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
-  fee_micros: number;
+  fee_nanos: number;
 };
 
-/** 公开价目表：微美元 / 每百万 token。 */
+/** 公开价目表：纳美元 / 每百万 token。 */
 export type Pricing = {
   unit: string;
   default: { input: number; cached: number; output: number };
   models: Array<{ match: string; input: number; cached: number; output: number }>;
-  service_fee: { micros: number; note: string };
+  service_fee: { nanos: number; note: string };
 };
 
 export type ChatChunk = {

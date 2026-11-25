@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import type { Env } from '../env';
-import { serviceFeeMicros } from '../env';
+import { serviceFeeNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import {
@@ -95,10 +95,10 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
   const startedAt = Date.now();
-  const serviceFee = serviceFeeMicros(c.env);
+  const serviceFee = serviceFeeNanos(c.env);
   const account = await findPrincipal(c.env, address);
-  if (account.balance_micros < serviceFee) {
-    fail(402, 'insufficient_balance', `余额不足：需要 ${serviceFee} 微美元，当前 ${account.balance_micros}`);
+  if (account.balance_nanos < serviceFee) {
+    fail(402, 'insufficient_balance', `余额不足：需要 ${serviceFee} 纳美元，当前 ${account.balance_nanos}`);
   }
 
   // 唯一关于 provider 的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。
@@ -175,21 +175,21 @@ type Accounting = {
 /**
  * 账单结论：总价、构成、三项 token、差多少没收到。
  *
- * `fee_micros` 是真正扣掉的那个数，恒等于 `service_fee_micros + token_micros - unbilled_micros`；
+ * `fee_nanos` 是真正扣掉的那个数，恒等于 `service_fee_nanos + token_nanos - unbilled_nanos`；
  * 三个数一起回，是因为只回一个总数就没人能自己核对了。
  */
-function normMeta(accounting: Accounting, usage: Usage, billed: { billedMicros: number; unbilledMicros: number; balanceMicros: number }): NormMeta {
+function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: number; unbilledNanos: number; balanceNanos: number }): NormMeta {
   const price = quote(accounting.model, usage);
   return {
     request_id: accounting.requestId,
-    fee_micros: billed.billedMicros,
-    service_fee_micros: accounting.serviceFee,
-    token_micros: price.total_micros,
+    fee_nanos: billed.billedNanos,
+    service_fee_nanos: accounting.serviceFee,
+    token_nanos: price.total_nanos,
     input_tokens: usage.input,
     cached_tokens: usage.cached,
     output_tokens: usage.output,
-    unbilled_micros: billed.unbilledMicros,
-    balance_micros: billed.balanceMicros,
+    unbilled_nanos: billed.unbilledNanos,
+    balance_nanos: billed.balanceNanos,
     latency_ms: Date.now() - accounting.startedAt,
     host: accounting.host,
   };
@@ -202,7 +202,7 @@ async function bill(accounting: Accounting, answer: AnswerCore, statusCode: numb
     answer,
     status: 'ok',
     statusCode,
-    tokenMicros: price.total_micros,
+    tokenNanos: price.total_nanos,
   }));
   return normMeta(accounting, answer.usage, settled);
 }
@@ -216,14 +216,14 @@ async function recordFailure(accounting: Accounting, status: string, statusCode:
   await recordRequest(accounting.env, recordOf(accounting, {
     status,
     statusCode,
-    tokenMicros: 0,
+    tokenNanos: 0,
     usage: { input: 0, cached: 0, output: 0 },
   }));
 }
 
 function recordOf(
   accounting: Accounting,
-  parts: { status: string; statusCode: number; tokenMicros: number; answer?: AnswerCore; usage?: Usage },
+  parts: { status: string; statusCode: number; tokenNanos: number; answer?: AnswerCore; usage?: Usage },
 ): RequestRecord {
   // 记客户端要的那个模型名，不记 provider 回的那个：价格跟着它算，两者必须是同一个字符串，
   // 否则一个把自己响应改写成便宜模型的 provider 就顺手给自己定了价。 provider 实际跑的版本
@@ -243,11 +243,11 @@ function recordOf(
     inputTokens: usage.input,
     cachedTokens: usage.cached,
     outputTokens: usage.output,
-    serviceFeeMicros: accounting.serviceFee,
-    tokenMicros: parts.tokenMicros,
+    serviceFeeNanos: accounting.serviceFee,
+    tokenNanos: parts.tokenNanos,
     // 由 settle 覆盖成「真正扣掉的」；失败路径上它保持 0。
-    feeMicros: 0,
-    unbilledMicros: 0,
+    feeNanos: 0,
+    unbilledNanos: 0,
     at: nowSeconds(),
   };
 }
@@ -281,7 +281,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
     const usage = sniffer.usage();
     const answer: AnswerCore = { text: '', model: accounting.model, usage, createdAt: 0 };
     const price = quote(accounting.model, usage);
-    const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenMicros: price.total_micros }));
+    const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenNanos: price.total_nanos }));
     return normMeta(accounting, usage, settled);
   };
 
@@ -365,7 +365,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
       answer: { text: '', model: accounting.model, usage, createdAt: 0 },
       status: 'ok',
       statusCode: 200,
-      tokenMicros: price.total_micros,
+      tokenNanos: price.total_nanos,
     }));
     return normMeta(accounting, usage, settled);
   };
