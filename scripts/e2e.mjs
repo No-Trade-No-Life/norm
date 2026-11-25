@@ -65,6 +65,14 @@ function sse(response, events) {
   response.end();
 }
 
+/** 大体量清单：横跨 D1 单条语句绑定变量上限的那条路径用它（见最后一节）。 */
+const BULK_MODELS = Array.from({ length: 60 }, (_, index) => ({
+  id: `bulk-${String(index).padStart(2, '0')}`,
+  object: 'model',
+  created: 1700000000,
+  owned_by: 'bulk',
+}));
+
 const provider = createServer((request, response) => {
   let body = '';
   request.on('data', (chunk) => (body += chunk));
@@ -182,6 +190,14 @@ const provider = createServer((request, response) => {
     // 5) 四种协议的模型清单：路径与形状各不相同，翻译必须发生在 Norm 这一侧。
     // 顺序要紧：anthropic 的 /v1/models 也以 /models 结尾，先认更长的那个。
     if (request.method === 'GET') {
+      // 一条**大体量**清单：真实的聚合上游动辄几十上百条。夹具里的三五条凑不出
+      // D1 的 100 个绑定变量，所以「写清单按条件撞上限」这类错只在线上出现——
+      // 这条路径就是用来把那个尺寸搬进夹具的。
+      if (url.pathname.includes('/big/') && url.pathname.endsWith('/models')) {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ object: 'list', data: BULK_MODELS }));
+        return;
+      }
       if (url.pathname.endsWith('/v1beta/models')) {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ models: [
@@ -1386,5 +1402,26 @@ console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打')
     '再同步一次，以清单端点为准（划掉不等于改写事实）',
     (again.json.models ?? []).some((item) => item.id === 'flaky-model'),
     (again.json.models ?? []).map((item) => item.id),
+  );
+
+  // 大体量清单：60 条模型要写成 60 行，而 D1 每次查询最多 100 个绑定变量。
+  // 线上就是因为一条 INSERT 塞了 40 行 × 3 个变量，让整个模型页 500。
+  const big = await call(watcher, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'bulk provider',
+    base_url: `http://127.0.0.1:${PROVIDER_PORT}/v1/big`,
+    provider_key: KEY,
+    protocol: 'openai-chat',
+    visibility: 'private',
+  }));
+  check('大体量上游建得起来 201', big.status === 201, big.json);
+
+  const bulk = await call(watcher, 'GET', '/api/v1/models');
+  check('大体量清单也读得出来 200', bulk.status === 200, bulk.json?.error ?? bulk.status);
+  const bulkRow = (bulk.json?.providers ?? []).find((row) => row.id === big.json.id);
+  check('大体量上游报出自己的 60 条', bulkRow?.count === 60, bulkRow);
+  check(
+    '大体量清单整份落进了总表（没被绑定变量上限截断）',
+    (bulk.json?.models ?? []).filter((item) => item.id.startsWith('bulk-')).length === 60,
+    (bulk.json?.models ?? []).filter((item) => item.id.startsWith('bulk-')).length,
   );
 }

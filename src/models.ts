@@ -229,6 +229,14 @@ export async function syncProviderModels({
   provider: ProbeTarget;
 }): Promise<ModelProbe> {
   const probe = await probeProviderModels({ env, address, provider });
-  if (probe.ok) await recordProviderModels(env, provider.id, probe.items.map((item) => item.id), nowSeconds());
+  if (probe.ok) {
+    try {
+      await recordProviderModels(env, provider.id, probe.items.map((item) => item.id), nowSeconds());
+    } catch (error) {
+      // 写不进清单只说明「这次没刷新到」：路由那边会把这条上游当成清单未知继续用，
+      // 读总表这一页也照样能显示它这次探测到的真实清单。一次落库失败不该变成 500。
+      console.warn('provider_models 写入失败', provider.id, (error as Error).message);
+    }
+  }
   return probe;
 }
