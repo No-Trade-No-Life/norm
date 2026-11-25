@@ -156,6 +156,22 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 `GET /api/v1/base-urls` 按 `base_url` 聚合，返回每个 provider 的 `host`、`trusted`、Provider 数、
 公开条数、协议集合、最近添加时间。这是后端关于 provider 的唯一视图——没有官方/第三方，只有地址与计数。
 
+### 6.5 模型清单：一句问话，四条方言各自回答
+
+`GET /v1/models`（以及 `GET /v1/models/{model}`）走转发面，所以签名身份与消费者 Token 都能用：
+「这个上游有哪些模型」只有拿着那把上游密钥的人才知道，而密钥在服务端——客户端不该为了
+问一句话就去碰明文密钥。
+
+出口只有一种方言：OpenAI 的 `/models`（`{object:"list", data:[{id, object:"model"}]}`）。
+四种上游的清单形状互不相干（`data[].id` / `models[].name` / `id` + `created_at` 的 ISO 字符串），
+在 `upstreams.ts` 里被归一成同一个 `ModelInfo`，与请求那条路一样：**规范形式居中，方言只在两侧**。
+选 OpenAI 形状做出口不是偏袒，是因为 `/v1/messages` 与 `:generateContent` 天生没有「列模型」
+这个方法，四家 SDK 里只有这一种形状是公共语言。
+
+它是**唯一**一条打上游却不扣费的路径：列清单不是一次模型调用，没有生成也没有 token。
+所以它不写 `requests`、不动账本，只在响应里挂一个 `fee_micros: 0` 的 `norm`——
+「这次没花钱」也是需要被如实说明的事实。
+
 ## 7. ZDR 与可信发布
 
 - 不留请求体、不留响应体、不留 provider 密钥。唯一的持久化是记账所需的最小字段（模型名、token 数、状态、延迟、费用）。

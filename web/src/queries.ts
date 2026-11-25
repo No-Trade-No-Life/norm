@@ -12,6 +12,7 @@ import type {
   Pricing,
   Provider,
   ProviderUsage,
+  ModelList,
   RequestRow,
 } from './types';
 
@@ -42,6 +43,29 @@ export function useProviders(enabled: boolean) {
     enabled,
     retry: false,
     queryFn: () => requestJson<{ items: Provider[] }>({ path: '/api/v1/providers' }),
+  });
+}
+
+/**
+ * 上游有哪些模型。
+ *
+ * 只有服务端能问：上游密钥在库里是密文，客户端不接触明文。所以这是一次签名请求，
+ * 用 `X-Norm-Provider` 指名问哪条上游——`/v1/models` 本身就是转发面的一部分。
+ *
+ * 它不扣费，所以取回来可以多放一会儿；换上游（key 变）必然重取，
+ * 因为不同上游的清单是两份不同的东西，缓存不能串。
+ */
+export function useModels(enabled: boolean, providerId: string) {
+  return useQuery({
+    queryKey: ['models', providerId],
+    enabled: enabled && providerId.length > 0,
+    retry: false,
+    staleTime: 5 * 60_000,
+    queryFn: () =>
+      requestJson<ModelList>({
+        path: '/v1/models',
+        headers: { 'X-Norm-Provider': providerId },
+      }),
   });
 }
 
