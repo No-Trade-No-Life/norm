@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Identity } from '../auth';
-import { findPrincipal, listProviders } from '../store';
+import { availableNanos, findPrincipal, listProviders } from '../store';
 
 export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Identity } }>;
 
@@ -42,9 +42,12 @@ accountRoutes.get('/me', async (c) => {
   return c.json({
     address: principal.address,
     label: principal.label,
-    balance_nanos: principal.balance_nanos,
-    granted_nanos: principal.granted_nanos,
+    // 余额是算出来的，四块累计数各自只增：充值 + 抵扣券 − 消费 − 提现。
+    balance_nanos: availableNanos(principal),
+    recharge_nanos: principal.recharge_nanos,
+    voucher_nanos: principal.voucher_nanos,
     spend_nanos: principal.spend_nanos,
+    withdraw_nanos: principal.withdraw_nanos,
     requests: totals?.n ?? 0,
     providers: providers.length,
     usage: {
@@ -100,7 +103,7 @@ accountRoutes.get('/ledger', async (c) => {
   const address = c.get('principal').address;
 
   const { results } = await c.env.DB.prepare(
-    `SELECT rowid AS cursor, id, request_id, kind, amount_nanos, balance_after_nanos, created_at
+    `SELECT rowid AS cursor, id, request_id, kind, amount_nanos, available_after_nanos, created_at
      FROM ledger WHERE address = ? ${cursor ? 'AND rowid < ?' : ''}
      ORDER BY rowid DESC LIMIT ?`,
   )

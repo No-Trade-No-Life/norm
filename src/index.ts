@@ -3,6 +3,7 @@ import type { Env } from './env';
 import { HttpError } from './http';
 import { authenticate, authenticateConsumer, type Identity, type Principal } from './auth';
 import { nowSeconds } from './ids';
+import { availableNanos } from './store';
 import { publicRoutes } from './routes/public';
 import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
@@ -24,12 +25,20 @@ app.route('/api/v1/pricing', pricingRoutes);
 /** 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。 */
 app.post('/api/v1/auth/login', async (c) => {
   const principal = await authenticate(c.req.raw, c.env);
-  const row = await c.env.DB.prepare('SELECT balance_nanos, created_at FROM principals WHERE address = ?')
+  // 余额不落库：它就是四块累计数的一个算式，接口现算。
+  const row = await c.env.DB.prepare(
+    'SELECT recharge_nanos, voucher_nanos, spend_nanos, withdraw_nanos, created_at FROM principals WHERE address = ?',
+  )
     .bind(principal.address)
-    .first<{ balance_nanos: number; created_at: number }>();
+    .first<{ recharge_nanos: number; voucher_nanos: number; spend_nanos: number; withdraw_nanos: number; created_at: number }>();
   return c.json({
     address: principal.address,
-    balance_nanos: row?.balance_nanos ?? 0,
+    balance_nanos: row ? availableNanos(row) : 0,
+    // 四块累计数一起回：开户给的是一张券，不是充值，这一点不该等翻流水才知道。
+    recharge_nanos: row?.recharge_nanos ?? 0,
+    voucher_nanos: row?.voucher_nanos ?? 0,
+    spend_nanos: row?.spend_nanos ?? 0,
+    withdraw_nanos: row?.withdraw_nanos ?? 0,
     created: (row?.created_at ?? 0) >= nowSeconds() - 5,
   });
 });

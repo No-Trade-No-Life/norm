@@ -18,7 +18,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
-import { findPrincipal, resolveProvider, settle, type RequestRecord, type Settled } from '../store';
+import { availableNanos, findPrincipal, resolveProvider, settle, type RequestRecord, type Settled } from '../store';
 import { affinityKeyOf } from '../routing';
 import { sessionIdFor } from '../sessions';
 import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
@@ -161,8 +161,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // Gas 是「执行一次」的价：付不起就不打上游，也就没有这次执行，不记账。
   const gasFee = gasFeeNanos(c.env);
   const account = await findPrincipal(c.env, address);
-  if (account.balance_nanos < gasFee) {
-    fail(402, 'insufficient_balance', `余额不足：需要 ${gasFee} 纳美元，当前 ${account.balance_nanos}`);
+  if (availableNanos(account) < gasFee) {
+    fail(402, 'insufficient_balance', `余额不足：需要 ${gasFee} 纳美元，当前 ${availableNanos(account)}`);
   }
 
   // 唯一关于上游提供商的事实：它落在哪台主机上。是否"可信"由清单决定，记账不需要知道。

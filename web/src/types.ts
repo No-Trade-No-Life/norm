@@ -23,9 +23,12 @@ export type MoneyTotals = {
 export type Me = {
   address: string;
   label: string;
+  /** 算出来的可用余额 = 充值 + 抵扣券 − 消费 − 提现。 */
   balance_nanos: number;
-  granted_nanos: number;
+  recharge_nanos: number;
+  voucher_nanos: number;
   spend_nanos: number;
+  withdraw_nanos: number;
   requests: number;
   providers: number;
   usage: TokenTotals;
@@ -112,9 +115,10 @@ export type LedgerRow = {
   id: string;
   address: string;
   request_id: string | null;
-  kind: 'grant' | 'charge';
+  /** 四种只增的变动：券、充值、提现、消费。 */
+  kind: 'voucher' | 'recharge' | 'withdraw' | 'charge';
   amount_nanos: number;
-  balance_after_nanos: number;
+  available_after_nanos: number;
   created_at: number;
 };
 
