@@ -9,7 +9,6 @@ import { IdentityProvider } from './identity-context';
 import { SidebarProvider } from './sidebar';
 import { ThemeProvider } from './theme';
 import { TooltipProvider } from './components/ui/tooltip';
-import { LOGO_DATA_URL } from './components/logo';
 import './style.css';
 
 const queryClient = new QueryClient({
@@ -17,10 +16,6 @@ const queryClient = new QueryClient({
     queries: { refetchOnWindowFocus: false, retry: 1 },
   },
 });
-
-// Logo 与 favicon 同源：图形只写一份，页面上的和标签页上的一致。
-const favicon = document.getElementById('app-favicon');
-if (favicon instanceof HTMLLinkElement) favicon.href = LOGO_DATA_URL;
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
