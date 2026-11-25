@@ -25,16 +25,14 @@ import {
   useRevokeProvider,
   useSetEnabled,
   useSetScope,
-  useSetVisibility,
   useUpdateProvider,
 } from '../queries';
 import type { Provider } from '../types';
-import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
+import { protocolLabel } from '../lib/labels';
 
 export function ProvidersPage() {
   const { t, lang } = useI18n();
   const providers = useProviders(true);
-  const setVisibility = useSetVisibility();
   const setEnabled = useSetEnabled();
   const setScope = useSetScope();
   const revoke = useRevokeProvider();
@@ -43,6 +41,8 @@ export function ProvidersPage() {
   const [confirmId, setConfirmId] = useState<string | null>(null);
 
   const items = providers.data?.items ?? [];
+  // 「公开」只有一个开关：进公共池。能不能拨它由站点地址清单决定，前端只负责置灰。
+  const canOwnPool = providers.data?.can_own_pool === true;
 
   return (
     <div className="flex flex-col gap-4">
@@ -73,11 +73,9 @@ export function ProvidersPage() {
                 <TableHead>{t('pr.col_label')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('pr.col_base_url')}</TableHead>
                 <TableHead className="hidden md:table-cell">{t('pr.col_protocol')}</TableHead>
-                <TableHead className="hidden xl:table-cell">{t('pr.col_visibility')}</TableHead>
-                <TableHead>{t('pr.col_trust')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('pr.col_hint')}</TableHead>
                 <TableHead>{t('pr.col_enabled')}</TableHead>
-                <TableHead>{t('pr.col_public')}</TableHead>
+                <TableHead>{t('pr.col_pool')}</TableHead>
                 <TableHead className="text-right">{t('pr.col_actions')}</TableHead>
               </TableRow>
             </TableHeader>
@@ -87,11 +85,11 @@ export function ProvidersPage() {
                   key={item.id}
                   item={item}
                   confirming={confirmId === item.id}
+                  canOwnPool={canOwnPool}
                   onConfirm={(value) => setConfirmId(value ? item.id : null)}
                   onEdit={() => setEditing(item)}
                   onToggleEnabled={(value) => setEnabled.mutate({ id: item.id, enabled: value })}
-                  onTogglePublic={(value) => setVisibility.mutate({ id: item.id, publicListed: value })}
-                  onToggleScope={() => setScope.mutate({ id: item.id, scope: item.scope === 'pool' ? 'private' : 'pool' })}
+                  onTogglePool={(value) => setScope.mutate({ id: item.id, scope: value ? 'pool' : 'private' })}
                   onRevoke={() => {
                     revoke.mutate(item.id, { onSettled: () => setConfirmId(null) });
                   }}
@@ -104,7 +102,6 @@ export function ProvidersPage() {
       </Section>
 
       {setEnabled.isError ? <ErrorNote title={t('common.error')} message={(setEnabled.error as Error).message} /> : null}
-      {setVisibility.isError ? <ErrorNote title={t('common.error')} message={(setVisibility.error as Error).message} /> : null}
       {setScope.isError ? <ErrorNote title={t('common.error')} message={(setScope.error as Error).message} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
@@ -126,37 +123,31 @@ function ProviderRow({
   item,
   lang,
   confirming,
+  canOwnPool,
   onConfirm,
   onEdit,
   onToggleEnabled,
-  onTogglePublic,
-  onToggleScope,
+  onTogglePool,
   onRevoke,
 }: {
   item: Provider;
   lang: 'zh' | 'en';
   confirming: boolean;
+  canOwnPool: boolean;
   onConfirm: (value: boolean) => void;
   onEdit: () => void;
   onToggleEnabled: (value: boolean) => void;
-  onTogglePublic: (value: boolean) => void;
-  onToggleScope: () => void;
+  onTogglePool: (value: boolean) => void;
   onRevoke: () => void;
 }) {
   const { t } = useI18n();
-  const off = item.enabled === 0;
 
   return (
-    <TableRow className={off ? 'opacity-60' : undefined}>
+    <TableRow>
       <TableCell className="font-medium">
         <span className="flex flex-wrap items-center gap-1.5">
           {item.label}
           {/* 池子里那条不是这个账户的资源：标出来，并且不给任何开关。 */}
-          {item.scope === 'pool' ? (
-            <Badge variant="secondary" className="font-normal">
-              {t('pr.scope_pool')}
-            </Badge>
-          ) : null}
           {item.mine ? null : (
             <Badge variant="outline" className="font-normal">
               {t('pr.scope_readonly')}
@@ -173,13 +164,6 @@ function ProviderRow({
         <Badge variant="outline" className="font-normal">
           {protocolLabel(item.protocol, lang)}
         </Badge>
-      </TableCell>
-      <TableCell className="hidden xl:table-cell">
-        <span className="text-xs">{visibilityLabel(item.visibility, lang)}</span>
-      </TableCell>
-      <TableCell>
-        {/* 落点只看主机名是否在信任清单里：清单是配置，不是判词。 */}
-        <Badge variant={item.trusted ? 'secondary' : 'outline'}>{trustLabel(item.trusted, lang)}</Badge>
       </TableCell>
       <TableCell className="hidden lg:table-cell">
         <code className="text-xs">{item.key_hint}</code>
@@ -198,15 +182,17 @@ function ProviderRow({
         </div>
       </TableCell>
       <TableCell>
+        {/* 「公开」只有一个意思：进公共池。能拨它的只有站点地址，别人看到的是置灰的现状。 */}
         <div className="flex items-center gap-2">
           <Switch
-            checked={item.public_listed === 1}
-            onCheckedChange={onTogglePublic}
-            disabled={!item.mine}
-            aria-label={t('pr.col_public')}
+            checked={item.scope === 'pool'}
+            onCheckedChange={onTogglePool}
+            disabled={!item.mine || !canOwnPool}
+            aria-label={t('pr.col_pool')}
+            title={item.mine && !canOwnPool ? t('pr.pool_admin_only') : undefined}
           />
           <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground xl:inline">
-            {item.public_listed === 1 ? t('pr.public_on') : t('pr.public_off')}
+            {item.scope === 'pool' ? t('pr.pool_on') : t('pr.pool_off')}
           </span>
         </div>
       </TableCell>
@@ -215,10 +201,6 @@ function ProviderRow({
           <div className="flex items-center justify-end gap-1">
             <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onEdit}>
               {t('action.edit')}
-            </Button>
-            {/* 只有站点地址能真的拨动这个开关，其余账户会拿到 403 —— 那是服务端的答案，不在这里假装。 */}
-            <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onToggleScope}>
-              {item.scope === 'pool' ? t('pr.from_pool') : t('pr.to_pool')}
             </Button>
             <Button
               variant={confirming ? 'destructive' : 'ghost'}
@@ -261,7 +243,6 @@ function NewProviderDialog({
   const [providerKey, setProviderKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [label, setLabel] = useState('');
-  const [visibility, setVisibility] = useState<string>('private');
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -290,7 +271,6 @@ function NewProviderDialog({
         label: label.trim(),
         provider_key: providerKey.trim(),
         protocol,
-        visibility,
         enabled,
         ...(asksBaseUrl ? { base_url: baseUrl.trim() } : {}),
       });
@@ -382,23 +362,6 @@ function NewProviderDialog({
 
           <div className="flex items-center justify-between gap-3">
             <div className="flex flex-col gap-1">
-              <Label>{t('pr.field_visibility')}</Label>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={visibility === 'public'}
-                onCheckedChange={(value) => setVisibility(value ? 'public' : 'private')}
-                aria-label={t('pr.field_visibility')}
-              />
-              <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground sm:inline">
-                {visibility === 'public' ? t('pr.public_on') : t('pr.public_off')}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex flex-col gap-1">
               <Label>{t('pr.field_enabled')}</Label>
               <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_enabled_hint')}</p>
             </div>
@@ -435,7 +398,6 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
   const [label, setLabel] = useState(provider.label);
   const [protocol, setProtocol] = useState<string>(provider.protocol);
   const [baseUrl, setBaseUrl] = useState(provider.base_url);
-  const [visibility, setVisibility] = useState<string>(provider.visibility);
   const [enabled, setEnabled] = useState(provider.enabled === 1);
   const [providerKey, setProviderKey] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -464,7 +426,6 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
       const body: Record<string, unknown> = {
         label: label.trim(),
         protocol,
-        visibility,
         enabled,
       };
       if (asksBaseUrl) body.base_url = baseUrl.trim();
@@ -563,23 +524,6 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
           <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_label')}</Label>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex flex-col gap-1">
-              <Label>{t('pr.field_visibility')}</Label>
-              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={visibility === 'public'}
-                onCheckedChange={(value) => setVisibility(value ? 'public' : 'private')}
-                aria-label={t('pr.field_visibility')}
-              />
-              <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground sm:inline">
-                {visibility === 'public' ? t('pr.public_on') : t('pr.public_off')}
-              </span>
-            </div>
           </div>
 
           <div className="flex items-center justify-between gap-3">

@@ -41,13 +41,6 @@ export function isProtocol(value: string): value is Protocol {
   return (PROTOCOLS as string[]).includes(value);
 }
 
-/** 上游提供商是否对公众可用，由用户声明。私有不代表掺水，只代表不对外。 */
-export type Visibility = 'public' | 'private';
-
-export function isVisibility(value: string): value is Visibility {
-  return value === 'public' || value === 'private';
-}
-
 /**
  * 规范形式里的一次工具调用。
  *
