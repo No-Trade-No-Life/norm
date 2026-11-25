@@ -215,8 +215,26 @@ export type ProviderChoice = {
 /** 这一次要问的两件事：谁的清单抓过、谁有这个名字。 */
 export type ModelCoverage = { known: Set<string>; serving: Set<string> };
 
-/** D1 的绑定参数有上限，问清单与写清单都按这个宽度分批。 */
-const MODEL_CHUNK = 40;
+/**
+ * D1 每次查询最多 100 个绑定变量（`too many SQL variables`）。
+ *
+ * 写清单的 INSERT 每行 3 个变量，所以一条语句最多 33 行——取 30 留余量。
+ * 这个数不是性能参数，是**正确性**参数：越过去就是整条写入失败，而它在
+ * 「清单有多少条」这个维度上才暴露，夹具只有三五个模型时永远看不见。
+ */
+export const MODEL_ROWS_PER_STATEMENT = 30;
+
+/** 问清单时的 IN (...) 宽度：一个模型名 + N 个上游 id，同样要留在 100 以内。 */
+const MODEL_QUERY_CHUNK = 40;
+
+/** 把一串模型名切成每次 INSERT 能装下的若干批。纯函数，方便钉住上面那条上限。 */
+export function modelInsertChunks(names: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let start = 0; start < names.length; start += MODEL_ROWS_PER_STATEMENT) {
+    chunks.push(names.slice(start, start + MODEL_ROWS_PER_STATEMENT));
+  }
+  return chunks;
+}
 
 /**
  * 「这个型号谁能跑」：一次左连接同时回答两件事。
@@ -233,8 +251,8 @@ export async function modelCoverage(
   const serving = new Set<string>();
   if (providerIds.length === 0 || model.length === 0) return { known, serving };
 
-  for (let start = 0; start < providerIds.length; start += MODEL_CHUNK) {
-    const chunk = providerIds.slice(start, start + MODEL_CHUNK);
+  for (let start = 0; start < providerIds.length; start += MODEL_QUERY_CHUNK) {
+    const chunk = providerIds.slice(start, start + MODEL_QUERY_CHUNK);
     const { results } = await env.DB.prepare(
       `SELECT p.id AS id, p.models_fetched_at AS fetched_at, m.model AS model
          FROM providers p
@@ -270,8 +288,7 @@ export async function recordProviderModels(
   if (names.length === 0) return;
 
   const statements = [env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ?').bind(providerId)];
-  for (let start = 0; start < names.length; start += MODEL_CHUNK) {
-    const chunk = names.slice(start, start + MODEL_CHUNK);
+  for (const chunk of modelInsertChunks(names)) {
     statements.push(
       env.DB.prepare(
         `INSERT INTO provider_models (provider_id, model, fetched_at)

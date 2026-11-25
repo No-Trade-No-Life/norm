@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { isModelNotServed, mergeCatalog } from '../src/models';
+import { MODEL_ROWS_PER_STATEMENT, modelInsertChunks } from '../src/store';
 
 /**
  * 合并规则是这张表的全部逻辑：同名就是同一条、谁有它记成一列、官方价按提供它的
@@ -128,5 +129,37 @@ describe('isModelNotServed', () => {
 
   it('没有模型名就没什么可判的', () => {
     expect(isModelNotServed(400, 'model required', '')).toBe(false);
+  });
+});
+
+/**
+ * 写清单的分批：D1 每次查询最多 100 个绑定变量，越过去就是整条写入失败。
+ *
+ * 这一条是被线上咬出来的——夹具只有 4 个模型，凑不出 100 个变量；线上清单几十条，
+ * 一写就 500。所以这里按真实体量钉住上限，而不是按夹具的体量钉。
+ */
+describe('modelInsertChunks', () => {
+  it('每批的绑定变量都留在 100 个以内（每行 3 个）', () => {
+    const names = Array.from({ length: 201 }, (_, index) => `model-${index}`);
+    const chunks = modelInsertChunks(names);
+    expect(chunks.flat()).toEqual(names);
+    for (const chunk of chunks) expect(chunk.length * 3).toBeLessThanOrEqual(100);
+  });
+
+  it('一批装得下就不切', () => {
+    expect(modelInsertChunks(['a', 'b', 'c'])).toEqual([['a', 'b', 'c']]);
+  });
+
+  it('空清单给不出批次', () => {
+    expect(modelInsertChunks([])).toEqual([]);
+  });
+
+  it('每批正好是声明的行数上限', () => {
+    const names = Array.from({ length: MODEL_ROWS_PER_STATEMENT * 2 + 1 }, (_, index) => `m${index}`);
+    expect(modelInsertChunks(names).map((chunk) => chunk.length)).toEqual([
+      MODEL_ROWS_PER_STATEMENT,
+      MODEL_ROWS_PER_STATEMENT,
+      1,
+    ]);
   });
 });
