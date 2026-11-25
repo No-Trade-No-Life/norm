@@ -90,7 +90,9 @@ jobs:
       - name: Verify the deployment matches the build
         run: |
           set -euo pipefail
-          live=$(curl -sS --max-time 20 https://norm.ntnl.io/api/v1/attestation | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).source_sha256))')
+          # 加一个时间戳：刚部署完的那几十秒里，边缘可能还缓存着上一版的证明，
+          # 拿它跟本次构建比会得到一次假红（部署其实是成功的）。
+          live=$(curl -sS --max-time 20 -H 'Cache-Control: no-cache' "https://norm.ntnl.io/api/v1/attestation?t=$(date +%s)" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).source_sha256))')
           built='${{ steps.attest.outputs.source_sha256 }}'
           test "$live" = "$built" || { echo "::error::线上 source_sha256($live) 与本次构建($built) 不一致"; exit 1; }
           echo "可信发布核对通过：$live"
