@@ -63,6 +63,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
   const provider = await findProvider(c.env, address, providerId);
   if (!provider) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
+  if (provider.enabled === 0) fail(409, 'provider_disabled', '这条上游提供商已禁用：到「上游提供商」页启用它，或改用另一条');
 
   // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
   // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。

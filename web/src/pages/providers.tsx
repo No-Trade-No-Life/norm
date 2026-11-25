@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useCreateProvider, useProviders, useRevokeProvider, useSetVisibility } from '../queries';
+import { useCreateProvider, useProviders, useRevokeProvider, useSetEnabled, useSetVisibility } from '../queries';
 import { PROTOCOLS, VISIBILITIES, type Provider } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
@@ -26,6 +26,7 @@ export function ProvidersPage() {
   const { t, lang } = useI18n();
   const providers = useProviders(true);
   const setVisibility = useSetVisibility();
+  const setEnabled = useSetEnabled();
   const revoke = useRevokeProvider();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export function ProvidersPage() {
                 <TableHead className="hidden xl:table-cell">{t('pr.col_visibility')}</TableHead>
                 <TableHead>{t('pr.col_trust')}</TableHead>
                 <TableHead className="hidden lg:table-cell">{t('pr.col_hint')}</TableHead>
+                <TableHead>{t('pr.col_enabled')}</TableHead>
                 <TableHead>{t('pr.col_public')}</TableHead>
                 <TableHead className="text-right">{t('pr.col_actions')}</TableHead>
               </TableRow>
@@ -75,6 +77,7 @@ export function ProvidersPage() {
                   item={item}
                   confirming={confirmId === item.id}
                   onConfirm={(value) => setConfirmId(value ? item.id : null)}
+                  onToggleEnabled={(value) => setEnabled.mutate({ id: item.id, enabled: value })}
                   onTogglePublic={(value) => setVisibility.mutate({ id: item.id, publicListed: value })}
                   onRevoke={() => {
                     revoke.mutate(item.id, { onSettled: () => setConfirmId(null) });
@@ -87,6 +90,7 @@ export function ProvidersPage() {
         )}
       </Section>
 
+      {setEnabled.isError ? <ErrorNote title={t('common.error')} message={(setEnabled.error as Error).message} /> : null}
       {setVisibility.isError ? <ErrorNote title={t('common.error')} message={(setVisibility.error as Error).message} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
@@ -106,6 +110,7 @@ function ProviderRow({
   lang,
   confirming,
   onConfirm,
+  onToggleEnabled,
   onTogglePublic,
   onRevoke,
 }: {
@@ -113,13 +118,15 @@ function ProviderRow({
   lang: 'zh' | 'en';
   confirming: boolean;
   onConfirm: (value: boolean) => void;
+  onToggleEnabled: (value: boolean) => void;
   onTogglePublic: (value: boolean) => void;
   onRevoke: () => void;
 }) {
   const { t } = useI18n();
+  const off = item.enabled === 0;
 
   return (
-    <TableRow>
+    <TableRow className={off ? 'opacity-60' : undefined}>
       <TableCell className="font-medium">{item.label}</TableCell>
       <TableCell className="hidden max-w-64 lg:table-cell">
         <span className="block truncate font-mono text-xs text-muted-foreground" title={item.base_url}>
@@ -140,6 +147,14 @@ function ProviderRow({
       </TableCell>
       <TableCell className="hidden lg:table-cell">
         <code className="text-xs">{item.key_hint}</code>
+      </TableCell>
+      <TableCell>
+        <div className="flex items-center gap-2">
+          <Switch checked={item.enabled === 1} onCheckedChange={onToggleEnabled} aria-label={t('pr.col_enabled')} />
+          <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground xl:inline">
+            {item.enabled === 1 ? t('pr.enabled_on') : t('pr.enabled_off')}
+          </span>
+        </div>
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
@@ -180,11 +195,13 @@ function NewProviderDialog({
   const [baseUrl, setBaseUrl] = useState('');
   const [protocol, setProtocol] = useState<string>('openai-chat');
   const [visibility, setVisibility] = useState<string>('private');
+  const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
     setLabel('');
     setProviderKey('');
+    setEnabled(true);
     setError(null);
   };
 
@@ -202,6 +219,7 @@ function NewProviderDialog({
         provider_key: providerKey.trim(),
         protocol: protocol,
         visibility: visibility,
+        enabled,
       });
       reset();
       onCreated();
@@ -275,6 +293,14 @@ function NewProviderDialog({
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_visibility_hint')}</p>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <Label>{t('pr.field_enabled')}</Label>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_enabled_hint')}</p>
+            </div>
+            <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={t('pr.field_enabled')} />
           </div>
 
           <div className="flex flex-col gap-1.5">

@@ -13,7 +13,7 @@ publicRoutes.get('/stats', async (c) => {
   const row = await c.env.DB.prepare(
     `SELECT
        (SELECT COUNT(*) FROM principals) AS principals,
-       (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL) AS providers,
+       (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL AND enabled = 1) AS providers,
        (SELECT COUNT(*) FROM requests) AS requests,
        (SELECT COALESCE(SUM(fee_nanos), 0) FROM requests) AS spend_nanos`,
   ).first<{ principals: number; providers: number; requests: number; spend_nanos: number }>();

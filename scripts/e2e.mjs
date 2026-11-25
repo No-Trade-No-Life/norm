@@ -3,6 +3,7 @@
  *
  * 覆盖：开户、签名验签、nonce 重放、body 篡改、上游提供商密钥的封装与解封、协议不匹配、
  * 四种上游提供商协议（含流式）的请求翻译与响应翻译、扣费与账本一致、base_url 聚合、
+ * 上游提供商的启用/禁用（不参与选址、不能被指名、公开看板不计入）、
  * 下游消费者密钥（只显一次、可轮换、旧钥立刻失效）。
  *
  * 用法：node scripts/e2e.mjs [http://127.0.0.1:8787]
@@ -307,6 +308,7 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
   for (const [field, value, code] of [
     ['protocol', 'anthropic', 'protocol_invalid'],
     ['visibility', 'maybe', 'visibility_invalid'],
+    ['enabled', 'yes', 'enabled_invalid'],
   ]) {
     const payload = JSON.stringify({
       label: 'bad', base_url: BASE_URL, provider_key: KEY, [field]: value,
@@ -328,6 +330,8 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
   check('只暴露 key_hint（前 4 后 4）', entry?.key_hint === 'sk-t…-key', entry?.key_hint);
   check('密文是 AES-256-GCM 封装', entry?.kdf === 'aes-256-gcm+worker-secret', entry?.kdf);
   check('默认协议可读', entry?.protocol === 'openai-chat', entry?.protocol);
+  // 新加的一条就是拿来用的：默认启用，禁用是用户主动做的减法。
+  check('默认启用', entry?.enabled === 1, entry?.enabled);
 }
 
 console.log('4. 四种上游提供商协议：请求翻译 + 响应翻译回 OpenAI Chat');
@@ -592,6 +596,64 @@ console.log('10b. 只有一个上游提供商账户：一个 Bearer 就是完整
     model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
   }), { Authorization: `Bearer ${carolKey}`, 'X-Norm-Provider': 'cred_does_not_exist' });
   check('指名一条不存在的上游提供商 → 404', unknown.status === 404 && unknown.json.error === 'provider_not_found', unknown.json);
+}
+
+console.log('10c. 上游提供商启用/禁用：不参与选址、不能被指名、公开看板不计入');
+{
+  const dave = identity();
+  await call(dave, 'POST', '/api/v1/auth/login');
+  // 独立的 base_url：第 9 节按 base_url 全库聚合，混进 alice 的组会污染计数。
+  const OFF_BASE_URL = `${BASE_URL}-off`;
+  const create = (extra = {}) =>
+    call(dave, 'POST', '/api/v1/providers', JSON.stringify({
+      label: 'dave provider',
+      base_url: OFF_BASE_URL,
+      provider_key: KEY,
+      protocol: 'openai-chat',
+      ...extra,
+    }));
+
+  const on = await create();
+  const off = await create({ enabled: false });
+  check('创建时 enabled=false 仍 201', off.status === 201, off.json);
+  const bad = await create({ enabled: 'yes' });
+  check('enabled=yes → 400 enabled_invalid', bad.status === 400 && bad.json.error === 'enabled_invalid', bad.json);
+
+  const list = (await call(dave, 'GET', '/api/v1/providers')).json.items;
+  const onRow = list.find((item) => item.id === on.json.id);
+  const offRow = list.find((item) => item.id === off.json.id);
+  check('默认 enabled=1', onRow?.enabled === 1, onRow);
+  check('显式禁用存成 0', offRow?.enabled === 0, offRow);
+
+  const payload = JSON.stringify({ model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }] });
+  // 两条里只有一条启用：自动选址必须落在启用的那条上。
+  const auto = await call(dave, 'POST', '/v1/chat/completions', payload);
+  check('禁用的不参与自动选址', auto.status === 200 && auto.json?.norm?.host === `127.0.0.1:${PROVIDER_PORT}`, auto.json);
+
+  const namedOff = await call(dave, 'POST', '/v1/chat/completions', payload, { 'X-Norm-Provider': off.json.id });
+  check('指名禁用的上游提供商 → 409 provider_disabled', namedOff.status === 409 && namedOff.json.error === 'provider_disabled', namedOff.json);
+
+  // 模型清单与转发是同一套判定，否则「禁用了却还能读清单」就自相矛盾。
+  const modelsOff = await call(dave, 'GET', '/v1/models', undefined, { 'X-Norm-Provider': off.json.id });
+  check('禁用的上游提供商也列不了模型 → 409', modelsOff.status === 409 && modelsOff.json.error === 'provider_disabled', modelsOff.json);
+
+  // 公开看板只数启用的：同一个 base_url 下有 2 条，在服务的只有 1 条。
+  const group = (await (await fetch(`${BASE}/api/v1/base-urls`)).json()).items
+    .find((item) => item.base_url === OFF_BASE_URL);
+  check('公开看板只数启用的上游提供商', group?.providers === 1, group);
+
+  const offToggle = await call(dave, 'POST', `/api/v1/providers/${on.json.id}/enabled`, JSON.stringify({ enabled: false }));
+  check('开关返回 enabled=0', offToggle.status === 200 && offToggle.json.enabled === 0, offToggle.json);
+  const none = await call(dave, 'POST', '/v1/chat/completions', payload);
+  check('全部禁用 → 409 provider_disabled', none.status === 409 && none.json.error === 'provider_disabled', none.json);
+
+  const onToggle = await call(dave, 'POST', `/api/v1/providers/${on.json.id}/enabled`, JSON.stringify({ enabled: true }));
+  check('拨回来返回 enabled=1', onToggle.status === 200 && onToggle.json.enabled === 1, onToggle.json);
+  const back = await call(dave, 'POST', '/v1/chat/completions', payload);
+  check('重新启用后自动选址恢复 200', back.status === 200, back.json);
+
+  const missing = await call(dave, 'POST', `/api/v1/providers/${on.json.id}/enabled`, JSON.stringify({}));
+  check('开关缺 enabled → 400 enabled_invalid', missing.status === 400 && missing.json.error === 'enabled_invalid', missing.json);
 }
 
 console.log('11. 公开接口不需要签名');

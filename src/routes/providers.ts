@@ -15,6 +15,8 @@ type Body = {
   provider_key?: string;
   protocol?: string;
   visibility?: string;
+  /** 可选，默认启用。禁用后不参与选址，也不能被指名。 */
+  enabled?: boolean;
 };
 
 /** 库里密文的封装方式。改这个常量意味着要迁移全部旧密文。 */
@@ -30,10 +32,12 @@ providerRoutes.post('/', async (c) => {
   // 两个都可选，但默认值必须是"最保守"的那个：协议默认 chat，公开性默认私有。
   const protocol = body.protocol ?? 'openai-chat';
   const visibility = body.visibility ?? 'private';
+  const enabled = body.enabled ?? true;
 
   if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 openai-chat / openai-responses`);
   if (!isVisibility(visibility)) fail(400, 'visibility_invalid', `visibility 只能是 public / private`);
+  if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
   if (!body.base_url || !hostOf(body.base_url)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
   if (!body.provider_key?.trim()) fail(400, 'provider_key_missing', '缺少 provider_key');
 
@@ -53,8 +57,8 @@ providerRoutes.post('/', async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO providers
        (id, address, label, base_url, key_hint, sealed_key, kdf,
-        protocol, visibility, public_listed, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+        protocol, visibility, enabled, public_listed, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
   )
     .bind(
       id,
@@ -66,6 +70,7 @@ providerRoutes.post('/', async (c) => {
       KDF,
       protocol,
       visibility,
+      enabled ? 1 : 0,
       now,
     )
     .run();
@@ -82,6 +87,18 @@ providerRoutes.post('/:id/visibility', async (c) => {
     .bind(public_listed ? 1 : 0, existing.id, address)
     .run();
   return c.json({ id: existing.id, public_listed: public_listed ? 1 : 0 });
+});
+
+providerRoutes.post('/:id/enabled', async (c) => {
+  const { enabled } = await c.req.json<{ enabled?: boolean }>();
+  if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
+  const address = c.get('principal').address;
+  const existing = await findProvider(c.env, address, c.req.param('id'));
+  if (!existing) fail(404, 'provider_not_found', 'provider 不存在或已撤销');
+  await c.env.DB.prepare('UPDATE providers SET enabled = ? WHERE id = ? AND address = ?')
+    .bind(enabled ? 1 : 0, existing.id, address)
+    .run();
+  return c.json({ id: existing.id, enabled: enabled ? 1 : 0 });
 });
 
 providerRoutes.delete('/:id', async (c) => {

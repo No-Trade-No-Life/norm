@@ -72,6 +72,7 @@ async function resolve(c: ModelsContext): Promise<Resolved> {
 
   const provider = await findProvider(c.env, address, providerId);
   if (!provider) fail(404, 'provider_not_found', 'Provider 不存在或已撤销');
+  if (provider.enabled === 0) fail(409, 'provider_disabled', '上游提供商已禁用：到「上游提供商」页启用它，或改用另一条');
 
   const upstreamKey = await unsealProviderKey({
     env: c.env,

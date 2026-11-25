@@ -57,6 +57,8 @@ export type Provider = {
   kdf: string;
   protocol: Protocol;
   visibility: Visibility;
+  /** 1 = 启用，0 = 禁用。禁用后不参与选址，也不能被指名。 */
+  enabled: number;
   public_listed: number;
   /** 主机名是否在信任清单里；由后端用同一份清单算出，前端只负责措辞。 */
   trusted: boolean;
