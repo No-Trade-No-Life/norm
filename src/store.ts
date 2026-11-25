@@ -116,6 +116,8 @@ export type RequestRecord = {
   status: string;
   statusCode: number | null;
   latencyMs: number;
+  /** 首字延迟：第一个文本增量到达的时刻；非流式没有这个事件，记 null。 */
+  firstTokenMs: number | null;
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
@@ -227,8 +229,8 @@ function requestInsert(env: Env, row: RequestRecord) {
     `INSERT INTO requests
        (id, address, provider_id, consumer_id, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
-        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos, first_token_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
@@ -246,6 +248,7 @@ function requestInsert(env: Env, row: RequestRecord) {
     row.tokenNanos,
     row.feeNanos,
     row.unbilledNanos,
+    row.firstTokenMs,
     row.at,
   );
 }

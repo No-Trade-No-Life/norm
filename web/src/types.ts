@@ -30,6 +30,8 @@ export type Me = {
   providers: number;
   usage: TokenTotals;
   billed: MoneyTotals;
+  /** 体感：平均首字（只统计有首字的调用）与平均总耗时。 */
+  latency: { avg_first_token_ms: number; avg_latency_ms: number; streamed_requests: number };
   created_at: number;
 };
 
@@ -81,6 +83,8 @@ export type RequestRow = {
   status: string;
   status_code: number | null;
   latency_ms: number;
+  /** 首字延迟：流式调用才有；非流式没有这个事件，为 null。 */
+  first_token_ms: number | null;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;

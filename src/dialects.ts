@@ -439,6 +439,55 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
   };
 }
 
+/* ── 首字：哪一帧才算「开始说话了」 ───────────────────────────────── */
+
+/**
+ * 这一帧里有没有真正的文本增量。
+ *
+ * 首字延迟不能按「第一帧到达」算：OpenAI chat 的第一帧通常只有一个空的
+ * `delta.role`，DeepSeek 的推理模型还会先吐 `reasoning_content`——它们都还没开始
+ * 「说话」，但都比真正的第一个字早得多。所以按各家自己的文本字段来判断。
+ */
+export function carriesText(dialect: Dialect, data: string): boolean {
+  if (data.length === 0 || data === '[DONE]') return false;
+  let json: Raw;
+  try {
+    json = JSON.parse(data) as Raw;
+  } catch {
+    return false;
+  }
+
+  const nonEmpty = (value: unknown): boolean => typeof value === 'string' && value.length > 0;
+
+  if (dialect === 'openai-chat') {
+    const delta = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { delta?: Raw } | undefined;
+    const body = obj(delta?.delta);
+    // `reasoning_content` 是 DeepSeek 推理模型的「思考」增量，它同样是上游真的在产字。
+    return nonEmpty(body.content) || nonEmpty(body.reasoning_content);
+  }
+
+  if (dialect === 'openai-responses') {
+    const type = typeof json.type === 'string' ? json.type : '';
+    return (
+      (type === 'response.output_text.delta' || type === 'response.reasoning_summary_text.delta') &&
+      nonEmpty(json.delta)
+    );
+  }
+
+  if (dialect === 'anthropic-messages') {
+    const type = typeof json.type === 'string' ? json.type : '';
+    if (type !== 'content_block_delta') return false;
+    return nonEmpty(obj(json.delta).text) || nonEmpty(obj(json.delta).thinking);
+  }
+
+  // gemini：裸 data 帧，文本在 candidates[].content.parts[].text
+  const candidates = Array.isArray(json.candidates) ? json.candidates : [];
+  return candidates.some((candidate) => {
+    const parts = (candidate as { content?: { parts?: unknown } }).content?.parts;
+    return Array.isArray(parts) && parts.some((part) => nonEmpty((part as { text?: unknown }).text));
+  });
+}
+
 /* ── 流式里的用量 ─────────────────────────────────────────────────── */
 
 /**

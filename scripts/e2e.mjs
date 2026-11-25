@@ -427,10 +427,11 @@ for (const protocol of Object.keys(expected)) {
   // 不改地转发，却忘了顺手读用量——于是账本上只剩 Gas。这一条钉住它。
   {
     const payload = JSON.stringify({ model: 'gpt-test', input: 'hi', stream: true });
-    const signed = sign(alice, 'POST', '/v1/responses', payload);
+    // 推理面只认下游消费者 Token（签名身份只管管理面），所以这里现建一把。
+    const key = (await createConsumer(alice, 'responses passthrough')).json.key;
     const response = await fetch(`${BASE}/v1/responses`, {
       method: 'POST',
-      headers: { ...signed, 'Content-Type': 'application/json', 'X-Norm-Provider': providers['openai-responses'] },
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', 'X-Norm-Provider': providers['openai-responses'] },
       body: payload,
     });
     const text = await response.text();
@@ -510,6 +511,13 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   check('请求记录里带着三项 token', ok.every((row) => 'input_tokens' in row && 'cached_tokens' in row && 'output_tokens' in row), ok[0]);
   // 每一条都能自己核对：Gas + token 折价 − 未收 = 扣费。
   check('每条请求的账都能对上', usage.items.every((row) => row.fee_nanos === row.gas_fee_nanos + row.token_nanos - row.unbilled_nanos), usage.items[0]);
+  // 首字与总耗时分开记：流式有首字，非流式没有这个事件（记 null，不拿总耗时冒充）。
+  check('流式记下了首字延迟', ok.some((row) => typeof row.first_token_ms === 'number' && row.first_token_ms > 0), ok.slice(0, 3));
+  check('非流式首字为空', ok.some((row) => row.first_token_ms === null), ok.slice(0, 3));
+  check('首字不会晚于总耗时', ok.every((row) => row.first_token_ms === null || row.first_token_ms <= row.latency_ms), ok.slice(0, 3));
+  check('缓存命中不超过输入（缓存率恒在 0..1）', ok.every((row) => row.cached_tokens <= row.input_tokens), ok.slice(0, 3));
+  const meLatency = me.latency;
+  check('账户级延迟统计可读', typeof meLatency?.avg_latency_ms === 'number' && (meLatency?.streamed_requests ?? 0) > 0, meLatency);
   check('失败那条只扣 Gas、token 为 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 300 && row.gas_fee_nanos === 300 && row.token_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
 
   // 按 id 翻页：第一页最后一条之后接着往下取，不会与第一页重叠。
