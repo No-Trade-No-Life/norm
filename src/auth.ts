@@ -10,16 +10,38 @@ export type Principal = {
   address: string;
 };
 
-/** 一个请求只有两种身份：Bearer 消费者密钥，或 Ed25519 签名。没有 Authorization 就走签名。 */
-export async function resolvePrincipal(request: Request, env: Env): Promise<Principal> {
+/**
+ * 下游密钥可能出现在三个不同的头里，因为那是各家 SDK 的硬编码习惯，不是我们选的：
+ *
+ *   Authorization: Bearer sk-norm-…    OpenAI SDK / Codex CLI / curl
+ *   x-api-key: sk-norm-…               Anthropic SDK / Claude Code
+ *   x-goog-api-key: sk-norm-…          Google SDK
+ *
+ * 只认带 `sk-norm-` 前缀的值——没有前缀的 api key 不是我们的身份，交给签名那条路去失败，
+ * 免得把「上游密钥错放进请求头」误报成「身份无效」。
+ */
+function bearerOf(request: Request): string | null {
   const authorization = request.headers.get('Authorization');
-  if (!authorization) return authenticate(request, env);
-
+  if (!authorization) return null;
   const [scheme, value] = authorization.trim().split(/\s+/);
-  if (scheme.toLowerCase() !== 'bearer' || !value) {
-    fail(401, 'authorization_invalid', 'Authorization 只支持 Bearer 消费者密钥');
-  }
-  return principalFromConsumerKey(env, value);
+  if (scheme?.toLowerCase() !== 'bearer' || !value) fail(401, 'authorization_invalid', 'Authorization 只支持 Bearer 消费者密钥');
+  return value;
+}
+
+/**
+ * 一个请求只有两种身份：消费者密钥，或 Ed25519 签名。
+ * 三个 api key 头都没有 `sk-norm-` 值时就当成签名请求——它会带着缺失头部的说明失败。
+ */
+export async function resolvePrincipal(request: Request, env: Env): Promise<Principal> {
+  const candidates = [
+    bearerOf(request),
+    request.headers.get('x-api-key'),
+    request.headers.get('x-goog-api-key'),
+  ].filter((value): value is string => typeof value === 'string' && value.length > 0);
+
+  const key = candidates.find((value) => value.startsWith('sk-norm-'));
+  if (key) return principalFromConsumerKey(env, key);
+  return authenticate(request, env);
 }
 
 /**

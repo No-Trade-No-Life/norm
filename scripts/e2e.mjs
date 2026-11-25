@@ -62,7 +62,7 @@ const upstream = createServer((request, response) => {
   request.on('end', () => {
     const parsed = body ? JSON.parse(body) : {};
     const url = new URL(request.url, 'http://x');
-    seen.push({ path: url.pathname, search: url.search, headers: request.headers, body: parsed });
+    seen.push({ path: url.pathname, search: url.search, headers: request.headers, body: parsed, raw: body });
 
     const authorized =
       request.headers.authorization === `Bearer ${KEY}` ||
@@ -102,8 +102,10 @@ const upstream = createServer((request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({
         id: 'resp_1',
+        object: 'response',
+        status: 'completed',
         model: parsed.model,
-        output: [{ type: 'message', content: [{ type: 'output_text', text: '你好' }] }],
+        output: [{ id: 'msg_1', type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: '你好' }] }],
         usage: { input_tokens: 7, output_tokens: 2 },
       }));
       return;
@@ -122,7 +124,11 @@ const upstream = createServer((request, response) => {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({
         id: 'msg_1',
+        type: 'message',
+        role: 'assistant',
+        model: parsed.model,
         content: [{ type: 'text', text: '你好' }],
+        stop_reason: 'end_turn',
         usage: { input_tokens: 5, output_tokens: 4 },
       }));
       return;
@@ -139,8 +145,9 @@ const upstream = createServer((request, response) => {
     if (url.pathname.includes(':generateContent')) {
       response.writeHead(200, { 'Content-Type': 'application/json' });
       response.end(JSON.stringify({
-        candidates: [{ content: { parts: [{ text: '你好' }] } }],
+        candidates: [{ content: { role: 'model', parts: [{ text: '你好' }] }, finishReason: 'STOP', index: 0 }],
         usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 6 },
+        modelVersion: parsed.model ?? 'gemini-test',
       }));
       return;
     }
@@ -451,6 +458,178 @@ console.log('11. 公开接口不需要签名');
   for (const path of ['/api/v1/health', '/api/v1/stats', '/api/v1/base-urls', '/api/v1/attestation']) {
     const response = await fetch(`${BASE}${path}`);
     check(`${path} 200`, response.status === 200, response.status);
+  }
+}
+
+console.log('12. 4×4 矩阵：入口方言 × 上游协议');
+{
+  // 每一格都要能跑通，且回到客户端的是「入口方言」的形状。
+  const ENTRIES = {
+    'openai-chat': (model, stream) => ({
+      path: '/v1/chat/completions',
+      body: { model, stream, messages: [{ role: 'system', content: 'be brief' }, { role: 'user', content: 'hi' }] },
+    }),
+    'openai-responses': (model, stream) => ({
+      path: '/v1/responses',
+      body: { model, stream, instructions: 'be brief', input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] },
+    }),
+    'anthropic-messages': (model, stream) => ({
+      path: '/v1/messages',
+      body: { model, stream, max_tokens: 64, system: 'be brief', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] },
+    }),
+    'google-gemini': (model, stream) => ({
+      path: `/v1/models/${model}:${stream ? 'streamGenerateContent' : 'generateContent'}`,
+      body: { contents: [{ role: 'user', parts: [{ text: 'hi' }] }], systemInstruction: { parts: [{ text: 'be brief' }] } },
+    }),
+  };
+
+  // 各入口的响应必须长成本方言的样子——这是「出口翻译」的唯一证据。
+  const SHAPE = {
+    'openai-chat': (json) => Array.isArray(json.choices) && json.choices[0]?.message?.content === '你好',
+    'openai-responses': (json) => json.object === 'response' && json.output?.[0]?.content?.[0]?.type === 'output_text' && json.output[0].content[0].text === '你好',
+    'anthropic-messages': (json) => json.type === 'message' && json.content?.[0]?.type === 'text' && json.content[0].text === '你好',
+    'google-gemini': (json) => json.candidates?.[0]?.content?.parts?.[0]?.text === '你好',
+  };
+
+  const entries = Object.keys(ENTRIES);
+  const protocols = ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'];
+
+  for (const entry of entries) {
+    for (const protocol of protocols) {
+      const same = entry === protocol;
+      const { path, body } = ENTRIES[entry]('gpt-test', false);
+      const payload = JSON.stringify(body);
+      const before = seen.length;
+      const result = await call(alice, 'POST', path, payload, { 'X-Norm-Credential': credentials[protocol] });
+      const label = `${entry} → ${protocol}${same ? '（直通）' : ''}`;
+
+      check(`${label} 200`, result.status === 200, result.json);
+      const upstreamSeen = seen.slice(before).at(-1);
+
+      if (same) {
+        // 对角线：请求体必须一个字节都不变地到了上游。
+        check(`${label} 请求体按原字节转发`, upstreamSeen?.raw === payload, {
+          sent: payload.slice(0, 80),
+          got: upstreamSeen?.raw?.slice(0, 80),
+        });
+      } else {
+        check(`${label} 请求被翻译过`, upstreamSeen?.raw !== payload, upstreamSeen?.raw?.slice(0, 80));
+        // 跨方言时上游收到的是它自己的方言，不是入口的那一套。
+        const upstreamShape = {
+          'openai-chat': (b) => Array.isArray(b.messages),
+          'openai-responses': (b) => Array.isArray(b.input),
+          'anthropic-messages': (b) => Array.isArray(b.messages) && typeof b.system === 'string',
+          'google-gemini': (b) => Array.isArray(b.contents),
+        }[protocol];
+        check(`${label} 上游收到 ${protocol} 的形状`, upstreamShape(upstreamSeen?.body ?? {}), upstreamSeen?.body);
+        // 内容本身不能丢：三种方言都该把 system 与 user 带过去。
+        const wire = JSON.stringify(upstreamSeen?.body ?? {});
+        check(`${label} 内容没丢`, wire.includes('be brief') && wire.includes('hi'), wire.slice(0, 160));
+      }
+
+      check(`${label} 响应是入口方言的形状`, SHAPE[entry](result.json), result.json);
+      check(`${label} 带 norm`, typeof result.json?.norm?.request_id === 'string', result.json?.norm);
+    }
+  }
+
+  // 对角线不能只是「能跑」：上游多给的字段必须原样保留下来，否则就不叫直通。
+  {
+    const { path, body } = ENTRIES['openai-chat']('gpt-test', false);
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['openai-chat'] });
+    check('直通保留上游特有的字段（id/finish_reason）', result.json?.id === 'chatcmpl-1' && result.json?.choices?.[0]?.finish_reason === 'stop', result.json);
+  }
+
+  // 各家 SDK 用各自的头带密钥：Claude Code 走 x-api-key，Google SDK 走 x-goog-api-key。
+  {
+    const consumerPath = '/api/v1/consumers';
+    const created = await call(alice, 'POST', consumerPath, JSON.stringify({ name: 'matrix bot' }));
+    const consumerKey = created.json.key;
+
+    const anth = ENTRIES['anthropic-messages']('gpt-test', false);
+    const viaApiKey = await raw('POST', anth.path, JSON.stringify(anth.body), {
+      'x-api-key': consumerKey,
+      'X-Norm-Credential': credentials['anthropic-messages'],
+    });
+    check('x-api-key 能当消费者密钥（Claude Code 的形状）', viaApiKey.status === 200, viaApiKey.json);
+
+    const gem = ENTRIES['google-gemini']('gpt-test', false);
+    const viaGoog = await raw('POST', gem.path, JSON.stringify(gem.body), {
+      'x-goog-api-key': consumerKey,
+      'X-Norm-Credential': credentials['google-gemini'],
+    });
+    check('x-goog-api-key 能当消费者密钥（Google SDK 的形状）', viaGoog.status === 200, viaGoog.json);
+
+    const viaBearer = await raw('POST', anth.path, JSON.stringify(anth.body), {
+      Authorization: `Bearer ${consumerKey}`,
+      'X-Norm-Credential': credentials['anthropic-messages'],
+    });
+    check('Bearer 也一样', viaBearer.status === 200, viaBearer.json);
+
+    // 没有 sk-norm- 前缀的 api key 不是我们的身份：要说不清就直说不清，不要误判成「钥匙无效」。
+    const foreign = await raw('POST', anth.path, JSON.stringify(anth.body), {
+      'x-api-key': 'sk-some-upstream-key',
+      'X-Norm-Credential': credentials['anthropic-messages'],
+    });
+    check('别家的 api key 不被当成消费者密钥', foreign.status === 401 && foreign.json.error === 'signature_required', foreign.json);
+
+    await call(alice, 'DELETE', `/api/v1/consumers/${created.json.id}`);
+  }
+
+  // 跨方言的工具调用不翻译：早拒绝，而不是让客户端收到一段散文。
+  {
+    const payload = JSON.stringify({
+      model: 'gpt-test',
+      tools: [{ name: 'get_weather', input_schema: { type: 'object' } }],
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const result = await call(alice, 'POST', '/v1/messages', payload, { 'X-Norm-Credential': credentials['openai-chat'] });
+    check('跨方言带 tools → 400 tools_unsupported', result.status === 400 && result.json.error === 'tools_unsupported', result.json);
+
+    // 同格式直通时 tools 免费穿过：我们不碰请求体，也就没有「支持不支持」的问题。
+    const same = JSON.stringify({ model: 'gpt-test', tools: [{ type: 'function', function: { name: 'w' } }], messages: [{ role: 'user', content: 'hi' }] });
+    const passed = await call(alice, 'POST', '/v1/chat/completions', same, { 'X-Norm-Credential': credentials['openai-chat'] });
+    check('同格式直通时 tools 原样穿过', passed.status === 200, passed.json);
+  }
+
+  // 跨方言流式：帧必须是入口方言自己的那套。
+  for (const protocol of protocols) {
+    if (protocol === 'openai-chat') continue;
+    const { path, body } = ENTRIES['openai-responses']('gpt-test', true);
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials[protocol] });
+    check(`流式 openai-responses → ${protocol} 200`, result.status === 200, result.status);
+    if (protocol === 'openai-responses') {
+      // 对角线：上游的帧原样到达，我们不合成、不改写。
+      check('流式 responses 直通保留上游帧', result.text.includes('response.output_text.delta'), result.text.slice(0, 200));
+      check('流式 responses 直通不插 norm 帧', !result.text.includes('"norm"'), result.text.slice(-200));
+    } else {
+      check(`流式 openai-responses → ${protocol} 有 response.completed`, result.text.includes('response.completed'), result.text.slice(0, 200));
+      check(`流式 openai-responses → ${protocol} 有增量文本`, result.text.includes('"delta":"你"'), result.text.slice(0, 300));
+    }
+  }
+  for (const protocol of protocols) {
+    if (protocol === 'anthropic-messages') continue;
+    const { path, body } = ENTRIES['anthropic-messages']('gpt-test', true);
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials[protocol] });
+    check(`流式 anthropic → ${protocol} 200`, result.status === 200, result.status);
+    check(`流式 anthropic → ${protocol} 有 message_stop`, result.text.includes('message_stop'), result.text.slice(-200));
+    check(`流式 anthropic → ${protocol} 用 text_delta`, result.text.includes('text_delta'), result.text.slice(0, 300));
+  }
+  {
+    const { path, body } = ENTRIES['google-gemini']('gpt-test', true);
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['anthropic-messages'] });
+    check('流式 gemini → anthropic 200', result.status === 200, result.status);
+    // 入口是 gemini，出口就必须是 gemini 的裸 data 帧：没有 event: 前缀，也没有 anthropic 的事件名。
+    check('流式 gemini 出口是 gemini 帧', result.text.includes('"candidates"') && !result.text.includes('message_stop'), result.text.slice(0, 200));
+    check('流式 gemini 带回增量文本', result.text.includes('"text":"你"'), result.text.slice(0, 300));
+  }
+
+  // 同格式流式直通：上游的帧原样过来，不再被二次解读。
+  {
+    const { path, body } = ENTRIES['anthropic-messages']('gpt-test', true);
+    const result = await call(alice, 'POST', path, JSON.stringify(body), { 'X-Norm-Credential': credentials['anthropic-messages'] });
+    check('anthropic 流式直通 200', result.status === 200, result.status);
+    check('anthropic 流式直通保留上游事件名', result.text.includes('event: message_start') === false ? result.text.includes('"message_start"') : true, result.text.slice(0, 200));
+    check('anthropic 流式直通保留上游 delta 原文', result.text.includes('"text_delta"'), result.text.slice(0, 300));
   }
 }
 

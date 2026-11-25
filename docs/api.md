@@ -86,29 +86,49 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 ## 转发（签名或 Bearer 消费者密钥）
 
-客户端**只**说 OpenAI Chat，上游的方言由凭证决定、由 Norm 在边界处翻译：
+四个入口，四种上游，构成 4×4。**入口方言与上游协议同名**：
 
-| 端点 | 上游路径（按 `upstream_protocol`） |
-|---|---|
-| `POST /v1/chat/completions` | `openai-chat` → `{base}/chat/completions` |
-| | `openai-responses` → `{base}/responses` |
-| | `anthropic-messages` → `{base}/v1/messages` |
-| | `google-gemini` → `{base}/v1beta/models/{model}:generateContent`（流式 `:streamGenerateContent?alt=sse`） |
+| 入口 | 客户端 | 上游协议 `openai-chat` | `openai-responses` | `anthropic-messages` | `google-gemini` |
+|---|---|---|---|---|---|
+| `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 转换 | 转换 | 转换 |
+| `POST /v1/responses` | Codex CLI | 转换 | 直通 | 转换 | 转换 |
+| `POST /v1/messages` | Anthropic SDK / Claude Code | 转换 | 转换 | 直通 | 转换 |
+| `POST /v1/models/{model}:generateContent` | Google SDK | 转换 | 转换 | 转换 | 直通 |
 
-支持 `stream: true`；流式一律返回 OpenAI chat chunk。
+**对角线不转换。** 入口方言等于凭证的 `upstream_protocol` 时，请求体按原始字节发给上游，
+响应体原样返回（只多一个 `norm` 字段）。一个字段都不碰，包括 `tools`、`tool_choice`、
+`response_format` 这些我们没打算理解的字段。
+
+**非对角线才过桥**：入口方言 → OpenAI Chat → 上游适配器 → 回来时渲染成入口方言。
+桥只在一侧出现，所以矩阵是 4 段入口翻译加 4 段上游适配，不是 16 条路径。
+
+**跨方言不翻译工具调用。** 三家的 tools 形状不同，硬拼一个「尽力而为」的映射，只会在
+客户端以为有 function calling 时收到一段散文。所以跨方言带 `tools` / `functions` 会直接
+`400 tools_unsupported`；同格式直通不受影响（我们不碰请求体）。
+
+流式：`stream: true` 或 Gemini 的 `:streamGenerateContent`。跨方言时上游 SSE 被翻译成
+入口方言自己的帧（`response.output_text.delta` / `content_block_delta` / `candidates`
+裸 data 帧），**不报 token 用量**（上游不一定在中途给，冒充数字不如留 0，记账同样是 0）。
+同格式直通时上游的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
+唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
 
 | 头 | 必填 | 说明 |
 |---|---|---|
 | `X-Norm-Credential` | 是 | 凭证 id，决定发往哪个上游（上游密钥由服务端解密，客户端不接触） |
-| `X-Norm-Address` 等四个签名头 | 二选一 | Ed25519 身份 |
-| `Authorization: Bearer sk-norm-…` | 二选一 | 下游消费者密钥；与签名互斥，带上它就不再验签 |
+| `Authorization: Bearer sk-norm-…` | 三选一 | OpenAI SDK 的形状 |
+| `x-api-key: sk-norm-…` | 三选一 | Anthropic SDK / Claude Code 的形状 |
+| `x-goog-api-key: sk-norm-…` | 三选一 | Google SDK 的形状 |
+| `X-Norm-Address` 等四个签名头 | 三选一 | Ed25519 身份 |
+
+三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；别家的 key 会走签名那条路失败。
 
 ```bash
-curl https://norm.ntnl.io/v1/chat/completions \
-  -H "Authorization: Bearer sk-norm-…" \
+# Claude Code 的形状：x-api-key + Anthropic Messages 入口
+curl https://norm.ntnl.io/v1/messages \
+  -H "x-api-key: sk-norm-…" \
   -H "X-Norm-Credential: cred_…" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
+  -d '{"model":"claude-sonnet-4-20250514","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
 请求头**不能**改写目的地：早期版本的 `X-Norm-Base-Url` 已删除，带上它也不会生效
@@ -124,4 +144,5 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 }
 ```
 
-Stream 响应在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}` 事件。
+`/v1/chat/completions` 的流式在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}`；
+另外三条入口的流式不插（那些 SDK 按 `type` 严格分派，插一个它们不认识的事件比丢一条记账信息更糟）。
