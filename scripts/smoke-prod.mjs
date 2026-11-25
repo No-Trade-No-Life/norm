@@ -45,7 +45,7 @@ console.log('1. 开户');
   const body = await response.json();
   check('login 200', response.status === 200, body);
   check('地址与本地公钥一致', body.address === address, body);
-  check('演示授信已到账', body.balance_micros === 1000000, body);
+  check('演示授信已到账', body.balance_nanos === 1000000, body);
 }
 
 console.log('2. 未签名与重放');
@@ -149,7 +149,7 @@ console.log('5. Provider 拒绝时不扣费（假密钥打真·官方端点）')
   });
   check('Provider 401 原样返回', response.status === 401, response.status);
   const me = await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json();
-  check('余额没被扣', me.balance_micros === 1000000, me);
+  check('余额没被扣', me.balance_nanos === 1000000, me);
   check('但留下了失败记录', me.requests === 2, me);
 }
 

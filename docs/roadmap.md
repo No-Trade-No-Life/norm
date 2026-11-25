@@ -7,7 +7,7 @@
 
 - Ed25519（base58）身份：公钥即地址，逐请求签名，nonce 防重放，无会话无密码
 - BYOK：客户端 XChaCha20-Poly1305 密封，服务端只存密文；明文密钥只走一次请求头
-- 逐请求隔离计费：`requests` + 纯追加 `ledger`，整数微美元，失败不扣费
+- 逐请求隔离计费：`requests` + 纯追加 `ledger`，整数纳美元，失败不扣费
 - Provider 来源核验：`host` / `key_prefix` / `models_probe` 三路信号，公开可读
 - ZDR：不留请求体、响应体、Provider 密钥；`/api/v1/attestation` 公开构建哈希
 - 可信发布：GitHub Actions 构建 → 算哈希 → 部署 → 上线后自校验哈希一致

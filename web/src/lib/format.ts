@@ -1,19 +1,26 @@
-/** 微美元 → 人类可读。1e6 = $1，精度按量级给，避免把 $0.0005 显示成 $0.00。 */
-export function usd(micros: number | null | undefined): string {
-  if (micros === null || micros === undefined) return '—';
-  const value = micros / 1_000_000;
+/**
+ * 纳美元 → 人类可读。1e9 = $1。
+ *
+ * 分档按「这一档还有信息」来定：余额要读到分，一次调用的账单要读到 9 位小数——
+ * 300 纳美元的服务费就是 $0.0000003，四舍五入到 6 位会显示成 $0.000000，
+ * 而那不是「零」，是一笔真收了钱的账。
+ */
+export function usd(nanos: number | null | undefined): string {
+  if (nanos === null || nanos === undefined) return '—';
+  const value = nanos / 1_000_000_000;
   if (value === 0) return '$0';
   const abs = Math.abs(value);
-  // 分档的意义：余额 $0.98 要读得懂，请求隔离费 $0.0005 也不能被四舍五入成 $0.00。
   if (abs >= 0.01) return `$${value.toFixed(2)}`;
   if (abs >= 0.0001) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(6)}`;
+  if (abs >= 0.000001) return `$${value.toFixed(6)}`;
+  // 更小的量级：给到 9 位，并把尾随的 0 收掉，免得一排 $0.000000300 读起来像噪声。
+  return `$${value.toFixed(9).replace(/0+$/, '').replace(/\.$/, '')}`;
 }
 
 /** 带符号：流水里 grant 是正、charge 是负。 */
-export function signedUsd(micros: number): string {
-  const body = usd(Math.abs(micros));
-  return micros < 0 ? `−${body}` : `+${body}`;
+export function signedUsd(nanos: number): string {
+  const body = usd(Math.abs(nanos));
+  return nanos < 0 ? `−${body}` : `+${body}`;
 }
 
 export function when(seconds: number | null | undefined): string {

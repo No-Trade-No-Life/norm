@@ -241,7 +241,7 @@ export const COPY = {
   'us.by_provider_title': { zh: '按 provider', en: 'By provider' },
   'us.pricing_title': { zh: '价目表', en: 'Price list' },
   'us.pricing_note': {
-    zh: '单位：微美元 / 每百万 Token。价格随代码发布，改价就是一次可审查的合并。',
+    zh: '单位：纳美元 / 每百万 Token。价格随代码发布，改价就是一次可审查的合并。',
     en: 'Units: micro-USD per 1M tokens. Prices ship with the code, so a price change is a reviewable merge.',
   },
   'us.pricing_default': { zh: '兜底（未定价模型）', en: 'Fallback (unpriced model)' },

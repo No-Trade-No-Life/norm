@@ -81,8 +81,8 @@ done
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `REQUEST_FEE_MICROS` | `500` | 每次成功转发的隔离费（微美元） |
-| `GRANT_MICROS` | `1000000` | 新地址的演示授信（微美元，即 $1） |
+| `REQUEST_FEE_NANOS` | `500` | 每次成功转发的隔离费（纳美元） |
+| `GRANT_NANOS` | `1000000` | 新地址的演示授信（纳美元，即 $1） |
 | `SIGNATURE_WINDOW_SECONDS` | `120` | 签名时间窗 |
 | `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |
 | `NORM_MASTER_KEY` | 无默认 | **Worker secret**，AES-256-GCM 封装 provider 密钥用的 32 字节密钥 |

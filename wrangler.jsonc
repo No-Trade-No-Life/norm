@@ -24,11 +24,11 @@
   ],
 
   "vars": {
-    // Norm 的服务费：每一次被隔离执行的调用固定收一笔，微美元。
+    // Norm 的服务费：每一次被隔离执行的调用固定收一笔，纳美元（300 纳美元 = $0.0000003）。
     // token 那部分由 src/pricing.ts 的价目表算，不在这里——价格要跟着代码一起可复现。
-    "SERVICE_FEE_MICROS": "100",
+    "SERVICE_FEE_NANOS": "300",
     // 新地址的演示授信。
-    "GRANT_MICROS": "1000000",
+    "GRANT_NANOS": "1000000000",
     // 签名时间窗。
     "SIGNATURE_WINDOW_SECONDS": "120",
     // 信任清单：只有落在这些主机上的 provider 才会被前端标成「官方」。

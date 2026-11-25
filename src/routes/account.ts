@@ -16,9 +16,9 @@ accountRoutes.get('/me', async (c) => {
             COALESCE(SUM(input_tokens), 0) AS input_tokens,
             COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
             COALESCE(SUM(output_tokens), 0) AS output_tokens,
-            COALESCE(SUM(service_fee_micros), 0) AS service_fee_micros,
-            COALESCE(SUM(token_micros), 0) AS token_micros,
-            COALESCE(SUM(unbilled_micros), 0) AS unbilled_micros
+            COALESCE(SUM(service_fee_nanos), 0) AS service_fee_nanos,
+            COALESCE(SUM(token_nanos), 0) AS token_nanos,
+            COALESCE(SUM(unbilled_nanos), 0) AS unbilled_nanos
      FROM requests WHERE address = ?`,
   )
     .bind(principal.address)
@@ -27,17 +27,17 @@ accountRoutes.get('/me', async (c) => {
       input_tokens: number;
       cached_tokens: number;
       output_tokens: number;
-      service_fee_micros: number;
-      token_micros: number;
-      unbilled_micros: number;
+      service_fee_nanos: number;
+      token_nanos: number;
+      unbilled_nanos: number;
     }>();
 
   return c.json({
     address: principal.address,
     label: principal.label,
-    balance_micros: principal.balance_micros,
-    granted_micros: principal.granted_micros,
-    spend_micros: principal.spend_micros,
+    balance_nanos: principal.balance_nanos,
+    granted_nanos: principal.granted_nanos,
+    spend_nanos: principal.spend_nanos,
     requests: totals?.n ?? 0,
     providers: providers.length,
     usage: {
@@ -47,9 +47,9 @@ accountRoutes.get('/me', async (c) => {
     },
     // 账目构成：服务费 vs token，以及没能收上来的部分（余额不足时由站点承担）。
     billed: {
-      service_fee_micros: totals?.service_fee_micros ?? 0,
-      token_micros: totals?.token_micros ?? 0,
-      unbilled_micros: totals?.unbilled_micros ?? 0,
+      service_fee_nanos: totals?.service_fee_nanos ?? 0,
+      token_nanos: totals?.token_nanos ?? 0,
+      unbilled_nanos: totals?.unbilled_nanos ?? 0,
     },
     created_at: principal.created_at,
   });
@@ -87,7 +87,7 @@ accountRoutes.get('/ledger', async (c) => {
   const address = c.get('principal').address;
 
   const { results } = await c.env.DB.prepare(
-    `SELECT rowid AS cursor, id, request_id, kind, amount_micros, balance_after_micros, created_at
+    `SELECT rowid AS cursor, id, request_id, kind, amount_nanos, balance_after_nanos, created_at
      FROM ledger WHERE address = ? ${cursor ? 'AND rowid < ?' : ''}
      ORDER BY rowid DESC LIMIT ?`,
   )
@@ -110,12 +110,12 @@ accountRoutes.get('/usage/by-consumer', async (c) => {
             COALESCE(SUM(requests.input_tokens), 0) AS input_tokens,
             COALESCE(SUM(requests.cached_tokens), 0) AS cached_tokens,
             COALESCE(SUM(requests.output_tokens), 0) AS output_tokens,
-            COALESCE(SUM(requests.fee_micros), 0) AS fee_micros
+            COALESCE(SUM(requests.fee_nanos), 0) AS fee_nanos
      FROM requests
      LEFT JOIN consumers ON consumers.id = requests.consumer_id
      WHERE requests.address = ?
      GROUP BY requests.consumer_id
-     ORDER BY fee_micros DESC`,
+     ORDER BY fee_nanos DESC`,
   )
     .bind(c.get('principal').address)
     .all();
@@ -132,12 +132,12 @@ accountRoutes.get('/usage/by-provider', async (c) => {
             COALESCE(SUM(requests.input_tokens), 0) AS input_tokens,
             COALESCE(SUM(requests.cached_tokens), 0) AS cached_tokens,
             COALESCE(SUM(requests.output_tokens), 0) AS output_tokens,
-            COALESCE(SUM(requests.fee_micros), 0) AS fee_micros
+            COALESCE(SUM(requests.fee_nanos), 0) AS fee_nanos
      FROM requests
      LEFT JOIN providers ON providers.id = requests.provider_id
      WHERE requests.address = ?
      GROUP BY requests.provider_id
-     ORDER BY fee_micros DESC`,
+     ORDER BY fee_nanos DESC`,
   )
     .bind(c.get('principal').address)
     .all();

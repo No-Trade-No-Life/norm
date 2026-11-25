@@ -240,7 +240,7 @@ console.log('1. 开户（签名即可，无注册）');
 {
   const result = await call(alice, 'POST', '/api/v1/auth/login');
   check('login 200', result.status === 200, result.json);
-  check('演示授信 1000000 微美元', result.json.balance_micros === 1000000, result.json);
+  check('演示授信 $1.00（1e9 纳美元）', result.json.balance_nanos === 1_000_000_000, result.json);
   check('地址与本地公钥一致', result.json.address === alice.address, result.json);
 }
 
@@ -316,9 +316,9 @@ for (const [protocol, want] of Object.entries(expected)) {
   const norm = result.json?.norm;
   check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
   // 一次调用的钱 = 服务费 + 三项 token 折出来的钱；两个数都能自己核。
-  check(`${protocol} 服务费 100`, norm?.service_fee_micros === 100, norm);
-  check(`${protocol} token 有价`, norm?.token_micros > 0, norm);
-  check(`${protocol} 总价 = 服务费 + token`, norm?.fee_micros === norm?.service_fee_micros + norm?.token_micros, norm);
+  check(`${protocol} 服务费 300 纳美元`, norm?.service_fee_nanos === 300, norm);
+  check(`${protocol} token 有价`, norm?.token_nanos > 0, norm);
+  check(`${protocol} 总价 = 服务费 + token`, norm?.fee_nanos === norm?.service_fee_nanos + norm?.token_nanos, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${PROVIDER_PORT}`, norm);
 }
 
@@ -383,21 +383,21 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   const okCalls = 4 + 4 + 1; // 四协议各一次 + 流式各一次 + 7 里那一次
   check('requests 含一次失败', me.requests === okCalls + 1, me);
   check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
-  check('费用按服务费 + token 拆开', (me.billed?.service_fee_micros ?? 0) > 0 && (me.billed?.token_micros ?? 0) > 0, me.billed);
+  check('费用按服务费 + token 拆开', (me.billed?.service_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger')).json;
   const charges = ledger.items.filter((row) => row.kind === 'charge');
   check('charge 数等于成功调用数', charges.length === okCalls, charges.length);
-  check('charge 都是负数', charges.every((row) => row.amount_micros < 0), charges.map((row) => row.amount_micros));
+  check('charge 都是负数', charges.every((row) => row.amount_nanos < 0), charges.map((row) => row.amount_nanos));
   // request_id 是 UUID v7：字典序即时间序，账本按它翻页。
   check('charge 都带 UUID v7 的 request_id', charges.every((row) => UUID_V7.test(row.request_id ?? '')), charges.map((row) => row.request_id));
   check('流水带了翻页游标', typeof ledger.items[0]?.cursor === 'number', ledger.items[0]);
 
-  const sum = ledger.items.reduce((total, row) => total + row.amount_micros, 0);
-  check('流水求和 == 当前余额', sum === me.balance_micros, { sum, balance: me.balance_micros });
-  check('最新一条流水的余额 == 当前余额', ledger.items[0].balance_after_micros === me.balance_micros, ledger.items[0]);
-  const charged = charges.reduce((total, row) => total + row.amount_micros, 0);
-  check('累计花费 == 流水扣费之和', me.spend_micros === -charged, { spend: me.spend_micros, charged });
+  const sum = ledger.items.reduce((total, row) => total + row.amount_nanos, 0);
+  check('流水求和 == 当前余额', sum === me.balance_nanos, { sum, balance: me.balance_nanos });
+  check('最新一条流水的余额 == 当前余额', ledger.items[0].balance_after_nanos === me.balance_nanos, ledger.items[0]);
+  const charged = charges.reduce((total, row) => total + row.amount_nanos, 0);
+  check('累计花费 == 流水扣费之和', me.spend_nanos === -charged, { spend: me.spend_nanos, charged });
 
   const usage = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json;
   const ok = usage.items.filter((row) => row.status === 'ok');
@@ -405,8 +405,8 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
   check('请求记录里带着提供者 id', ok.every((row) => row.provider_id !== null), ok.map((row) => row.provider_id));
   check('请求记录里带着三项 token', ok.every((row) => 'input_tokens' in row && 'cached_tokens' in row && 'output_tokens' in row), ok[0]);
   // 每一条都能自己核对：服务费 + token 折价 = 扣费。
-  check('每条请求的账都能对上', ok.every((row) => row.fee_micros === row.service_fee_micros + row.token_micros - row.unbilled_micros), ok[0]);
-  check('失败那条 token 与费用都是 0', usage.items.some((row) => row.status !== 'ok' && row.fee_micros === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
+  check('每条请求的账都能对上', ok.every((row) => row.fee_nanos === row.service_fee_nanos + row.token_nanos - row.unbilled_nanos), ok[0]);
+  check('失败那条 token 与费用都是 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
 
   // 按 id 翻页：第一页最后一条之后接着往下取，不会与第一页重叠。
   const firstPage = (await call(alice, 'GET', '/api/v1/account/usage?limit=2')).json.items;
@@ -420,7 +420,7 @@ const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 
   const pricing = (await (await fetch(`${BASE}/api/v1/pricing`)).json());
   check('价目表公开可读', typeof pricing.default?.input === 'number' && Array.isArray(pricing.models), pricing);
-  check('价目表带服务费', pricing.service_fee?.micros === 100, pricing.service_fee);
+  check('价目表带服务费', pricing.service_fee?.nanos === 300, pricing.service_fee);
 }
 
 console.log('9. Provider 按 base_url 聚合；「可信」只是一份清单');
@@ -488,8 +488,8 @@ let consumerKey = null;
   }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Provider': providers['openai-chat'] });
   check('指名 provider 就能调用 200', viaKey.status === 200, viaKey.json);
   check('打到指名的那台 provider', viaKey.json?.norm?.host === `127.0.0.1:${PROVIDER_PORT}`, viaKey.json?.norm);
-  check('费用记在同一个账户上', viaKey.json?.norm?.fee_micros > 0, viaKey.json?.norm);
-  check('余额从同一本账上扣', viaKey.json?.norm?.balance_micros !== null, viaKey.json?.norm);
+  check('费用记在同一个账户上', viaKey.json?.norm?.fee_nanos > 0, viaKey.json?.norm);
+  check('余额从同一本账上扣', viaKey.json?.norm?.balance_nanos !== null, viaKey.json?.norm);
 
   const bad = await raw('POST', '/v1/chat/completions', JSON.stringify({
     model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],

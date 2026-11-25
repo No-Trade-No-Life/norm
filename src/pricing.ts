@@ -1,9 +1,9 @@
 /**
  * 计价：账本按 Token 走，外加一次性的 Norm 服务费。
  *
- * 单位是**微美元 / 每百万 token**（micros per 1M tokens）。用整数是因为一整个请求可能
- * 只值几微美元：$2.50/M 的一次 3000 token 调用是 7500 微美元，而 $0.15/M 的一次 40 token
- * 调用是 6 微美元——用分做单位会把它四舍五入成 0。
+ * 单位是**纳美元 / 每百万 token**（nanos per 1M tokens）。用整数、且精确到纳美元，
+ * 是因为一整个请求可能只值几十纳美元：$2.50/M 的一次 3000 token 调用是 7500 纳美元，而 $0.15/M 的一次 40 token
+ * 调用是 6 纳美元——用分做单位会把它四舍五入成 0。
  *
  * 为什么定价写在代码里而不是 `wrangler.jsonc`：这份表是「公开可复现的转发规则」的一部分。
  * 放在代码里，`pnpm build` 的哈希就覆盖了它；放在部署变量里，同一个 commit 可以跑出不同的
@@ -16,11 +16,11 @@
  */
 
 export type Rates = {
-  /** 未命中的输入 token，微美元 / 1M token。 */
+  /** 未命中的输入 token，纳美元 / 1M token。 */
   input: number;
-  /** 命中缓存的输入 token，微美元 / 1M token。 */
+  /** 命中缓存的输入 token，纳美元 / 1M token。 */
   cached: number;
-  /** 输出 token，微美元 / 1M token。 */
+  /** 输出 token，纳美元 / 1M token。 */
   output: number;
 };
 
@@ -30,7 +30,7 @@ export type PriceEntry = Rates & {
 };
 
 /** 没有任何一条规则命中时的兜底价。写在这里，是为了「没定价」不会变成「免费」。 */
-export const DEFAULT_RATES: Rates = { input: 500_000, cached: 50_000, output: 1_500_000 };
+export const DEFAULT_RATES: Rates = { input: 500_000_000, cached: 50_000_000, output: 1_500_000_000 };
 
 /**
  * 定价表。数值取自各家公开发布的价目（2026-11），只做一件事：
@@ -38,23 +38,23 @@ export const DEFAULT_RATES: Rates = { input: 500_000, cached: 50_000, output: 1_
  * 价格会变，改这里就是改价；`GET /api/v1/pricing` 永远回这张表的当前值。
  */
 export const MODEL_RATES: PriceEntry[] = [
-  { match: 'deepseek-reasoner', input: 550_000, cached: 140_000, output: 2_190_000 },
-  { match: 'deepseek-chat', input: 270_000, cached: 70_000, output: 1_100_000 },
-  { match: 'deepseek', input: 270_000, cached: 70_000, output: 1_100_000 },
-  { match: 'gpt-4o-mini', input: 150_000, cached: 75_000, output: 600_000 },
-  { match: 'gpt-4o', input: 2_500_000, cached: 1_250_000, output: 10_000_000 },
-  { match: 'gpt-4.1-mini', input: 400_000, cached: 100_000, output: 1_600_000 },
-  { match: 'gpt-4.1', input: 2_000_000, cached: 500_000, output: 8_000_000 },
-  { match: 'o4-mini', input: 1_100_000, cached: 275_000, output: 4_400_000 },
-  { match: 'claude-3-5-haiku', input: 800_000, cached: 80_000, output: 4_000_000 },
-  { match: 'claude-3-5-sonnet', input: 3_000_000, cached: 300_000, output: 15_000_000 },
-  { match: 'claude-sonnet', input: 3_000_000, cached: 300_000, output: 15_000_000 },
-  { match: 'claude-opus', input: 15_000_000, cached: 1_500_000, output: 75_000_000 },
-  { match: 'claude', input: 3_000_000, cached: 300_000, output: 15_000_000 },
-  { match: 'gemini-2.0-flash', input: 100_000, cached: 25_000, output: 400_000 },
-  { match: 'gemini-2.5-flash', input: 300_000, cached: 75_000, output: 2_500_000 },
-  { match: 'gemini-2.5-pro', input: 1_250_000, cached: 125_000, output: 10_000_000 },
-  { match: 'gemini', input: 300_000, cached: 75_000, output: 2_500_000 },
+  { match: 'deepseek-reasoner', input: 550_000_000, cached: 140_000_000, output: 2_190_000_000 },
+  { match: 'deepseek-chat', input: 270_000_000, cached: 70_000_000, output: 1_100_000_000 },
+  { match: 'deepseek', input: 270_000_000, cached: 70_000_000, output: 1_100_000_000 },
+  { match: 'gpt-4o-mini', input: 150_000_000, cached: 75_000_000, output: 600_000_000 },
+  { match: 'gpt-4o', input: 2_500_000_000, cached: 1_250_000_000, output: 10_000_000_000 },
+  { match: 'gpt-4.1-mini', input: 400_000_000, cached: 100_000_000, output: 1_600_000_000 },
+  { match: 'gpt-4.1', input: 2_000_000_000, cached: 500_000_000, output: 8_000_000_000 },
+  { match: 'o4-mini', input: 1_100_000_000, cached: 275_000_000, output: 4_400_000_000 },
+  { match: 'claude-3-5-haiku', input: 800_000_000, cached: 80_000_000, output: 4_000_000_000 },
+  { match: 'claude-3-5-sonnet', input: 3_000_000_000, cached: 300_000_000, output: 15_000_000_000 },
+  { match: 'claude-sonnet', input: 3_000_000_000, cached: 300_000_000, output: 15_000_000_000 },
+  { match: 'claude-opus', input: 15_000_000_000, cached: 1_500_000_000, output: 75_000_000_000 },
+  { match: 'claude', input: 3_000_000_000, cached: 300_000_000, output: 15_000_000_000 },
+  { match: 'gemini-2.0-flash', input: 100_000_000, cached: 25_000_000, output: 400_000_000 },
+  { match: 'gemini-2.5-flash', input: 300_000_000, cached: 75_000_000, output: 2_500_000_000 },
+  { match: 'gemini-2.5-pro', input: 1_250_000_000, cached: 125_000_000, output: 10_000_000_000 },
+  { match: 'gemini', input: 300_000_000, cached: 75_000_000, output: 2_500_000_000 },
 ];
 
 /** 一个请求的 token 事实：输入总量（含缓存命中）、其中命中缓存的、输出。 */
@@ -70,10 +70,10 @@ export type Quote = {
   rates: Rates;
   /** 未命中缓存的输入 token（= input − cached，不为负）。 */
   uncached_tokens: number;
-  input_micros: number;
-  cached_micros: number;
-  output_micros: number;
-  total_micros: number;
+  input_nanos: number;
+  cached_nanos: number;
+  output_nanos: number;
+  total_nanos: number;
 };
 
 /** 最长前缀匹配：`gpt-4o-mini` 必须赢过 `gpt-4o`，否则便宜模型按贵模型计价。 */
@@ -91,7 +91,19 @@ export function ratesFor(model: string): { rates: Rates; match: string | null } 
   return best ? { rates: best, match: best.match } : { rates: DEFAULT_RATES, match: null };
 }
 
-const micros = (tokens: number, rate: number): number => Math.round((Math.max(tokens, 0) * rate) / 1_000_000);
+/**
+ * token 数 × 单价（纳美元 / 1M token）→ 纳美元。
+ *
+ * 不能写成 `tokens * rate / 1e6`：大模型一次能吐上百万 token，乘出来的中间值
+ * 会越过 2^53，浮点先丢精度再取整。所以先把单价拆成「每 token 的整数部分」与
+ * 「余数部分」，各自乘都留在安全整数内，最后一次取整。
+ */
+const nanos = (tokens: number, rate: number): number => {
+  const count = Math.max(tokens, 0);
+  const whole = Math.floor(rate / 1_000_000);
+  const rest = rate - whole * 1_000_000;
+  return count * whole + Math.round((count * rest) / 1_000_000);
+};
 
 /**
  * 把三项 token 折成一笔钱。
@@ -103,16 +115,16 @@ export function quote(model: string, usage: Usage): Quote {
   const { rates, match } = ratesFor(model);
   const cached = Math.min(Math.max(usage.cached, 0), Math.max(usage.input, 0));
   const uncached = Math.max(usage.input, 0) - cached;
-  const inputMicros = micros(uncached, rates.input);
-  const cachedMicros = micros(cached, rates.cached);
-  const outputMicros = micros(usage.output, rates.output);
+  const inputNanos = nanos(uncached, rates.input);
+  const cachedNanos = nanos(cached, rates.cached);
+  const outputNanos = nanos(usage.output, rates.output);
   return {
     match,
     rates,
     uncached_tokens: uncached,
-    input_micros: inputMicros,
-    cached_micros: cachedMicros,
-    output_micros: outputMicros,
-    total_micros: inputMicros + cachedMicros + outputMicros,
+    input_nanos: inputNanos,
+    cached_nanos: cachedNanos,
+    output_nanos: outputNanos,
+    total_nanos: inputNanos + cachedNanos + outputNanos,
   };
 }

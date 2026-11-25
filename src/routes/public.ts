@@ -15,8 +15,8 @@ publicRoutes.get('/stats', async (c) => {
        (SELECT COUNT(*) FROM principals) AS principals,
        (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL) AS providers,
        (SELECT COUNT(*) FROM requests) AS requests,
-       (SELECT COALESCE(SUM(fee_micros), 0) FROM requests) AS spend_micros`,
-  ).first<{ principals: number; providers: number; requests: number; spend_micros: number }>();
+       (SELECT COALESCE(SUM(fee_nanos), 0) FROM requests) AS spend_nanos`,
+  ).first<{ principals: number; providers: number; requests: number; spend_nanos: number }>();
   return c.json({ ...row, window_hours: null });
 });
 

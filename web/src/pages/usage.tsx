@@ -42,10 +42,10 @@ export function UsagePage() {
 
   const cards = useMemo(
     () => [
-      { label: t('us.balance'), value: usd(me.data?.balance_micros), emphasis: true },
-      { label: t('us.spend'), value: usd(me.data?.spend_micros) },
+      { label: t('us.balance'), value: usd(me.data?.balance_nanos), emphasis: true },
+      { label: t('us.spend'), value: usd(me.data?.spend_nanos) },
       { label: t('us.requests'), value: me.data ? String(me.data.requests) : '—' },
-      { label: t('us.granted'), value: usd(me.data?.granted_micros) },
+      { label: t('us.granted'), value: usd(me.data?.granted_nanos) },
     ],
     [me.data, t],
   );
@@ -66,11 +66,11 @@ export function UsagePage() {
 
   const moneyCards = useMemo(
     () => [
-      { label: t('us.billed_service'), value: usd(billed?.service_fee_micros), note: t('us.service_note') },
-      { label: t('us.billed_tokens'), value: usd(billed?.token_micros), note: null },
+      { label: t('us.billed_service'), value: usd(billed?.service_fee_nanos), note: t('us.service_note') },
+      { label: t('us.billed_tokens'), value: usd(billed?.token_nanos), note: null },
       {
         label: t('us.billed_unbilled'),
-        value: usd(billed?.unbilled_micros),
+        value: usd(billed?.unbilled_nanos),
         // 正常情况这里是 0：余额不够时才会出现，而那不是一件好事，所以要能被看见。
         note: null,
       },
@@ -315,8 +315,8 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
             <TableCell className="hidden text-right xl:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_service')} ${usd(row.service_fee_micros)} + ${t('us.billed_tokens')} ${usd(row.token_micros)}`}>
-              {usd(row.fee_micros)}
+            <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_service')} ${usd(row.service_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
+              {usd(row.fee_nanos)}
             </TableCell>
             <TableCell className="hidden xl:table-cell">
               <code className="block text-[11px] text-muted-foreground" title={row.id}>
@@ -357,7 +357,7 @@ function ByConsumerTable({ rows }: { rows: ConsumerUsage[] }) {
             <TableCell className="text-right">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_micros)}</TableCell>
+            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_nanos)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -388,7 +388,7 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
             <TableCell className="text-right">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_micros)}</TableCell>
+            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_nanos)}</TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -419,8 +419,8 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
                 <span className="hidden sm:inline">{row.kind === 'grant' ? t('us.ledger_grant') : t('us.ledger_charges')}</span>
               </Badge>
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{signedUsd(row.amount_micros)}</TableCell>
-            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{usd(row.balance_after_micros)}</TableCell>
+            <TableCell className="text-right text-xs tabular-nums">{signedUsd(row.amount_nanos)}</TableCell>
+            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">{usd(row.balance_after_nanos)}</TableCell>
             <TableCell className="hidden lg:table-cell">
               <code className="text-[11px] text-muted-foreground">{row.request_id ?? '—'}</code>
             </TableCell>
@@ -431,7 +431,7 @@ function LedgerTable({ rows }: { rows: LedgerRow[] }) {
   );
 }
 
-/** 价目表：微美元 / 每百万 token。放在页面末尾，是因为它是「核对」而不是「日常」。 */
+/** 价目表：纳美元 / 每百万 token。放在页面末尾，是因为它是「核对」而不是「日常」。 */
 function PricingTable({ pricing }: { pricing: Pricing }) {
   const { t } = useI18n();
   const rows = [{ match: t('us.pricing_default'), ...pricing.default }, ...pricing.models];

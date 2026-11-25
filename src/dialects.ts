@@ -40,15 +40,15 @@ export type AnswerCore = {
 /** 一次调用的账单结论：总价、构成、以及算这笔账用的三项 token。 */
 export type NormMeta = {
   request_id: string;
-  fee_micros: number;
-  service_fee_micros: number;
-  token_micros: number;
+  fee_nanos: number;
+  service_fee_nanos: number;
+  token_nanos: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
   /** 余额不足时没能收上来的部分；正常为 0。 */
-  unbilled_micros: number;
-  balance_micros: number | null;
+  unbilled_nanos: number;
+  balance_nanos: number | null;
   latency_ms: number;
   host: string;
 };

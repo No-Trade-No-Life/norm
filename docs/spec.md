@@ -78,8 +78,8 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 项 | 怎么算 | 为什么 |
 |---|---|---|
-| `token_micros` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
-| `service_fee_micros` | 每次被隔离执行的调用固定一笔（默认 100 微美元） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测，与 token 无关 |
+| `token_nanos` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
+| `service_fee_nanos` | 每次被隔离执行的调用固定一笔（300 纳美元 = $0.0000003） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测，与 token 无关 |
 
 三种 token 分开记，因为它们的价不同、含义也不同：
 
@@ -95,9 +95,11 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 - 价目表写在代码里而不是部署变量里：价格是「公开可复现的转发规则」的一部分，
   改价 = 改代码 = 一次可被审查的合并；没定价的模型走兜底价，不会变成免费。
 - 账本是纯追加的 `ledger` 表：每一条 charge 都带 `request_id`（UUID v7），可以逐条回溯。
-- 余额单位为微美元（integer），不用浮点。新地址自动获得 $1.00 演示授信（`GRANT_MICROS = 1000000`）。
-- 失败不扣费：Provider 报错或不可达时 `fee_micros = 0`，只留一条诚实的记录。
-- 余额付不起时扣到 0，差额记在 `unbilled_micros`（站点承担），余额永不变成负数。
+- 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
+  微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
+  新地址自动获得 $1.00 演示授信（`GRANT_NANOS = 1000000000`）。
+- 失败不扣费：Provider 报错或不可达时 `fee_nanos = 0`，只留一条诚实的记录。
+- 余额付不起时扣到 0，差额记在 `unbilled_nanos`（站点承担），余额永不变成负数。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
 ## 6. Provider

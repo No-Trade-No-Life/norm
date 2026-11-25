@@ -93,11 +93,11 @@ export function IdentityDialog() {
             <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-muted-foreground">
               <div className="flex gap-1">
                 <dt>{t('identity.balance')}</dt>
-                <dd className="text-foreground tabular-nums">{usd(me.data?.balance_micros)}</dd>
+                <dd className="text-foreground tabular-nums">{usd(me.data?.balance_nanos)}</dd>
               </div>
               <div className="flex gap-1">
                 <dt>{t('identity.spend')}</dt>
-                <dd className="text-foreground tabular-nums">{usd(me.data?.spend_micros)}</dd>
+                <dd className="text-foreground tabular-nums">{usd(me.data?.spend_nanos)}</dd>
               </div>
               <div className="flex gap-1">
                 <dt>{t('identity.requests')}</dt>

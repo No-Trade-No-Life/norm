@@ -86,7 +86,7 @@ key_hint  = "sk-norm-" + 前 4 + "…" + 后 4           → 列表与页面只�
 
 ## 4. 计费计数器
 
-- 全部是**整数微美元**（`1e-6 USD`），不用浮点。
-- `REQUEST_FEE_MICROS` 每次成功转发扣一次；失败请求（Provider 4xx/5xx、网络错误）**不扣**（`fee_micros = 0`），
+- 全部是**整数纳美元**（`1e-6 USD`），不用浮点。
+- `REQUEST_FEE_NANOS` 每次成功转发扣一次；失败请求（Provider 4xx/5xx、网络错误）**不扣**（`fee_nanos = 0`），
   但照样记一条 `requests`，因为隔离执行的成本由站点承担——这是给用户的诚实账。
-- 账本 `balance_after_micros` 必须与 `principals.balance_micros` 在同一事务里一致。
+- 账本 `balance_after_nanos` 必须与 `principals.balance_nanos` 在同一事务里一致。

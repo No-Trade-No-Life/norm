@@ -249,10 +249,10 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <code className="text-foreground">{meta.request_id}</code>
       </span>
       <span>
-        {t('pg.fee')} <code className="text-foreground">{usd(meta.fee_micros)}</code>
+        {t('pg.fee')} <code className="text-foreground">{usd(meta.fee_nanos)}</code>
       </span>
       <span>
-        {t('pg.balance')} <code className="text-foreground">{usd(meta.balance_micros)}</code>
+        {t('pg.balance')} <code className="text-foreground">{usd(meta.balance_nanos)}</code>
       </span>
       <span>
         {t('pg.latency')} <code className="text-foreground">{latency(meta.latency_ms)}</code>
@@ -262,7 +262,7 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <ServerIcon className="size-3.5" />
         {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>
       </span>
-      {meta.fee_micros === 0 ? <span>{t('pg.fee_zero_failed')}</span> : null}
+      {meta.fee_nanos === 0 ? <span>{t('pg.fee_zero_failed')}</span> : null}
     </div>
   );
 }
