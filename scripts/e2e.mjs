@@ -192,7 +192,12 @@ async function createCredential(protocol, visibility = 'private') {
   return { id: result.json.id, status: result.status, body: result.json };
 }
 
-/** 默认走签名；给 bearer 时改走消费者密钥，两条路必须是同一个账户。 */
+/**
+ * 两种身份，两种调用形状：
+ *   签名（人）        → 需要 X-Norm-Credential 说清用哪条上游
+ *   消费者 Token      → 上游在建钥时就绑好了，只要一个 Authorization
+ * 刻意不给 Bearer 那条路补任何头：这一条断言的就是「程序侧只要一个 api key」。
+ */
 async function chat(credentialId, extra = {}, bearer = null) {
   const payload = JSON.stringify({
     model: 'gpt-test',
@@ -202,9 +207,14 @@ async function chat(credentialId, extra = {}, bearer = null) {
     ],
     ...extra,
   });
-  const headers = { 'X-Norm-Credential': credentialId };
-  if (bearer) return raw('POST', '/v1/chat/completions', payload, { ...headers, Authorization: `Bearer ${bearer}` });
-  return call(alice, 'POST', '/v1/chat/completions', payload, headers);
+  if (bearer) return raw('POST', '/v1/chat/completions', payload, { Authorization: `Bearer ${bearer}` });
+  return call(alice, 'POST', '/v1/chat/completions', payload, { 'X-Norm-Credential': credentialId });
+}
+
+/** 建一把绑好上游的下游 Token。绑定是建钥时的参数，之后不再出现在请求里。 */
+async function createConsumer(name, credentialId) {
+  const created = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({ name, credential_id: credentialId }));
+  return created;
 }
 
 /** 不带签名的一次请求：Bearer 消费者密钥走的是这条入口。 */
@@ -399,11 +409,21 @@ console.log('9. 上游渠道按 base_url 聚合；「可信」只是一份清单
   check('attestation 有 policy', typeof attestation.policy?.keys === 'string', attestation.policy);
 }
 
-console.log('10. 下游消费者密钥：只显一次、可轮换、旧钥立刻失效');
+console.log('10. 下游消费者 Token：绑定上游、只显一次、可轮换、旧钥立刻失效');
 let consumerKey = null;
 {
-  const created = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({ name: 'e2e bot' }));
+  // 没指定上游就不给建：一把说不清「钱付给谁」的 Token 只会变成别人的账单。
+  const unbound = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({ name: 'no upstream' }));
+  check('不指定上游 → 400', unbound.status === 400 && unbound.json.error === 'credential_missing', unbound.json);
+
+  const unknown = await call(alice, 'POST', '/api/v1/consumers', JSON.stringify({
+    name: 'unknown upstream', credential_id: 'cred_does_not_exist',
+  }));
+  check('上游不存在 → 404', unknown.status === 404 && unknown.json.error === 'credential_not_found', unknown.json);
+
+  const created = await createConsumer('e2e bot', credentials['openai-chat']);
   check('创建 201', created.status === 201, created.json);
+  check('回带绑定的上游', created.json.credential_id === credentials['openai-chat'] && created.json.credential_label === 'openai-chat upstream', created.json);
   consumerKey = created.json.key;
   check('明文形如 sk-norm-…', typeof consumerKey === 'string' && consumerKey.startsWith('sk-norm-'), consumerKey);
   check('回带提示', created.json.key_hint?.startsWith('sk-norm-'), created.json.key_hint);
@@ -414,6 +434,7 @@ let consumerKey = null;
   check('列表里连哈希都不回', !serialized.includes('key_sha256'), serialized);
   const entry = list.json.items.find((item) => item.id === created.json.id);
   check('只暴露 key_hint', entry?.key_hint === created.json.key_hint, entry);
+  check('列表说得出这把钥匙打到哪', entry?.credential_label === 'openai-chat upstream' && entry?.credential_base_url === BASE_URL, entry);
 
   // 一把下游密钥不能凭空再铸一把：管理面只认签名。
   const escalate = await raw('POST', '/api/v1/consumers', JSON.stringify({ name: 'x' }), {
@@ -424,12 +445,19 @@ let consumerKey = null;
   check('消费者密钥读不了消费者列表', readByKey.status === 401, readByKey.status);
 
   const viaKey = await chat(credentials['openai-chat'], {}, consumerKey);
-  check('用消费者密钥调用 200', viaKey.status === 200, viaKey.json);
+  check('只带一个 Bearer 就能调用 200', viaKey.status === 200, viaKey.json);
+  check('打到建钥时绑定的那台上游', viaKey.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, viaKey.json?.norm);
   check('费用记在同一个账户上', viaKey.json?.norm?.fee_micros === 500, viaKey.json?.norm);
   check('余额从同一本账上扣', viaKey.json?.norm?.balance_micros !== null, viaKey.json?.norm);
 
   const bad = await chat(credentials['openai-chat'], {}, 'sk-norm-not-a-real-key');
   check('假密钥 401', bad.status === 401 && bad.json.error === 'consumer_key_invalid', bad.json);
+
+  // 一条 Token 绑死一条上游：它不能借请求头把调用改打到别处去。
+  const redirected = await raw('POST', '/v1/chat/completions', JSON.stringify({
+    model: 'gpt-test', messages: [{ role: 'user', content: 'hi' }],
+  }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Credential': credentials['anthropic-messages'] });
+  check('绑定上游不被请求头改写', redirected.status === 200 && redirected.json?.choices?.length === 1, redirected.json);
 
   const used = (await call(alice, 'GET', '/api/v1/consumers')).json.items.find((item) => item.id === created.json.id);
   check('用过之后 last_used_at 有值', typeof used?.last_used_at === 'number', used);
@@ -539,29 +567,20 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
   }
 
   // 各家 SDK 用各自的头带密钥：Claude Code 走 x-api-key，Google SDK 走 x-goog-api-key。
+  // 每条 Token 各自绑一条上游，所以三种写法都只带那一个头——没有第二个 Norm 专有的头。
   {
-    const consumerPath = '/api/v1/consumers';
-    const created = await call(alice, 'POST', consumerPath, JSON.stringify({ name: 'matrix bot' }));
-    const consumerKey = created.json.key;
+    const anthKey = (await createConsumer('matrix bot (anthropic)', credentials['anthropic-messages'])).json.key;
+    const gemKey = (await createConsumer('matrix bot (gemini)', credentials['google-gemini'])).json.key;
 
     const anth = ENTRIES['anthropic-messages']('gpt-test', false);
-    const viaApiKey = await raw('POST', anth.path, JSON.stringify(anth.body), {
-      'x-api-key': consumerKey,
-      'X-Norm-Credential': credentials['anthropic-messages'],
-    });
+    const viaApiKey = await raw('POST', anth.path, JSON.stringify(anth.body), { 'x-api-key': anthKey });
     check('x-api-key 能当消费者密钥（Claude Code 的形状）', viaApiKey.status === 200, viaApiKey.json);
 
     const gem = ENTRIES['google-gemini']('gpt-test', false);
-    const viaGoog = await raw('POST', gem.path, JSON.stringify(gem.body), {
-      'x-goog-api-key': consumerKey,
-      'X-Norm-Credential': credentials['google-gemini'],
-    });
+    const viaGoog = await raw('POST', gem.path, JSON.stringify(gem.body), { 'x-goog-api-key': gemKey });
     check('x-goog-api-key 能当消费者密钥（Google SDK 的形状）', viaGoog.status === 200, viaGoog.json);
 
-    const viaBearer = await raw('POST', anth.path, JSON.stringify(anth.body), {
-      Authorization: `Bearer ${consumerKey}`,
-      'X-Norm-Credential': credentials['anthropic-messages'],
-    });
+    const viaBearer = await raw('POST', anth.path, JSON.stringify(anth.body), { Authorization: `Bearer ${anthKey}` });
     check('Bearer 也一样', viaBearer.status === 200, viaBearer.json);
 
     // 没有 sk-norm- 前缀的 api key 不是我们的身份：要说不清就直说不清，不要误判成「钥匙无效」。
@@ -571,7 +590,11 @@ console.log('12. 4×4 矩阵：入口方言 × 上游协议');
     });
     check('别家的 api key 不被当成消费者密钥', foreign.status === 401 && foreign.json.error === 'signature_required', foreign.json);
 
-    await call(alice, 'DELETE', `/api/v1/consumers/${created.json.id}`);
+    for (const name of ['matrix bot (anthropic)', 'matrix bot (gemini)']) {
+      const list = (await call(alice, 'GET', '/api/v1/consumers')).json.items;
+      const target = list.find((item) => item.name === name);
+      if (target) await call(alice, 'DELETE', `/api/v1/consumers/${target.id}`);
+    }
   }
 
   // 跨方言的工具调用不翻译：早拒绝，而不是让客户端收到一段散文。

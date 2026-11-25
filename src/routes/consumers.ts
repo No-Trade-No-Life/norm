@@ -4,11 +4,14 @@ import type { Principal } from '../auth';
 import { consumerKeyHash, consumerKeyHint, newConsumerKey } from '../consumers';
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
+import { findCredential } from '../store';
 
 export type ConsumerRow = {
   id: string;
   address: string;
   name: string;
+  /** 建的时候就绑死的那条上游提供者：一把密钥 = 一条完整调用。 */
+  credential_id: string;
   key_sha256: string;
   key_hint: string;
   created_at: number;
@@ -23,32 +26,56 @@ export const consumerRoutes = new Hono<{ Bindings: Env; Variables: { principal: 
  * 而前端一行都不需要它。SELECT * 会顺手把它带出去，所以这里逐列写出。
  */
 consumerRoutes.get('/', async (c) => {
+  // 顺带把上游提供者的昵称带上：列表要回答「这把钥匙打到哪」，而不是只回一个 id。
   const { results } = await c.env.DB.prepare(
-    `SELECT id, name, key_hint, created_at, last_used_at
-     FROM consumers WHERE address = ? AND revoked_at IS NULL
-     ORDER BY created_at DESC, rowid DESC`,
+    `SELECT consumers.id, consumers.name, consumers.key_hint, consumers.credential_id,
+            credentials.label AS credential_label, credentials.base_url AS credential_base_url,
+            consumers.created_at, consumers.last_used_at
+     FROM consumers
+     LEFT JOIN credentials ON credentials.id = consumers.credential_id
+     WHERE consumers.address = ? AND consumers.revoked_at IS NULL
+     ORDER BY consumers.created_at DESC, consumers.rowid DESC`,
   )
     .bind(c.get('principal').address)
     .all<Omit<ConsumerRow, 'address' | 'key_sha256' | 'revoked_at'>>();
   return c.json({ items: results });
 });
 
+/**
+ * 建钥必须指定上游：绑定只在这一次决定，之后一次 Bearer 就是一次完整调用。
+ * 不设默认值——「随便挑一条上游」会让一把钥匙悄悄变成别人的账单。
+ */
 consumerRoutes.post('/', async (c) => {
-  const body = await c.req.json<{ name?: string }>();
+  const body = await c.req.json<{ name?: string; credential_id?: string }>();
   const address = c.get('principal').address;
   const name = (body.name ?? '').trim();
+  const credentialId = (body.credential_id ?? '').trim();
   if (!name) fail(400, 'name_missing', '缺少 name');
+  if (!credentialId) fail(400, 'credential_missing', '缺少 credential_id');
+
+  const credential = await findCredential(c.env, address, credentialId);
+  if (!credential) fail(404, 'credential_not_found', '凭证不存在或已撤销');
 
   // 明文密钥只在这几行里存在：哈希入库，明文只随这一次响应离开服务器。
   const key = newConsumerKey();
   const id = `cons_${randomToken(12)}`;
   await c.env.DB.prepare(
-    'INSERT INTO consumers (id, address, name, key_sha256, key_hint, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO consumers (id, address, name, credential_id, key_sha256, key_hint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(id, address, name, consumerKeyHash(key), consumerKeyHint(key), nowSeconds())
+    .bind(id, address, name, credentialId, consumerKeyHash(key), consumerKeyHint(key), nowSeconds())
     .run();
 
-  return c.json({ id, name, key, key_hint: consumerKeyHint(key) }, 201);
+  return c.json(
+    {
+      id,
+      name,
+      credential_id: credentialId,
+      credential_label: credential.label,
+      key,
+      key_hint: consumerKeyHint(key),
+    },
+    201,
+  );
 });
 
 /**

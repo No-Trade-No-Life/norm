@@ -8,6 +8,11 @@ import { principalFromConsumerKey } from './consumers';
 
 export type Principal = {
   address: string;
+  /**
+   * 只有消费者密钥会填它：那条 Token 在建的时候就绑死了一条上游提供者。
+   * 签名身份（人）永远留空——它管资源，消费的时候还是拿一条 Token。
+   */
+  credentialId?: string;
 };
 
 /**
