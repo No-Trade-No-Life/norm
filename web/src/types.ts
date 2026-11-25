@@ -6,6 +6,20 @@ export type LoginResponse = {
   created: boolean;
 };
 
+/** 三项 token 的合计口径：input 含 cache 命中，cached 是其中命中的那部分。 */
+export type TokenTotals = {
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+};
+
+/** 钱的构成：一次服务费 + 三项 token 折出来的钱，以及没收上来的部分。 */
+export type MoneyTotals = {
+  service_fee_micros: number;
+  token_micros: number;
+  unbilled_micros: number;
+};
+
 export type Me = {
   address: string;
   label: string;
@@ -14,6 +28,8 @@ export type Me = {
   spend_micros: number;
   requests: number;
   credentials: number;
+  usage: TokenTotals;
+  billed: MoneyTotals;
   created_at: number;
 };
 
@@ -48,22 +64,34 @@ export type Credential = {
   revoked_at: number | null;
 };
 
+/**
+ * 一条请求记录。账本要回答的四件事都在这里：
+ * 打给谁（base_url / credential_id）、谁发起（consumer_id）、用了多少 token、
+ * 钱怎么算出来的（service_fee + token − unbilled = fee）。
+ */
 export type RequestRow = {
   id: string;
   address: string;
   credential_id: string | null;
+  consumer_id: string | null;
+  base_url: string;
   model: string;
   status: string;
   status_code: number | null;
   latency_ms: number;
-  prompt_tokens: number;
-  completion_tokens: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  service_fee_micros: number;
+  token_micros: number;
   fee_micros: number;
-  provenance: string;
+  unbilled_micros: number;
   created_at: number;
 };
 
 export type LedgerRow = {
+  /** 翻页游标（D1 rowid）：这张表只追加，rowid 序就是时间序。 */
+  cursor: number;
   id: string;
   address: string;
   request_id: string | null;
@@ -78,7 +106,11 @@ export type Consumer = {
   id: string;
   address: string;
   name: string;
-  /** 不绑定上游：走哪条上游是每次转发自己的决定。 */
+  /** 建的时候就绑死的上游提供者：调用时一条 Bearer 就够，不用再带第二个头。 */
+  credential_id: string;
+  /** LEFT JOIN 带上来的昵称与地址；凭证被撤销后为 null。 */
+  credential_label: string | null;
+  credential_base_url: string | null;
   key_hint: string;
   created_at: number;
   last_used_at: number | null;
@@ -93,8 +125,55 @@ export type Attestation = {
   source_sha256: string | null;
   assets_sha256: string | null;
   run_url: string | null;
-  /** 机器可读的策略编号：措辞留在前端字典里，后端只报「是哪一条」。 */
   policy: { logs: string; storage: string; keys: string };
+};
+
+/** 一次调用的账单结论（响应里的 `norm` 字段，流式里是末帧）。 */
+export type CallBill = {
+  request_id: string;
+  /** 真正从余额里扣掉的数 = service_fee + token − unbilled。 */
+  fee_micros: number;
+  service_fee_micros: number;
+  token_micros: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  /** 余额不足时没能收上来的部分；正常为 0。 */
+  unbilled_micros: number;
+  balance_micros: number | null;
+  latency_ms: number;
+  host: string;
+};
+
+/** 按下游消费者密钥聚合的用量：哪把钥匙花了多少。 */
+export type ConsumerUsage = {
+  consumer_id: string | null;
+  consumer_name: string | null;
+  key_hint: string | null;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  fee_micros: number;
+};
+
+/** 按上游提供者聚合的用量：钱花在哪个上游。 */
+export type CredentialUsage = {
+  credential_id: string | null;
+  credential_label: string | null;
+  requests: number;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  fee_micros: number;
+};
+
+/** 公开价目表：微美元 / 每百万 token。 */
+export type Pricing = {
+  unit: string;
+  default: { input: number; cached: number; output: number };
+  models: Array<{ match: string; input: number; cached: number; output: number }>;
+  service_fee: { micros: number; note: string };
 };
 
 export type ChatChunk = {
@@ -107,13 +186,7 @@ export type ChatChunk = {
     input_tokens?: number;
     output_tokens?: number;
   };
-  norm?: {
-    request_id: string;
-    fee_micros: number;
-    balance_micros: number | null;
-    latency_ms: number;
-    host: string;
-  };
+  norm?: CallBill;
   error?: { message?: string } | string;
   message?: string;
 };

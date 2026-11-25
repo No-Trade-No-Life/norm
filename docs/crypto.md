@@ -59,11 +59,11 @@ norm-v1\n{METHOD}\n{PATH}\n{timestamp}\n{nonce}\n{sha256hex(body)}
 
 ```
 key     = base64url 解码 NORM_MASTER_KEY（必须是 32 字节，Worker secret，不进仓库、不进 D1）
-sealed  = base64url( iv12 || AES-256-GCM(key, iv12, plaintext = utf8(upstreamKey), aad = utf8(address + "|" + credentialId)) )
+sealed  = base64url( iv12 || AES-256-GCM(key, iv12, plaintext = utf8(upstreamKey), aad = utf8(address + "|" + providerId)) )
 kdf     = "aes-256-gcm+worker-secret"
 ```
 
-- 封装与解封都在 Worker 里：`POST /api/v1/credentials` 收到明文 `upstream_key`，立刻封装后丢弃；
+- 封装与解封都在 Worker 里：`POST /api/v1/providers` 收到明文 `upstream_key`，立刻封装后丢弃；
   `POST /v1/chat/completions` 现解现用，只在本次请求的作用域里存在。
 - AAD 把密文绑到「哪个账户的哪条凭证」，两条记录被互换也会解密失败，不需要额外的完整性字段。
 - 库里只有 `sealed_key`、`kdf`、`key_hint`（前 4 + `…` + 后 4）。

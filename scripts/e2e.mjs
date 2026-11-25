@@ -13,7 +13,8 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { base58 } from '@scure/base';
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:8787';
-const UPSTREAM_PORT = 9099;
+// 端口可以覆盖：同一台机器上并行跑两个 worktree 时，9099 只有一个能拿到。
+const UPSTREAM_PORT = Number(process.env.UPSTREAM_PORT ?? 9099);
 const KEY = 'sk-test-key';
 
 const enc = new TextEncoder();
@@ -85,7 +86,8 @@ const upstream = createServer((request, response) => {
         id: 'chatcmpl-1',
         model: parsed.model,
         choices: [{ index: 0, message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }],
-        usage: { prompt_tokens: 11, completion_tokens: 3 },
+        // 其中 8 个 token 命中上游缓存：账本要按 cached 价算这 8 个。
+        usage: { prompt_tokens: 11, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 8 } },
       }));
       return;
     }
@@ -165,9 +167,10 @@ const RUN = base58.encode(crypto.getRandomValues(new Uint8Array(6)));
 const BASE_URL = `http://127.0.0.1:${UPSTREAM_PORT}/v1/${RUN}`;
 
 async function call(who, method, path, body, extra = {}) {
+  // 签名只覆盖 pathname（docs/crypto.md）：query 不进待签名串，所以这里也要去掉它。
   const response = await fetch(`${BASE}${path}`, {
     method,
-    headers: { ...sign(who, method, path, body), ...(body ? { 'Content-Type': 'application/json' } : {}), ...extra },
+    headers: { ...sign(who, method, path.split('?')[0], body), ...(body ? { 'Content-Type': 'application/json' } : {}), ...extra },
     body,
   });
   const text = await response.text();
@@ -299,18 +302,24 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
 }
 
 console.log('4. 四种上游协议：请求翻译 + 响应翻译回 OpenAI Chat');
+// input 含缓存命中，cached 是其中命中的那部分：账本只认这三种数字。
 const expected = {
-  'openai-chat': { text: '你好', prompt: 11, completion: 3 },
-  'openai-responses': { text: '你好', prompt: 7, completion: 2 },
-  'anthropic-messages': { text: '你好', prompt: 5, completion: 4 },
-  'google-gemini': { text: '你好', prompt: 9, completion: 6 },
+  'openai-chat': { text: '你好', input: 11, cached: 8, output: 3 },
+  'openai-responses': { text: '你好', input: 7, cached: 0, output: 2 },
+  'anthropic-messages': { text: '你好', input: 5, cached: 0, output: 4 },
+  'google-gemini': { text: '你好', input: 9, cached: 0, output: 6 },
 };
 for (const [protocol, want] of Object.entries(expected)) {
   const result = await chat(credentials[protocol]);
   check(`${protocol} 200`, result.status === 200, result.json);
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
-  check(`${protocol} 扣费 500`, result.json?.norm?.fee_micros === 500, result.json?.norm);
-  check(`${protocol} 回带 host`, result.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, result.json?.norm);
+  const norm = result.json?.norm;
+  check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
+  // 一次调用的钱 = 服务费 + 三项 token 折出来的钱；两个数都能自己核。
+  check(`${protocol} 服务费 100`, norm?.service_fee_micros === 100, norm);
+  check(`${protocol} token 有价`, norm?.token_micros > 0, norm);
+  check(`${protocol} 总价 = 服务费 + token`, norm?.fee_micros === norm?.service_fee_micros + norm?.token_micros, norm);
+  check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, norm);
 }
 
 {
@@ -367,22 +376,51 @@ console.log('7. X-Norm-Base-Url 必须被忽略（否则「钉死」只是口号
   check('明文密钥不在响应里', !result.text.includes(KEY));
 }
 
-console.log('8. 账本与余额一致，每条 charge 能回到请求');
+console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、谁发起');
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 {
   const me = (await call(alice, 'GET', '/api/v1/account/me')).json;
   const okCalls = 4 + 4 + 1; // 四协议各一次 + 流式各一次 + 7 里那一次
-  check(`余额 ${1000000 - okCalls * 500}（${okCalls} 次成功）`, me.balance_micros === 1000000 - okCalls * 500, me);
-  check(`spend ${okCalls * 500}`, me.spend_micros === okCalls * 500, me);
   check('requests 含一次失败', me.requests === okCalls + 1, me);
+  check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
+  check('费用按服务费 + token 拆开', (me.billed?.service_fee_micros ?? 0) > 0 && (me.billed?.token_micros ?? 0) > 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger')).json;
   const charges = ledger.items.filter((row) => row.kind === 'charge');
   check('charge 数等于成功调用数', charges.length === okCalls, charges.length);
-  check('charge 都是负数', charges.every((row) => row.amount_micros === -500), charges);
-  check('charge 都带 request_id', charges.every((row) => row.request_id?.startsWith('req_')), charges);
+  check('charge 都是负数', charges.every((row) => row.amount_micros < 0), charges.map((row) => row.amount_micros));
+  // request_id 是 UUID v7：字典序即时间序，账本按它翻页。
+  check('charge 都带 UUID v7 的 request_id', charges.every((row) => UUID_V7.test(row.request_id ?? '')), charges.map((row) => row.request_id));
+  check('流水带了翻页游标', typeof ledger.items[0]?.cursor === 'number', ledger.items[0]);
+
   const sum = ledger.items.reduce((total, row) => total + row.amount_micros, 0);
   check('流水求和 == 当前余额', sum === me.balance_micros, { sum, balance: me.balance_micros });
   check('最新一条流水的余额 == 当前余额', ledger.items[0].balance_after_micros === me.balance_micros, ledger.items[0]);
+  const charged = charges.reduce((total, row) => total + row.amount_micros, 0);
+  check('累计花费 == 流水扣费之和', me.spend_micros === -charged, { spend: me.spend_micros, charged });
+
+  const usage = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json;
+  const ok = usage.items.filter((row) => row.status === 'ok');
+  check('请求记录里带着上游地址', ok.every((row) => row.base_url === BASE_URL), ok.map((row) => row.base_url));
+  check('请求记录里带着提供者 id', ok.every((row) => row.credential_id !== null), ok.map((row) => row.credential_id));
+  check('请求记录里带着三项 token', ok.every((row) => 'input_tokens' in row && 'cached_tokens' in row && 'output_tokens' in row), ok[0]);
+  // 每一条都能自己核对：服务费 + token 折价 = 扣费。
+  check('每条请求的账都能对上', ok.every((row) => row.fee_micros === row.service_fee_micros + row.token_micros - row.unbilled_micros), ok[0]);
+  check('失败那条 token 与费用都是 0', usage.items.some((row) => row.status !== 'ok' && row.fee_micros === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
+
+  // 按 id 翻页：第一页最后一条之后接着往下取，不会与第一页重叠。
+  const firstPage = (await call(alice, 'GET', '/api/v1/account/usage?limit=2')).json.items;
+  const nextPage = (await call(alice, 'GET', `/api/v1/account/usage?limit=2&before=${firstPage.at(-1).id}`)).json.items;
+  check('游标翻页不重叠', nextPage.every((row) => !firstPage.some((first) => first.id === row.id)), { firstPage: firstPage.map((r) => r.id), nextPage: nextPage.map((r) => r.id) });
+
+  const byConsumer = (await call(alice, 'GET', '/api/v1/account/usage/by-consumer')).json.items;
+  check('按钥匙聚合里有签名直连那一档', byConsumer.some((row) => row.consumer_id === null), byConsumer);
+  const byCredential = (await call(alice, 'GET', '/api/v1/account/usage/by-credential')).json.items;
+  check('按上游聚合回了提供者的名字', byCredential.every((row) => typeof row.credential_label === 'string'), byCredential);
+
+  const pricing = (await (await fetch(`${BASE}/api/v1/pricing`)).json());
+  check('价目表公开可读', typeof pricing.default?.input === 'number' && Array.isArray(pricing.models), pricing);
+  check('价目表带服务费', pricing.service_fee?.micros === 100, pricing.service_fee);
 }
 
 console.log('9. 上游渠道按 base_url 聚合；「可信」只是一份清单');
@@ -450,7 +488,7 @@ let consumerKey = null;
   }), { Authorization: `Bearer ${consumerKey}`, 'X-Norm-Credential': credentials['openai-chat'] });
   check('指名上游就能调用 200', viaKey.status === 200, viaKey.json);
   check('打到指名的那台上游', viaKey.json?.norm?.host === `127.0.0.1:${UPSTREAM_PORT}`, viaKey.json?.norm);
-  check('费用记在同一个账户上', viaKey.json?.norm?.fee_micros === 500, viaKey.json?.norm);
+  check('费用记在同一个账户上', viaKey.json?.norm?.fee_micros > 0, viaKey.json?.norm);
   check('余额从同一本账上扣', viaKey.json?.norm?.balance_micros !== null, viaKey.json?.norm);
 
   const bad = await raw('POST', '/v1/chat/completions', JSON.stringify({

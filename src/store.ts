@@ -1,8 +1,8 @@
 import type { Env } from './env';
-import { fail } from './http';
 import type { UpstreamProtocol, UpstreamVisibility } from './upstreams';
 import { grantMicros } from './env';
 import { isTrusted } from './base-urls';
+import { fail } from './http';
 import { randomToken } from './ids';
 
 export type PrincipalRow = {
@@ -84,12 +84,63 @@ export async function findCredential(env: Env, address: string, id: string): Pro
 }
 
 /**
- * 这次转发走哪条上游。
+ * 一次调用的全部记账：扣钱、记流水、记请求，三步只描述同一件事。
  *
- * 规则只有一条，而且是「越少配置越好」的那条：头里指了名就用它；没指名时，
- * 账户里有且只有一条上游就用那一条——于是「添一条上游、拿一条 Token」就够了，
- * 调用方一个 Norm 专有的头都不用认识。多条时不猜：猜错等于把钱打到别的上游去，
- * 所以宁可报错让调用方指明。
+ * 余额的扣减用一条 `UPDATE ... MIN(?, balance)` 完成：扣掉的是「该付的」与「还剩下的」
+ * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：上游已经执行完了，
+ * 这笔钱该记下来，而账不能变成负数——差的那部分记成 `unbilled_micros`，
+ * 由站点承担，并在页面上如实显示。
+ *
+ * 余额充足时 `unbilled_micros` 恒为 0，`fee_micros = service_fee_micros + token_micros`。
+ * 失败（上游报错、网络不可达）不调用这里：那条路只写请求记录，扣费为 0。
+ */
+export type Bill = {
+  requestId: string;
+  /** 一次性服务费，与 token 无关。 */
+  serviceFeeMicros: number;
+  /** 三项 token 折出来的钱。 */
+  tokenMicros: number;
+};
+
+export type Settled = {
+  /** 真正从余额里扣掉的数。 */
+  billedMicros: number;
+  /** 扣不满、由站点承担的部分。 */
+  unbilledMicros: number;
+  balanceMicros: number;
+};
+
+export type RequestRecord = {
+  requestId: string;
+  address: string;
+  credentialId: string | null;
+  /** 这次调用由哪把下游消费者密钥发起；签名直连时为空。 */
+  consumerId: string | null;
+  baseUrl: string;
+  model: string;
+  status: string;
+  statusCode: number | null;
+  latencyMs: number;
+  inputTokens: number;
+  cachedTokens: number;
+  outputTokens: number;
+  serviceFeeMicros: number;
+  tokenMicros: number;
+  feeMicros: number;
+  unbilledMicros: number;
+  at: number;
+};
+
+/** 只写请求记录、不扣费：失败路径用它，代价由站点承担。 */
+export async function recordRequest(env: Env, row: RequestRecord): Promise<void> {
+  await requestInsert(env, row).run();
+}
+
+/**
+ * 这次转发用哪条上游：头里点了名就用它，没点名就用账户里唯一的那条。
+ *
+ * 多条又不指名是 409 而不是猜一条——「钱付给谁」是这个服务里失败代价最高的选择，
+ * 不该由一个默认值替用户决定。签名身份与消费者 Token 走同一个判定点。
  */
 export async function resolveCredentialId(env: Env, address: string, requested: string | null): Promise<string> {
   const named = requested?.trim();
@@ -109,31 +160,86 @@ export async function resolveCredentialId(env: Env, address: string, requested: 
 }
 
 /**
- * 扣费与记账之间不能有窗口：余额的更新用一条 `UPDATE ... RETURNING` 完成，
- * 返回值就是这笔扣费之后的余额，天然与并发隔离。
- * 余额不足时返回 null——不做"先欠后补"。
+ * 扣费 + 流水 + 请求记录：一次调用的三件事，写在一起。
+ *
+ * 扣多少：该付多少就扣多少，余额不够时把剩下的全扣掉（余额落到 0），
+ * 差的那部分记成 `unbilled_micros` 由站点承担——上游已经执行完了，账要记，
+ * 但余额不能变成负数。
+ *
+ * 为什么是「先读再带条件更新」而不是一条 `UPDATE ... RETURNING`：
+ * 我们需要知道**扣掉了多少**才能写流水，而 RETURNING 只给新余额，
+ * 分不清「余额刚好够」与「余额不够」这两种都落到 0 的情况。
+ * 于是用读到的余额做乐观并发条件（`balance_micros = ?`），被并发改掉就重读重算。
+ * 同一个账户同时打多个请求时才会撞上，最多重试 3 次。
  */
-export async function charge(
-  env: Env,
-  address: string,
-  requestId: string,
-  amountMicros: number,
-  at: number,
-): Promise<number | null> {
-  const updated = await env.DB.prepare(
-    `UPDATE principals SET balance_micros = balance_micros - ?, spend_micros = spend_micros + ?
-     WHERE address = ? AND balance_micros >= ?
-     RETURNING balance_micros`,
-  )
-    .bind(amountMicros, amountMicros, address, amountMicros)
-    .first<{ balance_micros: number }>();
-  if (!updated) return null;
+export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
+  const due = row.serviceFeeMicros + row.tokenMicros;
 
-  await env.DB.prepare(
-    `INSERT INTO ledger (id, address, request_id, kind, amount_micros, balance_after_micros, created_at)
-     VALUES (?, ?, ?, 'charge', ?, ?, ?)`,
-  )
-    .bind(randomToken(), address, requestId, -amountMicros, updated.balance_micros, at)
-    .run();
-  return updated.balance_micros;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await env.DB.prepare('SELECT balance_micros FROM principals WHERE address = ?')
+      .bind(row.address)
+      .first<{ balance_micros: number }>();
+    if (!current) throw new Error(`账户不存在：${row.address}`);
+
+    const billed = Math.min(due, Math.max(current.balance_micros, 0));
+    const updated = await env.DB.prepare(
+      `UPDATE principals SET balance_micros = balance_micros - ?, spend_micros = spend_micros + ?
+       WHERE address = ? AND balance_micros = ?
+       RETURNING balance_micros`,
+    )
+      .bind(billed, billed, row.address, current.balance_micros)
+      .first<{ balance_micros: number }>();
+    if (!updated) continue;
+
+    const settled: Settled = {
+      billedMicros: billed,
+      unbilledMicros: due - billed,
+      balanceMicros: updated.balance_micros,
+    };
+
+    // 流水与请求记录同批写入：这条 charge 一定能回到那次请求。
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO ledger (id, address, request_id, kind, amount_micros, balance_after_micros, created_at)
+         VALUES (?, ?, ?, 'charge', ?, ?, ?)`,
+      ).bind(randomToken(), row.address, row.requestId, -billed, settled.balanceMicros, row.at),
+      requestInsert(env, { ...row, feeMicros: billed, unbilledMicros: settled.unbilledMicros }),
+    ]);
+    return settled;
+  }
+
+  // 三次都被并发改写：宁可不扣，也不猜一个数。请求照样落库，账面上标成未收。
+  const latest = await env.DB.prepare('SELECT balance_micros FROM principals WHERE address = ?')
+    .bind(row.address)
+    .first<{ balance_micros: number }>();
+  await recordRequest(env, { ...row, feeMicros: 0, unbilledMicros: due });
+  return { billedMicros: 0, unbilledMicros: due, balanceMicros: latest?.balance_micros ?? 0 };
+}
+
+function requestInsert(env: Env, row: RequestRecord) {
+  return env.DB.prepare(
+    `INSERT INTO requests
+       (id, address, credential_id, consumer_id, base_url, model, status, status_code, latency_ms,
+        input_tokens, cached_tokens, output_tokens,
+        service_fee_micros, token_micros, fee_micros, unbilled_micros, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    row.requestId,
+    row.address,
+    row.credentialId,
+    row.consumerId,
+    row.baseUrl,
+    row.model,
+    row.status,
+    row.statusCode,
+    row.latencyMs,
+    row.inputTokens,
+    row.cachedTokens,
+    row.outputTokens,
+    row.serviceFeeMicros,
+    row.tokenMicros,
+    row.feeMicros,
+    row.unbilledMicros,
+    row.at,
+  );
 }

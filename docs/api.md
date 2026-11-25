@@ -51,9 +51,24 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_micros, granted_micros, requests, spend_micros}` |
-| GET | `/api/v1/account/usage?limit=50` | 请求记录（不含内容） |
-| GET | `/api/v1/account/ledger?limit=50` | 记账流水 |
+| GET | `/api/v1/account/me` | `{address, label, balance_micros, granted_micros, spend_micros, requests, credentials, usage:{input_tokens,cached_tokens,output_tokens}, billed:{service_fee_micros,token_micros,unbilled_micros}}` |
+| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
+| GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 记账流水，游标是上一页最后一行的 `cursor` |
+| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_micros}` |
+| GET | `/api/v1/account/usage/by-credential` | 按上游提供者聚合（同上，`credential_id` / `credential_label`） |
+
+请求记录里每一行都能自己重算一遍：
+
+```
+fee_micros = service_fee_micros + token_micros − unbilled_micros
+```
+
+`input_tokens` **含**缓存命中，`cached_tokens` 是其中命中上游缓存的量（按便宜的价算），
+`output_tokens` 单独计价。余额不够时 `unbilled_micros` 大于 0——那是站点承担的部分，如实记账。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/pricing` | 公开价目表：`{unit, default, models, service_fee}`，单位是**微美元 / 每百万 token** |
 
 ## 上游提供者（签名）
 
@@ -122,7 +137,10 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 流式：`stream: true` 或 Gemini 的 `:streamGenerateContent`。跨方言时上游 SSE 被翻译成
 入口方言自己的帧（`response.output_text.delta` / `content_block_delta` / `candidates`
-裸 data 帧），**不报 token 用量**（上游不一定在中途给，冒充数字不如留 0，记账同样是 0）。
+裸 data 帧）。用量一边转发一边从上游的帧里嗅出来（四家的位置各不相同：chat 在末帧、
+Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Responses 在
+`response.completed`），所以**收尾帧里的 token 数就是记账用的那一份**；上游一次都没给时
+三项都是 0，账单也就只有服务费。
 同格式直通时上游的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
 唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
 

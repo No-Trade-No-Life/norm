@@ -1,7 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { requestJson, publicJson } from './api';
-import type { Attestation, BaseUrlGroup, Consumer, Credential, LedgerRow, LoginResponse, Me, RequestRow } from './types';
+import type {
+  Attestation,
+  BaseUrlGroup,
+  Consumer,
+  ConsumerUsage,
+  LedgerRow,
+  LoginResponse,
+  Me,
+  Pricing,
+  Credential,
+  CredentialUsage,
+  RequestRow,
+} from './types';
 
 /** 登录：签名走通一次即开户。没有 body，签的是空字节串的 sha256。 */
 export function useLogin(enabled: boolean, address: string) {
@@ -36,28 +48,67 @@ export function useCredentials(enabled: boolean) {
 const PER_PAGE = 20;
 
 /**
- * 请求记录。后端只支持 limit（无 cursor），所以按「取到当前页末行为止」抓取，
- * 再在本地切片；上限 200 行与后端一致。这样 20 行一页的交互在真实数据量下也成立。
+ * 请求记录：游标翻页。`cursor` 是上一页最后一行的 request_id
+ * （UUID v7，字典序即时间序），undefined 表示第一页。
+ *
+ * 为什么不做「拉 200 行再本地切片」：那是旧 id（随机串）带来的权宜，
+ * 账本一旦按 token 计价，行数增长得比请求数快，本地切片会先把流量撑爆。
  */
-export function useUsage(enabled: boolean, page: number) {
-  const need = Math.min(PER_PAGE * (page + 1), 200);
+export function useUsage(enabled: boolean, cursor: string | undefined) {
   return useQuery({
-    queryKey: ['usage', need],
+    queryKey: ['usage', cursor ?? 'head'],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: RequestRow[] }>({ path: `/api/v1/account/usage?limit=${need}` }),
-    select: (data) => data.items.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE),
+    queryFn: () =>
+      requestJson<{ items: RequestRow[] }>({
+        path: `/api/v1/account/usage?limit=${PER_PAGE}${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`,
+      }),
+    select: (data) => data.items,
   });
 }
 
-export function useLedger(enabled: boolean, page: number) {
-  const need = Math.min(PER_PAGE * (page + 1), 200);
+/** 记账流水：同样游标翻页，游标是 D1 的 rowid（这张表只追加，rowid 序即时间序）。 */
+export function useLedger(enabled: boolean, cursor: number | undefined) {
   return useQuery({
-    queryKey: ['ledger', need],
+    queryKey: ['ledger', cursor ?? 'head'],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: LedgerRow[] }>({ path: `/api/v1/account/ledger?limit=${need}` }),
-    select: (data) => data.items.slice(page * PER_PAGE, page * PER_PAGE + PER_PAGE),
+    queryFn: () =>
+      requestJson<{ items: LedgerRow[] }>({
+        path: `/api/v1/account/ledger?limit=${PER_PAGE}${cursor ? `&cursor=${cursor}` : ''}`,
+      }),
+    select: (data) => data.items,
+  });
+}
+
+/** 按下游消费者密钥聚合的用量：账本要能回答「这把钥匙花了多少」。 */
+export function useUsageByConsumer(enabled: boolean) {
+  return useQuery({
+    queryKey: ['usage-by-consumer'],
+    enabled,
+    retry: false,
+    queryFn: () => requestJson<{ items: ConsumerUsage[] }>({ path: '/api/v1/account/usage/by-consumer' }),
+    select: (data) => data.items,
+  });
+}
+
+/** 按上游提供者聚合的用量：钱花在哪个上游。 */
+export function useUsageByCredential(enabled: boolean) {
+  return useQuery({
+    queryKey: ['usage-by-credential'],
+    enabled,
+    retry: false,
+    queryFn: () => requestJson<{ items: CredentialUsage[] }>({ path: '/api/v1/account/usage/by-credential' }),
+    select: (data) => data.items,
+  });
+}
+
+/** 公开价目表：账本旁边要能查到「这个价是怎么算出来的」。 */
+export function usePricing() {
+  return useQuery({
+    queryKey: ['pricing'],
+    staleTime: 300_000,
+    queryFn: () => publicJson<Pricing>('/api/v1/pricing'),
   });
 }
 
@@ -73,8 +124,8 @@ export function useConsumers(enabled: boolean) {
 export function useCreateConsumer() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string }) =>
-      requestJson<{ id: string; name: string; key: string; key_hint: string }>({
+    mutationFn: (body: { name: string; credential_id: string }) =>
+      requestJson<{ id: string; name: string; credential_id: string; key: string; key_hint: string }>({
         path: '/api/v1/consumers',
         method: 'POST',
         body: JSON.stringify(body),

@@ -52,3 +52,9 @@ export function safeHost(baseUrl: string): string {
     return baseUrl;
   }
 }
+
+/** 占比：`cached / input`。缓存命中率是账本上最值得盯的一个比值。 */
+export function percent(part: number | null | undefined, whole: number | null | undefined): string {
+  if (!whole || whole <= 0 || part === null || part === undefined) return '0%';
+  return `${Math.round((part / whole) * 100)}%`;
+}

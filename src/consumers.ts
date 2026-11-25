@@ -46,5 +46,6 @@ export async function principalFromConsumerKey(env: Env, key: string): Promise<P
   await env.DB.prepare('UPDATE consumers SET last_used_at = ? WHERE id = ?')
     .bind(Math.floor(Date.now() / 1000), row.id)
     .run();
-  return { address: row.address };
+  // 顺手把 consumer id 交出去：账本要能回答「这条钱是哪把钥匙花的」。
+  return { address: row.address, consumerId: row.id };
 }

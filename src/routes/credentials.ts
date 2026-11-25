@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { fail } from '../http';
-import { nowSeconds, randomToken } from '../ids';
+import { nowSeconds, uuidv4 } from '../ids';
 import { isProtocol, isVisibility } from '../upstreams';
 import { hostOf } from '../base-urls';
 import { keyHintOf, sealUpstreamKey } from '../seal';
@@ -38,7 +38,8 @@ credentialRoutes.post('/', async (c) => {
   if (!body.upstream_key?.trim()) fail(400, 'upstream_key_missing', '缺少 upstream_key');
 
   const now = nowSeconds();
-  const id = `cred_${randomToken(12)}`;
+  // 上游提供者不按时间被扫描，只是一个被引用的名字：UUID v4。
+  const id = uuidv4();
 
   // 明文只活在这几行里：封装后立刻丢弃，既不进 D1 也不进日志。
   const upstreamKey = body.upstream_key.trim();
