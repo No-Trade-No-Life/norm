@@ -32,6 +32,7 @@ export const COPY = {
   'action.relogin': { zh: '重新登录', en: 'Sign in again' },
   'action.export_seed': { zh: '导出种子', en: 'Export seed' },
   'action.import_seed': { zh: '导入种子', en: 'Import seed' },
+  'action.copy_json': { zh: '复制 JSON 数组', en: 'Copy JSON array' },
   'action.new_credential': { zh: '添加上游提供者', en: 'Add upstream provider' },
   'action.revoke': { zh: '撤销', en: 'Revoke' },
   'action.revoke_confirm': { zh: '确认撤销？', en: 'Confirm revoke?' },
@@ -53,22 +54,33 @@ export const COPY = {
     zh: 'Ed25519 密钥对就是账号，私钥永不离开浏览器。',
     en: 'An Ed25519 keypair is the account. The private key never leaves this browser.',
   },
-  'identity.seed_note': {
-    zh: '种子只存在本机 localStorage，换设备请导出后导入。',
-    en: 'The seed lives only in this browser storage. Export it to move devices.',
+  'identity.keypair_note': {
+    zh: '密钥是本机 localStorage 里的 64 字节（32 字节种子 + 32 字节公钥，与 Solana 的密钥种子同形）。换设备请导出后导入。',
+    en: 'The key is 64 bytes in this browser\'s storage: a 32-byte seed plus its 32-byte public key — the same shape as a Solana keypair. Export it to move devices.',
   },
-  'identity.export_title': { zh: '导出种子（base58）', en: 'Export seed (base58)' },
+  'identity.migrated_note': {
+    zh: '已把本机的旧 32 字节种子升级为 64 字节展开形式。地址与账户都没变，只是备份格式变了——顺手重新导出一份吧。',
+    en: 'This browser\'s old 32-byte seed was upgraded to the 64-byte expanded form. Address and account are unchanged; only the backup format is — re-export a fresh copy.',
+  },
+  'identity.export_title': { zh: '导出密钥（base58，64 字节）', en: 'Export key (base58, 64 bytes)' },
+  'identity.export_json_note': {
+    zh: '也可以复制成 JSON 数组——那就是 Solana id.json 的形状，能直接喂给 solana-keygen 或 @solana/web3.js。',
+    en: 'You can also copy it as a JSON array — that is the shape of a Solana id.json, ready for solana-keygen or @solana/web3.js.',
+  },
   'identity.export_warn': {
     zh: '这是你的私钥。任何拿到它的人都能完全控制这个账号，不要发给任何人。',
     en: 'This is your private key. Anyone with it fully controls this account. Never share it.',
   },
-  'identity.import_title': { zh: '导入种子', en: 'Import seed' },
-  'identity.import_placeholder': { zh: '粘贴 base58 种子', en: 'Paste a base58 seed' },
+  'identity.import_title': { zh: '导入密钥', en: 'Import key' },
+  'identity.import_placeholder': { zh: '粘贴 base58 密钥，或 [1,2,…] 数组', en: 'Paste a base58 key, or a [1,2,…] array' },
   'identity.import_note': {
-    zh: '导入会覆盖本机种子，并用新身份重新登录。',
-    en: 'Importing replaces the local seed and signs in again with the new identity.',
+    zh: '接受 base58 的 64 字节密钥；旧的 32 字节种子、Solana 的 id.json 数组也认，会升级成 64 字节。导入覆盖本机密钥并重新登录。',
+    en: 'Accepts a base58 64-byte key; the older 32-byte seed and a Solana id.json array also work and get upgraded to 64 bytes. Importing replaces the local key and signs in again.',
   },
-  'identity.import_invalid': { zh: '种子无效：需要 32 字节的 base58 文本', en: 'Invalid seed: expected 32 bytes of base58' },
+  'identity.import_invalid': {
+    zh: '密钥无效：需要 64 字节（32 字节种子 + 32 字节公钥），或可升级的 32 字节种子。',
+    en: 'Invalid key: expected 64 bytes (32-byte seed + 32-byte public key), or a 32-byte seed to upgrade.',
+  },
   'identity.new_identity': { zh: '本机新身份', en: 'Fresh identity on this device' },
 
   'pg.title': { zh: 'Playground', en: 'Playground' },
