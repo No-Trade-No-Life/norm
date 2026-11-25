@@ -154,6 +154,35 @@ const provider = createServer((request, response) => {
       return;
     }
 
+    // 5) 四种协议的模型清单：路径与形状各不相同，翻译必须发生在 Norm 这一侧。
+    // 顺序要紧：anthropic 的 /v1/models 也以 /models 结尾，先认更长的那个。
+    if (request.method === 'GET') {
+      if (url.pathname.endsWith('/v1beta/models')) {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ models: [
+          { name: 'models/gemini-2.0-flash', displayName: 'Gemini 2.0 Flash' },
+          { name: 'models/gemini-2.0-pro', displayName: 'Gemini 2.0 Pro' },
+        ] }));
+        return;
+      }
+      if (url.pathname.endsWith('/v1/models')) {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ data: [
+          { id: 'claude-sonnet-4-20250514', type: 'model', created_at: '2025-05-14T00:00:00Z' },
+          { id: 'claude-haiku-3', type: 'model', created_at: '2024-03-07T00:00:00Z' },
+        ] }));
+        return;
+      }
+      if (url.pathname.endsWith('/models')) {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ object: 'list', data: [
+          { id: 'gpt-4o-mini', object: 'model', created: 1721174400, owned_by: 'openai' },
+          { id: 'gpt-4o', object: 'model', created: 1715367049, owned_by: 'openai' },
+        ] }));
+        return;
+      }
+    }
+
     response.writeHead(404, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ error: 'no such provider path', path: url.pathname }));
   });
@@ -745,6 +774,64 @@ console.log('12. 4×4 矩阵：入口方言 × provider 协议');
     check('anthropic 流式直通保留 provider 事件名', result.text.includes('event: message_start') === false ? result.text.includes('"message_start"') : true, result.text.slice(0, 200));
     check('anthropic 流式直通保留 provider delta 原文', result.text.includes('"text_delta"'), result.text.slice(0, 300));
   }
+}
+
+console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣费');
+{
+  const WANT = {
+    'openai-chat': ['gpt-4o-mini', 'gpt-4o'],
+    'openai-responses': ['gpt-4o-mini', 'gpt-4o'],
+    'anthropic-messages': ['claude-sonnet-4-20250514', 'claude-haiku-3'],
+    'google-gemini': ['gemini-2.0-flash', 'gemini-2.0-pro'],
+  };
+
+  // 余额与请求数在清单这一路上一分都不能动：先记下来，最后对一遍。
+  const before = (await call(alice, 'GET', '/api/v1/account/me')).json;
+
+  for (const [protocol, ids] of Object.entries(WANT)) {
+    const seenBefore = seen.length;
+    const result = await call(alice, 'GET', '/v1/models', undefined, { 'X-Norm-Provider': providers[protocol] });
+    check(`${protocol} 清单 200`, result.status === 200, result.json);
+    check(`${protocol} 清单是 OpenAI 形状`, result.json?.object === 'list' && Array.isArray(result.json.data), result.json);
+    check(`${protocol} 模型名归一正确`, JSON.stringify(result.json?.data?.map((m) => m.id)) === JSON.stringify(ids), result.json?.data);
+    check(`${protocol} 每个条目都是 model`, result.json?.data?.every((m) => m.object === 'model'), result.json?.data);
+    // 唯一不扣费的一条路：服务费与 token 都是 0，也没去读余额。
+    check(`${protocol} 清单不扣费`, result.json?.norm?.fee_nanos === 0 && result.json?.norm?.service_fee_nanos === 0, result.json?.norm);
+    check(`${protocol} 清单不报余额`, result.json?.norm?.balance_nanos === null, result.json?.norm);
+    check(`${protocol} 清单回带 host`, result.json?.norm?.host === `127.0.0.1:${PROVIDER_PORT}`, result.json?.norm);
+
+    const upstreamSeen = seen.slice(seenBefore).at(-1);
+    check(`${protocol} 用 GET 打清单端点`, upstreamSeen?.path.includes('models'), upstreamSeen?.path);
+  }
+
+  const gemini = (await call(alice, 'GET', '/v1/models', undefined, { 'X-Norm-Provider': providers['google-gemini'] })).json;
+  check('gemini 名字去掉了 models/ 前缀', gemini.data.every((m) => !m.id.startsWith('models/')), gemini.data);
+
+  const anthropic = (await call(alice, 'GET', '/v1/models', undefined, { 'X-Norm-Provider': providers['anthropic-messages'] })).json;
+  check('anthropic 的 created_at 转成 unix 秒', anthropic.data[0]?.created === 1747180800, anthropic.data[0]);
+  check('anthropic 不凭空编 owned_by', anthropic.data[0]?.owned_by === undefined, anthropic.data[0]);
+
+  const openai = (await call(alice, 'GET', '/v1/models', undefined, { 'X-Norm-Provider': providers['openai-chat'] })).json;
+  check('openai 保留 created 与 owned_by', openai.data[0]?.created === 1721174400 && openai.data[0]?.owned_by === 'openai', openai.data[0]);
+
+  const one = await call(alice, 'GET', '/v1/models/gpt-4o-mini', undefined, { 'X-Norm-Provider': providers['openai-chat'] });
+  check('单个模型 200', one.status === 200 && one.json.id === 'gpt-4o-mini' && one.json.object === 'model', one.json);
+  const missing = await call(alice, 'GET', '/v1/models/no-such-model', undefined, { 'X-Norm-Provider': providers['openai-chat'] });
+  check('不存在的模型 404 model_not_found', missing.status === 404 && missing.json.error === 'model_not_found', missing.json);
+
+  // 消费者密钥同样能列清单：程序拿着一条 Token 就能看见自己能调什么。
+  const token = (await createConsumer(alice, 'models bot')).json.key;
+  const byKey = await raw('GET', '/v1/models', undefined, {
+    Authorization: `Bearer ${token}`, 'X-Norm-Provider': providers['openai-chat'],
+  });
+  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 2, byKey.json);
+
+  const anonymous = await raw('GET', '/v1/models', undefined, { 'X-Norm-Provider': providers['openai-chat'] });
+  check('无身份 401', anonymous.status === 401, anonymous.status);
+
+  const after = (await call(alice, 'GET', '/api/v1/account/me')).json;
+  check('清单不写请求记录', after.requests === before.requests, { before: before.requests, after: after.requests });
+  check('清单不动余额', after.balance_nanos === before.balance_nanos, { before: before.balance_nanos, after: after.balance_nanos });
 }
 
 provider.close();

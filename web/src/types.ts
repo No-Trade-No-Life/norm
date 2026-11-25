@@ -176,6 +176,36 @@ export type Pricing = {
   service_fee: { nanos: number; note: string };
 };
 
+/** `/v1/models` 的一个条目：四种上游的清单在服务端被归一成这一个形状。 */
+export type ModelItem = {
+  id: string;
+  object: 'model';
+  created?: number;
+  owned_by?: string;
+};
+
+/**
+ * 清单响应。列清单不是模型调用：不生成、不扣服务费、也没去读余额，
+ * 所以账单一律是 0，`balance_nanos` 为 null（不报一个可能过期的数）。
+ */
+export type ModelList = {
+  object: 'list';
+  data: ModelItem[];
+  norm?: {
+    request_id: string;
+    fee_nanos: number;
+    service_fee_nanos: number;
+    token_nanos: number;
+    input_tokens: number;
+    cached_tokens: number;
+    output_tokens: number;
+    unbilled_nanos: number;
+    balance_nanos: number | null;
+    latency_ms: number;
+    host: string;
+  };
+};
+
 export type ChatChunk = {
   id?: string;
   model?: string;

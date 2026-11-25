@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ArrowUpIcon, Loader2Icon, ServerIcon, SquareIcon } from 'lucide-react';
+import { ArrowUpIcon, ListIcon, Loader2Icon, PencilIcon, ServerIcon, SquareIcon } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -9,14 +9,14 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Switch } from '../components/ui/switch';
 import { Textarea } from '../components/ui/textarea';
 import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { errorText } from '../lib/error-text';
 import { latency, usd } from '../lib/format';
-import { useProviders } from '../queries';
+import { useModels, useProviders } from '../queries';
 import type { ChatChunk, Provider } from '../types';
 
 type NormMeta = NonNullable<ChatChunk['norm']>;
@@ -44,6 +44,21 @@ export function PlaygroundPage() {
     () => list.find((item) => item.id === providerId) ?? list[0],
     [list, providerId],
   );
+
+  // 模型清单由服务端代为去问（上游密钥在库里是密文），换上游就换一份清单。
+  const models = useModels(true, provider?.id ?? '');
+  const modelList = useMemo(() => models.data?.data ?? [], [models.data]);
+  // 手填模式：清单里有模型时默认让人从清单选，按笔形图标才切回自由输入。
+  const [manualModel, setManualModel] = useState(false);
+  const pickable = !manualModel && modelList.length > 0;
+
+  /**
+   * 清单读到而模型还空着，就填第一个。
+   * 不是「猜用户要什么」，只是别让人对着空输入框去记这家上游管模型叫什么。
+   */
+  useEffect(() => {
+    if (!model.trim() && modelList.length > 0) setModel(modelList[0].id);
+  }, [model, modelList]);
 
   useEffect(() => {
     if (!outputRef.current) return;
@@ -167,8 +182,63 @@ export function PlaygroundPage() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <Label>{t('pg.model')}</Label>
-              <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder={t('pg.model_placeholder')} spellCheck={false} />
+              <div className="flex items-center justify-between gap-2">
+                <Label>{t('pg.model')}</Label>
+                {/* 清单读不到、或上游没列出要用的那个模型时，随时能切回手填。 */}
+                {pickable ? (
+                  <Button variant="ghost" size="icon-sm" className="-my-1 size-6" aria-label={t('pg.model_manual')} onClick={() => setManualModel(true)}>
+                    <PencilIcon className="size-3.5" />
+                  </Button>
+                ) : modelList.length > 0 ? (
+                  <Button variant="ghost" size="icon-sm" className="-my-1 size-6" aria-label={t('pg.models_pick')} onClick={() => setManualModel(false)}>
+                    <ListIcon className="size-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+              {pickable ? (
+                <Select
+                  value={model}
+                  onValueChange={(value) => setModel(String(value))}
+                  items={[
+                    ...modelList.map((item) => ({ value: item.id, label: item.id })),
+                    ...(model && !modelList.some((item) => item.id === model) ? [{ value: model, label: model }] : []),
+                  ]}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {modelList.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        <span className="font-mono text-xs">{item.id}</span>
+                      </SelectItem>
+                    ))}
+                    {model && !modelList.some((item) => item.id === model) ? (
+                      <SelectItem value={model}>
+                        <span className="font-mono text-xs">{model}</span>
+                      </SelectItem>
+                    ) : null}
+                    <SelectSeparator />
+                    <SelectItem value="__manual__" onClick={() => setManualModel(true)}>
+                      {t('pg.model_manual')}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder={t('pg.model_placeholder')} spellCheck={false} />
+              )}
+              {/* 没有上游时不该说「正在读清单」：那会让人等一个不会发生的请求。 */}
+              {provider ? (
+                <p className="text-[11px] text-muted-foreground">
+                  {models.isPending
+                    ? t('pg.models_loading')
+                    : models.isError
+                      ? t('pg.models_failed')
+                      : modelList.length === 0
+                        ? t('pg.models_empty')
+                        : `${modelList.length} ${t('pg.models_count')} · ${t('pg.models_free')}`}
+                </p>
+              ) : null}
             </div>
           </div>
 

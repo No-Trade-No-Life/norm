@@ -193,3 +193,30 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 
 `/v1/chat/completions` 的流式在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}`；
 另外三条入口的流式不插（那些 SDK 按 `type` 严格分派，插一个它们不认识的事件比丢一条记账信息更糟）。
+
+## 模型清单（签名或 Bearer 消费者密钥）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/v1/models` | 这个上游有哪些模型。`{object:"list", data:[{id, object:"model", created?, owned_by?}]}` |
+| GET | `/v1/models/{model}` | 单个模型；不在上游清单里 → `404 model_not_found` |
+
+两种上游都能用，认上游的规则与转发完全一样（`X-Norm-Credential`，或账户只有一条时省略）。
+上游的清单在这里被归一成 OpenAI 形状，所以一个客户端不必知道自己接的是哪家：
+
+| `upstream_protocol` | 问的上游路径 | 上游回什么 |
+|---|---|---|
+| `openai-chat` / `openai-responses` | `{base}/models` | `data[].id` + `created` + `owned_by` |
+| `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
+| `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
+
+`created` / `owned_by` 不是每家都给，缺了就不编——**空字段比假字段好**。模型名里可能有斜杠
+（`meta-llama/Llama-3`、`models/gemini-2.0-flash`），所以 `/v1/models/{model}` 收整段剩余路径。
+
+**这一路不扣费**：列清单不是一次模型调用，没有生成、没有 token。它不写请求记录、不动账本，
+响应里的 `norm` 明确写着 `fee_micros: 0`、`balance_micros: null`（没去读余额，所以不报一个可能过期的数）。
+上游失败时它的原话原样返回，与转发同一套做法。
+
+```bash
+curl https://norm.ntnl.io/v1/models -H "Authorization: Bearer sk-norm-…"
+```

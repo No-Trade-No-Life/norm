@@ -8,6 +8,7 @@ import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
 import { providerRoutes } from './routes/providers';
 import { consumerRoutes } from './routes/consumers';
+import { modelRoutes } from './routes/models';
 import { relayRoutes } from './routes/relay';
 
 type Variables = { principal: Principal };
@@ -58,6 +59,9 @@ function signedOnly() {
  *
  * relay 自己的路径就是完整的 `/chat/completions`，挂在根上，
  * 于是 `/v1/chat/completions` 直接落在 relayRoutes 上。
+ *
+ * 模型清单（`/v1/models`）挂在这里而不是管理面：它要用上游密钥，而密钥服务端才有。
+ * 它不扣费，只回答「这个上游有哪些模型」。
  */
 function relayOnly() {
   const relay = new Hono<App>();
@@ -65,6 +69,7 @@ function relayOnly() {
     c.set('principal', await resolvePrincipal(c.req.raw, c.env));
     await next();
   });
+  relay.route('/models', modelRoutes);
   relay.route('/', relayRoutes);
   return relay;
 }

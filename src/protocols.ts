@@ -47,6 +47,19 @@ export type ChatBody = {
   [key: string]: unknown;
 };
 
+/**
+ * 模型清单的规范形式。
+ *
+ * 与 ChatBody 同一条思路：它是一份**中间物**，不是任何一家的方言。四种上游各自
+ * 用完全不同的字段说同一件事（`data[].id` / `models[].name` / `id`），这里只把
+ * 「叫什么、谁给的、什么时候有的」抽出来。真正的形状由出口决定。
+ */
+export type ModelInfo = {
+  id: string;
+  created?: number;
+  owned_by?: string;
+};
+
 export type Adapter = {
   /** 协议路径（已含协议自带的版本段）。{model} 会被替换。 */
   path: (model: string) => string;
@@ -56,7 +69,38 @@ export type Adapter = {
   response: (json: unknown, model: string) => unknown;
   /** 流式：把 provider 一条 SSE 的 data 翻译成 0..n 条 chat SSE data 字符串。 */
   streamData: (data: string, model: string) => string[];
+  /** 列模型的上游路径（已含协议自带的版本段）。 */
+  modelsPath: () => string;
+  /** 把上游的模型清单翻译成规范形式；形状不认识就当空清单，不猜。 */
+  readModels: (json: unknown) => ModelInfo[];
 };
+
+const recordOf = (value: unknown): Record<string, unknown> =>
+  typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+const listOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const stringOf = (value: unknown): string => (typeof value === 'string' ? value : '');
+
+/** created 在各家是 unix 秒、毫秒或 ISO 字符串：能读就读，读不懂就不写这个字段。 */
+function secondsOf(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value > 1e11 ? value / 1000 : value);
+  if (typeof value === 'string' && value.length > 0) {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return Math.floor(parsed / 1000);
+  }
+  return undefined;
+}
+
+/** OpenAI 一族的清单：`{object:"list", data:[{id, created, owned_by}]}`。 */
+function readOpenAiModels(json: unknown): ModelInfo[] {
+  return listOf(recordOf(json).data).flatMap((entry) => {
+    const item = recordOf(entry);
+    const id = stringOf(item.id);
+    if (!id) return [];
+    const created = secondsOf(item.created);
+    const ownedBy = stringOf(item.owned_by);
+    return [{ id, ...(created === undefined ? {} : { created }), ...(ownedBy ? { owned_by: ownedBy } : {}) }];
+  });
+}
 
 const enc = (text: string) => ({ role: 'assistant', content: text });
 const textOf = (content: unknown): string => (typeof content === 'string' ? content : JSON.stringify(content ?? ''));
@@ -79,6 +123,8 @@ const openaiChat: Adapter = {
   request: (body) => body,
   response: (json) => json,
   streamData: (data) => [data],
+  modelsPath: () => '/models',
+  readModels: readOpenAiModels,
 };
 
 /** —— openai-responses：input/output 与 chat 的 message 形状不同 —— */
@@ -118,6 +164,9 @@ const openaiResponses: Adapter = {
     if (event.type !== 'response.output_text.delta' || typeof delta !== 'string') return [];
     return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: delta } }] })];
   },
+  // Responses 与 Chat 是同一台机器上的两条路，清单就是同一个 /models。
+  modelsPath: () => '/models',
+  readModels: readOpenAiModels,
 };
 
 /** —— anthropic-messages：content blocks、system 独立字段、x-api-key 头 —— */
@@ -159,6 +208,16 @@ const anthropicMessages: Adapter = {
     if (typeof text !== 'string') return [];
     return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: text } }] })];
   },
+  modelsPath: () => '/v1/models',
+  // Anthropic 的清单是 `{data:[{id, display_name, created_at}]}`，没有 owned_by。
+  readModels: (json) =>
+    listOf(recordOf(json).data).flatMap((entry) => {
+      const item = recordOf(entry);
+      const id = stringOf(item.id);
+      if (!id) return [];
+      const created = secondsOf(item.created_at);
+      return [{ id, ...(created === undefined ? {} : { created }) }];
+    }),
 };
 
 /** —— google-gemini：contents/parts，密钥走查询参数或 x-goog-api-key —— */
@@ -208,6 +267,16 @@ const googleGemini: Adapter = {
     if (text.length === 0) return [];
     return [JSON.stringify({ object: 'chat.completion.chunk', model, choices: [{ index: 0, delta: { content: text } }] })];
   },
+  modelsPath: () => '/v1beta/models',
+  // Gemini 的清单是 `{models:[{name:"models/gemini-2.0-flash", ...}]}`：
+  // 名字里的 `models/` 是它的命名空间前缀，剥掉它才是调用时要的模型名。
+  readModels: (json) =>
+    listOf(recordOf(json).models).flatMap((entry) => {
+      const item = recordOf(entry);
+      const name = stringOf(item.name).replace(/^models\//, '');
+      if (!name) return [];
+      return [{ id: name }];
+    }),
 };
 
 const ADAPTERS: Record<Protocol, Adapter> = {
