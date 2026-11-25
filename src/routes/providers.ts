@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
-import type { Principal } from '../auth';
+import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
 import { isProtocol, isVisibility } from '../protocols';
@@ -22,7 +22,7 @@ type Body = {
 /** 库里密文的封装方式。改这个常量意味着要迁移全部旧密文。 */
 const KDF = 'aes-256-gcm+worker-secret';
 
-export const providerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
+export const providerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Identity } }>();
 
 providerRoutes.get('/', async (c) => c.json({ items: await listProviders(c.env, c.get('principal').address) }));
 

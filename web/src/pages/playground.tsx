@@ -3,7 +3,8 @@ import { ArrowUpIcon, ListIcon, Loader2Icon, PencilIcon, ServerIcon, SquareIcon 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { ApiError, signedFetch } from '../api';
+import { ApiError } from '../api';
+import { consumerResponse } from '../consumer-key';
 import { Empty, ErrorNote, PageHeader } from '../components/page';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -94,11 +95,13 @@ export function PlaygroundPage() {
     });
 
     try {
-      const response = await signedFetch({
+      const response = await consumerResponse({
+        address: identity.address,
         path: '/v1/chat/completions',
         method: 'POST',
         body,
-        // 密钥在服务端：这里只说用哪条上游提供商。明文密钥从不出现在浏览器里。
+        // 推理接口只认下游 Token（不认签名），这把 Token 在本机现铸现用。
+        // 上游提供商密钥在服务端：这里只说用哪条上游提供商。
         headers: { 'X-Norm-Provider': provider.id },
         signal: controller.signal,
       });
@@ -140,7 +143,7 @@ export function PlaygroundPage() {
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
-  }, [provider, model, prompt, queryClient, stream, t]);
+  }, [identity.address, provider, model, prompt, queryClient, stream, t]);
 
   return (
     <div className="flex min-h-full flex-col gap-4">
@@ -148,9 +151,14 @@ export function PlaygroundPage() {
         title={t('pg.title')}
         description={t('pg.desc')}
         actions={
-          <Badge variant="outline" className="font-mono text-[11px]">
-            {identity.address.slice(0, 6)}…{identity.address.slice(-4)}
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Link to="/consumers" className="text-[11px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">
+              {t('pg.token_note')}
+            </Link>
+            <Badge variant="outline" className="font-mono text-[11px]">
+              {identity.address.slice(0, 6)}…{identity.address.slice(-4)}
+            </Badge>
+          </div>
         }
       />
 

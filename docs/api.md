@@ -7,10 +7,12 @@ Base: `https://norm.ntnl.io`。
 | 前缀 | 接受什么 | 用来干什么 |
 |---|---|---|
 | `/api/v1/*` | **只**接受 Ed25519 请求签名 | 管理面：账户、上游提供商、下游消费者 Token，都是「浏览器里的人在操作」 |
-| `/v1/*` | 签名**或** `Authorization: Bearer sk-norm-…` | 转发面：消费。程序拿一条 Token 就能调用（账户只有一条上游提供商时无需任何专有头） |
+| `/v1/*` | **只**接受 `Authorization: Bearer sk-norm-…`（`x-api-key` / `x-goog-api-key` 同义） | 转发面：消费。程序拿一条 Token 就能调用（账户只有一条上游提供商时无需任何专有头） |
 
-一句话：**身份只管资源，消费只用一个 api key。** 下游 Token 不绑定上游提供商——账户里只有一条上游提供商
-提供者时消费侧不需要任何 Norm 专有的头；有多条时才用 `X-Norm-Provider` 指名。
+一句话：**身份只管资源，消费只用一个 api key。** 转发面没有签名入口——签名能管资源，不能花钱，
+所以 `POST /v1/chat/completions` 带着 `X-Norm-Address` 那四个头来，只会拿到 `401 consumer_key_required`。
+下游 Token 不绑定上游提供商——账户里只有一条上游提供商时消费侧不需要任何 Norm 专有的头；
+有多条时才用 `X-Norm-Provider` 指名。
 
 公开接口（`health` / `stats` / `base-urls` / `attestation`）两种都不需要。
 
@@ -121,7 +123,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 
 `name` 必填：缺少 → `400 name_missing`。请求体里若还带着旧的 `provider_id`，直接忽略。
 
-## 转发（签名或 Bearer 消费者密钥）
+## 转发（只认 Bearer 消费者密钥）
 
 四个入口，四种上游提供商，构成 4×4。**入口方言与上游提供商协议同名**：
 
@@ -157,13 +159,13 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 同格式直通时上游提供商的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
 唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
 
-| 头 | 消费（Bearer） | 签名 |
-|---|---|---|
-| `Authorization: Bearer sk-norm-…` | 必填，三选一（OpenAI SDK 的形状） | — |
-| `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） | — |
-| `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） | — |
-| `X-Norm-Provider` | 可选：账户只有一条上游提供商时可省，多条时必填 | 同样可选：只有一条上游提供商时可省 |
-| `X-Norm-Address` 等四个签名头 | — | 必填（见上一节） |
+| 头 | 是否必填 |
+|---|---|
+| `Authorization: Bearer sk-norm-…` | 三选一（OpenAI SDK 的形状） |
+| `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） |
+| `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） |
+| `X-Norm-Provider` | 可选：账户只有一条上游提供商时可省，多条时必填 |
+| `X-Norm-Address` 等四个签名头 | 不收：本面没有签名入口 |
 
 上游提供商密钥始终由服务端解密，客户端不接触它。
 
@@ -171,10 +173,10 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 一条都没有 → `400 provider_missing`；有多条 → `409 provider_ambiguous`，请在请求里用
 `X-Norm-Provider` 指名。指名了一条不属于本人或已撤销的上游提供商 → `404 provider_not_found`；
 指名了一条已禁用的 → `409 provider_disabled`；一条都没指名而账户里的上游提供商全被禁用 →
-同样是 `409 provider_disabled`。这条规则对签名身份与 Bearer 一视同仁：绑定不是身份的一部分，
-是每次转发自己的决定。
+同样是 `409 provider_disabled`。这条规则与身份无关：绑定不是身份的一部分，是每次转发自己的决定。
 
-三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；别家的 key 会走签名那条路失败。
+三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；一个都没有（或放的是别家的 key）时
+不会退回去验签，而是 `401 consumer_key_required`——转发面只有 Token 这一条路。
 
 ```bash
 # 一条 api key 就是完整的一次调用：没有签名头，也没有 Norm 专有的头
@@ -214,7 +216,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 `/v1/chat/completions` 的流式在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}`；
 另外三条入口的流式不插（那些 SDK 按 `type` 严格分派，插一个它们不认识的事件比丢一条记账信息更糟）。
 
-## 模型清单（签名或 Bearer 消费者密钥）
+## 模型清单（只认 Bearer 消费者密钥）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

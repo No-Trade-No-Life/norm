@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
-import type { Principal } from '../auth';
+import type { Identity } from '../auth';
 import { consumerKeyHash, consumerKeyHint, newConsumerKey } from '../consumers';
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
@@ -16,7 +16,7 @@ export type ConsumerRow = {
   revoked_at: number | null;
 };
 
-export const consumerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
+export const consumerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Identity } }>();
 
 /**
  * 列表绝不回 key_sha256：它虽然不是明文，但把「哪把钥匙属于这一行」变成了可下载的指纹，

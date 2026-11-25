@@ -120,6 +120,40 @@ export async function requestJson<T>(req: SignedRequest): Promise<T> {
   return (await response.json()) as T;
 }
 
+/* ── 转发面：只带下游消费者 Token ─────────────────────────────────────
+ *
+ * 推理接口不认签名（见 docs/api.md）：一条 `Authorization: Bearer sk-norm-…`
+ * 就是全部凭据。三个 api key 头里我们只发 Authorization——另外两个是给别家 SDK 留的。
+ */
+export type ConsumerRequest = {
+  path: string;
+  consumerKey: string;
+  method?: 'GET' | 'POST' | 'DELETE';
+  body?: string;
+  headers?: Record<string, string>;
+  signal?: AbortSignal;
+};
+
+export function consumerFetch({ path, consumerKey, method = 'GET', body, headers, signal }: ConsumerRequest): Promise<Response> {
+  return fetch(path, {
+    method,
+    body,
+    headers: {
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      Authorization: `Bearer ${consumerKey}`,
+      ...headers,
+    },
+    signal,
+  });
+}
+
+/** 消费者请求 + 解析 JSON。401 的处置（换钥匙重试）在 `./consumer-key` 里。 */
+export async function consumerJson<T>(req: ConsumerRequest): Promise<T> {
+  const response = await consumerFetch(req);
+  if (!response.ok) throw await readError(response);
+  return (await response.json()) as T;
+}
+
 export async function publicJson<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { signal });
   if (!response.ok) throw await readError(response);

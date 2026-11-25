@@ -6,13 +6,24 @@ import { sha256Hex, signingMessage, verifySignature } from './crypto';
 import { ensurePrincipal, principalExists } from './store';
 import { principalFromConsumerKey } from './consumers';
 
-export type Principal = {
+/**
+ * 管理面的身份：只有地址。
+ *
+ * 签名回答「谁在说话」，它管的是资源——账户、上游提供商、下游 Token。
+ * 它**不参与消费**：推理接口只认下游消费者 Token，见 authenticateConsumer。
+ */
+export type Identity = {
   address: string;
-  /**
-   * 这次调用由哪把下游消费者密钥发起，只用于记账（账本要能回答「谁花的钱」）。
-   * 签名直连时为空：那是一个人，不是一把程序凭据。
-   */
-  consumerId?: string;
+};
+
+/**
+ * 转发面的身份：地址 + 这次调用用的是哪把下游 Token。
+ *
+ * `consumerId` 在转发面上是必填的：账本要能回答「这条钱是哪把钥匙花的」，
+ * 而人不是一把钥匙。没有一把具体的 Token，就没有这笔消费。
+ */
+export type Principal = Identity & {
+  consumerId: string;
 };
 
 /**
@@ -22,8 +33,8 @@ export type Principal = {
  *   x-api-key: sk-norm-…               Anthropic SDK / Claude Code
  *   x-goog-api-key: sk-norm-…          Google SDK
  *
- * 只认带 `sk-norm-` 前缀的值——没有前缀的 api key 不是我们的身份，交给签名那条路去失败，
- * 免得把「上游提供商密钥错放进请求头」误报成「身份无效」。
+ * 只认带 `sk-norm-` 前缀的值——没有前缀的 api key 不是我们的身份，它会在
+ * authenticateConsumer 里得到一句「这里只接受消费者 Token」。
  */
 function bearerOf(request: Request): string | null {
   const authorization = request.headers.get('Authorization');
@@ -34,10 +45,14 @@ function bearerOf(request: Request): string | null {
 }
 
 /**
- * 一个请求只有两种身份：消费者密钥，或 Ed25519 签名。
- * 三个 api key 头都没有 `sk-norm-` 值时就当成签名请求——它会带着缺失头部的说明失败。
+ * 转发面（`/v1/*`）的唯一入口：只认 `sk-norm-…` 消费者 Token。
+ *
+ * 这里**没有**「签名直连」这条路径，而且是刻意的：签名能管资源，不能花钱。
+ * 一旦推理接口也接受签名，每一笔消费就可以不挂在任何一把钥匙上——账本回答不了
+ * 「这段代码是谁在跑」，撤销、限流、按程序分账也都失去了抓手。所以三个 api key 头里
+ * 一个 `sk-norm-` 值都没有时，直接回一句明确的 401，而不是退回去验签。
  */
-export async function resolvePrincipal(request: Request, env: Env): Promise<Principal> {
+export async function authenticateConsumer(request: Request, env: Env): Promise<Principal> {
   const candidates = [
     bearerOf(request),
     request.headers.get('x-api-key'),
@@ -45,15 +60,23 @@ export async function resolvePrincipal(request: Request, env: Env): Promise<Prin
   ].filter((value): value is string => typeof value === 'string' && value.length > 0);
 
   const key = candidates.find((value) => value.startsWith('sk-norm-'));
-  if (key) return principalFromConsumerKey(env, key);
-  return authenticate(request, env);
+  if (!key) {
+    fail(
+      401,
+      'consumer_key_required',
+      '推理接口只接受下游消费者 Token（sk-norm-…），在 Authorization: Bearer / x-api-key / x-goog-api-key 三者中任选其一；身份签名只能用于管理面 /api/v1/*',
+    );
+  }
+  return principalFromConsumerKey(env, key);
 }
 
 /**
- * 读取并校验签名请求。校验顺序是刻意的：先把便宜的检查（头部、时间窗）跑完，
- * 再花一次 D1 写去占用 nonce，最后才做验签的椭圆曲线运算。
+ * 管理面（`/api/v1/*`）的唯一入口：Ed25519 请求签名。
+ *
+ * 校验顺序是刻意的：先把便宜的检查（头部、时间窗）跑完，再花一次 D1 写去占用 nonce，
+ * 最后才做验签的椭圆曲线运算。
  */
-export async function authenticate(request: Request, env: Env): Promise<Principal> {
+export async function authenticate(request: Request, env: Env): Promise<Identity> {
   const address = request.headers.get('X-Norm-Address');
   const timestamp = request.headers.get('X-Norm-Timestamp');
   const nonce = request.headers.get('X-Norm-Nonce');
