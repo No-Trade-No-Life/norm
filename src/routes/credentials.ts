@@ -10,7 +10,6 @@ import { findCredential, listCredentials } from '../store';
 
 type Body = {
   label?: string;
-  provider?: string;
   base_url?: string;
   /** 上游明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
   upstream_key?: string;
@@ -18,19 +17,6 @@ type Body = {
   upstream_visibility?: string;
 };
 
-/** provider 只是个展示标签，不参与任何判断。 */
-const PROVIDERS = new Set([
-  'openai',
-  'deepseek',
-  'anthropic',
-  'google',
-  'xai',
-  'moonshot',
-  'zhipu',
-  'qwen',
-  'self-hosted',
-  'other',
-]);
 /** 库里密文的封装方式。改这个常量意味着要迁移全部旧密文。 */
 const KDF = 'aes-256-gcm+worker-secret';
 
@@ -40,12 +26,12 @@ credentialRoutes.get('/', async (c) => c.json({ items: await listCredentials(c.e
 
 credentialRoutes.post('/', async (c) => {
   const body = await c.req.json<Body>();
-  const provider = body.provider ?? '';
+  const label = (body.label ?? '').trim();
   // 两个都可选，但默认值必须是"最保守"的那个：协议默认 chat，公开性默认私有。
   const protocol = body.upstream_protocol ?? 'openai-chat';
   const visibility = body.upstream_visibility ?? 'private';
 
-  if (!PROVIDERS.has(provider)) fail(400, 'provider_invalid', `provider 不合法：${provider}`);
+  if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `upstream_protocol 只能是 openai-chat / openai-responses`);
   if (!isVisibility(visibility)) fail(400, 'visibility_invalid', `upstream_visibility 只能是 public / private`);
   if (!body.base_url || !hostOf(body.base_url)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
@@ -65,15 +51,14 @@ credentialRoutes.post('/', async (c) => {
 
   await c.env.DB.prepare(
     `INSERT INTO credentials
-       (id, address, label, provider, base_url, key_hint, sealed_key, kdf,
+       (id, address, label, base_url, key_hint, sealed_key, kdf,
         upstream_protocol, upstream_visibility, public_listed, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
   )
     .bind(
       id,
       c.get('principal').address,
-      (body.label ?? '').trim() || provider,
-      provider,
+      label,
       body.base_url.replace(/\/+$/, ''),
       keyHintOf(upstreamKey),
       sealedKey,

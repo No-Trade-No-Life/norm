@@ -63,7 +63,6 @@ let consumerKey;
   const path = '/api/v1/credentials';
   const payload = JSON.stringify({
     label: 'smoke',
-    provider: 'openai',
     base_url: 'https://api.openai.com/v1',
     // 假密钥：它只会被用去打真·官方端点，用来验「失败不扣费」与「封装/解封跑得通」。
     upstream_key: 'sk-invalid-smoke-key',
