@@ -174,12 +174,17 @@ export const COPY = {
     en: 'A disabled provider is skipped when Norm picks a provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
-    zh: '入口方言与这里选的协议同名时不转换，请求体按原始字节转发；不同的 12 格才由 Norm 翻译。DeepSeek 选 deepseek：底层同样说 OpenAI Responses，但计价按官方高峰 / 低谷两档，低谷价只在这一条协议上生效。',
-    en: 'When the entry dialect matches this protocol nothing is converted — the body goes out byte-for-byte. Only the other 12 cells are translated. Pick deepseek for DeepSeek: the wire format is OpenAI Responses, but billing follows DeepSeek’s peak / off-peak tariffs, and the off-peak rate only applies through this protocol.',
+    zh: '协议决定这条上游的字段：四条通用方言要你填 base_url，deepseek 的地址是官方固定值、只要密钥。入口方言与协议同名时不转换，请求体按原始字节转发；不同的格才由 Norm 翻译。DeepSeek 选 deepseek：底层同样说 OpenAI Responses，但计价按官方高峰 / 低谷两档。',
+    en: 'The protocol decides the fields: the four generic dialects ask for a base URL, while deepseek fixes the official address and only wants a key. When the entry dialect matches the protocol nothing is converted — the body goes out byte-for-byte. Pick deepseek for DeepSeek: the wire format is OpenAI Responses, but billing follows DeepSeek’s peak / off-peak tariffs.',
+  },
+  'pr.protocol_loading': { zh: '正在读取这条协议的字段…', en: 'Loading this protocol’s fields…' },
+  'pr.field_base_url_fixed': {
+    zh: '{protocol} 协议的上游地址由协议给定，不用填、也不可改。',
+    en: 'The upstream address is fixed by the {protocol} protocol — nothing to fill in, nothing to change.',
   },
   'pr.creating': { zh: '创建中…', en: 'Creating…' },
   'pr.created': { zh: '已创建', en: 'Created' },
-  'pr.missing': { zh: '标签、上游提供商密钥与 base_url 都要填。', en: 'Label, provider key and base URL are required.' },
+  'pr.missing': { zh: '名称与上游提供商密钥都要填；协议要 base_url 时也要填。', en: 'Name and provider key are required — plus a base URL when the protocol asks for one.' },
   'pr.dest_trusted': { zh: '信任清单内', en: 'Trusted' },
   'pr.dest_untrusted': { zh: '清单外', en: 'Untrusted' },
 

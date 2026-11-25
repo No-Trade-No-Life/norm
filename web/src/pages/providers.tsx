@@ -18,8 +18,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useCreateProvider, useProviders, useRevokeProvider, useSetEnabled, useSetScope, useSetVisibility } from '../queries';
-import { PROTOCOLS, VISIBILITIES, type Provider } from '../types';
+import {
+  useCreateProvider,
+  useProtocols,
+  useProviders,
+  useRevokeProvider,
+  useSetEnabled,
+  useSetScope,
+  useSetVisibility,
+} from '../queries';
+import { VISIBILITIES, type Provider } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
 export function ProvidersPage() {
@@ -218,6 +226,13 @@ function ProviderRow({
   );
 }
 
+/**
+ * 新建上游：**先选协议**，字段跟着协议走，最后才是「是否公开」。
+ *
+ * 「Base URL + API key」是协议的一部分，不是两个可以自由组合的输入框：通用的四条方言
+ * 要你填自己的上游地址，`deepseek` 的地址是官方固定值、只要密钥。字段集合由
+ * `GET /api/v1/protocols` 给出，前端不留第二份判断。
+ */
 function NewProviderDialog({
   open,
   onOpenChange,
@@ -229,37 +244,44 @@ function NewProviderDialog({
 }) {
   const { t, lang } = useI18n();
   const create = useCreateProvider();
+  const protocols = useProtocols();
 
-  const [label, setLabel] = useState('');
+  const [protocol, setProtocol] = useState<string>('openai-chat');
   const [providerKey, setProviderKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
-  const [protocol, setProtocol] = useState<string>('openai-chat');
+  const [label, setLabel] = useState('');
   const [visibility, setVisibility] = useState<string>('private');
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const schemas = protocols.data ?? [];
+  const schema = schemas.find((item) => item.protocol === protocol) ?? null;
+  const asksBaseUrl = schema?.fields.includes('base_url') === true;
+
   const reset = () => {
     setLabel('');
     setProviderKey('');
+    setBaseUrl('');
     setEnabled(true);
     setError(null);
   };
 
   const submit = async () => {
     setError(null);
-    if (!label.trim() || !providerKey.trim() || !baseUrl.trim()) {
+    if (!label.trim() || !providerKey.trim() || (asksBaseUrl && !baseUrl.trim())) {
       setError(t('pr.missing'));
       return;
     }
     try {
       // 明文密钥这一次经过请求体，服务端立刻用 Worker secret 封装，之后只剩提示。
+      // base_url 只在协议要的时候才发：固定基址的协议不接受另一个地址。
       await create.mutateAsync({
         label: label.trim(),
-        base_url: baseUrl.trim(),
         provider_key: providerKey.trim(),
-        protocol: protocol,
-        visibility: visibility,
+        protocol,
+        visibility,
         enabled,
+        ...(asksBaseUrl ? { base_url: baseUrl.trim() } : {}),
       });
       reset();
       onCreated();
@@ -278,40 +300,73 @@ function NewProviderDialog({
 
         <div className="grid gap-3">
           <div className="flex flex-col gap-1.5">
-            <Label>{t('pr.field_label')}</Label>
-            <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label>{t('pr.field_base_url')}</Label>
-            <Input
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder={t('pr.field_base_url_placeholder')}
-              spellCheck={false}
-            />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_base_url_hint')}</p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_protocol')}</Label>
             <Select
               value={protocol}
               onValueChange={(value) => setProtocol(String(value))}
-              items={PROTOCOLS.map((p) => ({ value: p, label: protocolLabel(p, lang) }))}
+              items={schemas.map((item) => ({ value: item.protocol, label: protocolLabel(item.protocol, lang) }))}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {PROTOCOLS.map((p) => (
-                  <SelectItem key={p} value={p}>
-                    {protocolLabel(p, lang)}
+                {schemas.map((item) => (
+                  <SelectItem key={item.protocol} value={item.protocol}>
+                    {protocolLabel(item.protocol, lang)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
+          </div>
+
+          {protocols.isError ? <ErrorNote message={(protocols.error as Error).message} /> : null}
+
+          {/* 协议 contextual 的一段：选完协议才存在，`deepseek` 与通用方言在这里分岔。 */}
+          {schema === null ? (
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.protocol_loading')}</p>
+          ) : (
+            <>
+              {asksBaseUrl ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t('pr.field_base_url')}</Label>
+                  <Input
+                    value={baseUrl}
+                    onChange={(event) => setBaseUrl(event.target.value)}
+                    placeholder={t('pr.field_base_url_placeholder')}
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_base_url_hint')}</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t('pr.field_base_url')}</Label>
+                  <p className="rounded-md border border-border bg-muted/40 px-2 py-1.5 font-mono text-xs break-all">
+                    {schema.base_url}
+                  </p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    {t('pr.field_base_url_fixed', { protocol: protocolLabel(protocol, lang) })}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1.5">
+                <Label>{t('pr.field_key')}</Label>
+                <Input
+                  type="password"
+                  value={providerKey}
+                  onChange={(event) => setProviderKey(event.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_hint')}</p>
+              </div>
+            </>
+          )}
+
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('pr.field_label')}</Label>
+            <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
           </div>
 
           <div className="flex flex-col gap-1.5">
@@ -343,12 +398,6 @@ function NewProviderDialog({
             <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={t('pr.field_enabled')} />
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label>{t('pr.field_key')}</Label>
-            <Input type="password" value={providerKey} onChange={(event) => setProviderKey(event.target.value)} autoComplete="off" spellCheck={false} />
-            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_hint')}</p>
-          </div>
-
           {error ? <ErrorNote message={error} /> : null}
         </div>
 
@@ -356,7 +405,7 @@ function NewProviderDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t('action.cancel')}
           </Button>
-          <Button onClick={() => void submit()} disabled={create.isPending}>
+          <Button onClick={() => void submit()} disabled={create.isPending || schema === null}>
             {create.isPending ? t('pr.creating') : t('action.create')}
           </Button>
         </DialogFooter>

@@ -266,6 +266,21 @@ export const PROTOCOLS = [
 ] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
+/**
+ * 一条协议的上游契约（`GET /api/v1/protocols`）：说哪种方言、基址从哪来、配置一条这种
+ * 上游要填哪些字段。表单「先选协议、再按协议渲染字段」读的就是它——前端不再自己记
+ * 「哪条协议不要 base_url」。
+ */
+export type ProtocolSchema = {
+  protocol: Protocol;
+  /** 线缆上的方言：`deepseek` 是 `openai-responses`。 */
+  dialect: string;
+  /** 协议钉死的上游基址；null = 由用户填。 */
+  base_url: string | null;
+  /** 要填的字段，按表单顺序。 */
+  fields: Array<'base_url' | 'provider_key'>;
+};
+
 /** 上游提供商本身是否对公众可用。私有不代表掺水，只代表不对外。 */
 export const VISIBILITIES = ['public', 'private'] as const;
 export type Visibility = (typeof VISIBILITIES)[number];

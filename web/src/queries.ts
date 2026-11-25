@@ -12,6 +12,7 @@ import type {
   LoginResponse,
   Me,
   Pricing,
+  ProtocolSchema,
   Provider,
   ProviderUsage,
   ModelCatalog,
@@ -145,6 +146,16 @@ export function useUsageByProvider(enabled: boolean) {
     enabled,
     retry: false,
     queryFn: () => requestJson<{ items: ProviderUsage[] }>({ path: '/api/v1/account/usage/by-provider' }),
+    select: (data) => data.items,
+  });
+}
+
+/** 协议清单：新建上游时「先选协议、再按协议渲染字段」的依据（公开、随代码发布）。 */
+export function useProtocols() {
+  return useQuery({
+    queryKey: ['protocols'],
+    staleTime: 300_000,
+    queryFn: () => publicJson<{ items: ProtocolSchema[] }>('/api/v1/protocols'),
     select: (data) => data.items,
   });
 }
