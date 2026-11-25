@@ -109,7 +109,7 @@ function Brand({ collapsed }: { collapsed: boolean }) {
   const { t } = useI18n();
   return (
     <div className={cn('flex h-12 items-center gap-2 border-b border-border px-3', collapsed && 'justify-center px-0')}>
-      <Logo className="flex size-7 shrink-0 overflow-hidden rounded-md" />
+      <Logo className="size-7 shrink-0 text-foreground" />
       <div className={cn('min-w-0', collapsed && 'hidden')}>
         <p className="shell__brand-text truncate text-sm font-semibold leading-tight">{t('app.name')}</p>
         <p className="shell__brand-text truncate text-[10px] leading-tight text-muted-foreground">{t('app.tagline')}</p>

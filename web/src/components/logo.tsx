@@ -1,21 +1,18 @@
 /**
- * Logo：固定 1.75rem 盒子，同一个图形同时写成页面 favicon。
- * 图形语义：两条相对的水流在中间被「转」了一下——无站的中转站。
+ * Logo 就是 NormAI 的那个环——**逐字节相同，不要「改进」它**。
+ *
+ * Norm 是 NormAI Next，同一条产品线的下一站，所以品牌标记必须与 NormAI 完全一致：
+ * 页面上的环与 `web/public/normai.svg`（favicon）画的是同一个图形（circle r=19.5，
+ * stroke-width 9），而那个 svg 文件与 NormAI 仓库里的同名文件一模一样，
+ * 连「浅色描黑、深色描白」的 `prefers-color-scheme` 分支都是同一份。
+ *
+ * 页面里用 `currentColor`，于是环跟着主题走；favicon 那份自己带 media query，
+ * 因为标签页里没有 CSS 上下文。改这里之前先问一句：NormAI 也跟着改了吗？
  */
-const SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-<rect width="32" height="32" rx="8" fill="#0a0a0a"/>
-<path d="M8 20.5 16 11l8 9.5" fill="none" stroke="#fafafa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-<path d="M8 25h16" stroke="#fafafa" stroke-width="2.4" stroke-linecap="round"/>
-</svg>`;
-
-export const LOGO_DATA_URL = `data:image/svg+xml,${encodeURIComponent(SVG)}`;
-
 export function Logo({ className }: { className?: string }) {
   return (
-    <span
-      aria-hidden
-      className={className ?? 'flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-md'}
-      dangerouslySetInnerHTML={{ __html: SVG.replace(/width="32" height="32"/, 'width="100%" height="100%"') }}
-    />
+    <svg aria-hidden="true" className={className ?? 'size-7 shrink-0'} viewBox="0 0 64 64">
+      <circle cx="32" cy="32" r="19.5" fill="none" stroke="currentColor" strokeWidth="9" />
+    </svg>
   );
 }
