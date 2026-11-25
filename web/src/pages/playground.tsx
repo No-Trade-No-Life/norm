@@ -17,8 +17,8 @@ import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
 import { errorText } from '../lib/error-text';
 import { latency, usd } from '../lib/format';
-import { useModels, useProviders } from '../queries';
-import type { ChatChunk, Provider } from '../types';
+import { useModels } from '../queries';
+import type { ChatChunk } from '../types';
 
 type NormMeta = NonNullable<ChatChunk['norm']>;
 
@@ -26,9 +26,7 @@ export function PlaygroundPage() {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { identity } = useIdentity();
-  const providers = useProviders(true);
 
-  const [providerId, setProviderId] = useState('');
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
 
@@ -40,16 +38,9 @@ export function PlaygroundPage() {
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
 
-  const all = providers.data?.items ?? [];
-  // 禁用的上游提供商不参与转发，也不该出现在选择器里：选了只会拿到 409。
-  const list = all.filter((item) => item.enabled === 1);
-  const provider: Provider | undefined = useMemo(
-    () => list.find((item) => item.id === providerId) ?? list[0],
-    [list, providerId],
-  );
-
-  // 模型清单由服务端代为去问（上游密钥在库里是密文），换上游就换一份清单。
-  const models = useModels(true, provider?.id ?? '');
+  // 模型清单由服务端代为去问（上游密钥在库里是密文），问的就是接下来会打到的那条：
+  // 哪一条由服务端按「自有优先、公共池兜底、会话粘住」决定，这里不指定。
+  const models = useModels(true);
   const modelList = useMemo(() => models.data?.data ?? [], [models.data]);
   // 手填模式：清单里有模型时默认让人从清单选，按笔形图标才切回自由输入。
   const [manualModel, setManualModel] = useState(false);
@@ -76,7 +67,6 @@ export function PlaygroundPage() {
 
   const send = useCallback(async () => {
     setError(null);
-    if (!provider) return setError(t('pg.need_provider'));
     if (!model.trim()) return setError(t('pg.need_model'));
     if (!prompt.trim()) return setError(t('pg.need_prompt'));
 
@@ -101,8 +91,7 @@ export function PlaygroundPage() {
         method: 'POST',
         body,
         // 推理接口只认下游 Token（不认签名），这把 Token 在本机现铸现用。
-        // 上游提供商密钥在服务端：这里只说用哪条上游提供商。
-        headers: { 'X-Norm-Provider': provider.id },
+        // 上游提供商密钥在服务端，而且**不用指名**：Norm 自己挑，并把结果写进 norm.pool。
         signal: controller.signal,
       });
 
@@ -143,7 +132,7 @@ export function PlaygroundPage() {
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
-  }, [identity.address, provider, model, prompt, queryClient, stream, t]);
+  }, [identity.address, model, prompt, queryClient, stream, t]);
 
   return (
     <div className="flex min-h-full flex-col gap-4">
@@ -166,29 +155,14 @@ export function PlaygroundPage() {
         <section className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
-              <Label>{t('pg.provider')}</Label>
-              {list.length === 0 ? (
-                <Link to="/providers" className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground">
-                  {all.length === 0 ? t('pg.provider_none') : t('pg.provider_all_disabled')}
-                </Link>
-              ) : (
-                <Select
-                  value={provider?.id ?? ''}
-                  onValueChange={(value) => setProviderId(String(value))}
-                  items={list.map((item) => ({ value: item.id, label: `${item.label} · ${item.key_hint}` }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {list.map((item) => (
-                      <SelectItem key={item.id} value={item.id}>
-                        {item.label} · {item.key_hint}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              <Label>{t('pg.routing')}</Label>
+              {/* 上游不再由人挑：Norm 自己在「自己的上游 → 公共池」里选，并按会话粘住。 */}
+              <Link
+                to="/providers"
+                className="flex h-8 items-center rounded-lg border border-dashed border-border px-2.5 text-xs text-muted-foreground hover:text-foreground"
+              >
+                {t('pg.routing_hint')}
+              </Link>
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -237,18 +211,16 @@ export function PlaygroundPage() {
               ) : (
                 <Input value={model} onChange={(event) => setModel(event.target.value)} placeholder={t('pg.model_placeholder')} spellCheck={false} />
               )}
-              {/* 没有上游时不该说「正在读清单」：那会让人等一个不会发生的请求。 */}
-              {provider ? (
-                <p className="text-[11px] text-muted-foreground">
-                  {models.isPending
-                    ? t('pg.models_loading')
-                    : models.isError
-                      ? t('pg.models_failed')
-                      : modelList.length === 0
-                        ? t('pg.models_empty')
-                        : `${modelList.length} ${t('pg.models_count')} · ${t('pg.models_free')}`}
-                </p>
-              ) : null}
+              {/* 清单读不到也照样能发：模型名可以手填，路由由服务端负责。 */}
+              <p className="text-[11px] text-muted-foreground">
+                {models.isPending
+                  ? t('pg.models_loading')
+                  : models.isError
+                    ? t('pg.models_failed')
+                    : modelList.length === 0
+                      ? t('pg.models_empty')
+                      : `${modelList.length} ${t('pg.models_count')} · ${t('pg.models_free')}`}
+              </p>
             </div>
           </div>
 
@@ -283,7 +255,7 @@ export function PlaygroundPage() {
                 {t('action.stop')}
               </Button>
             ) : (
-              <Button onClick={() => void send()} disabled={list.length === 0}>
+              <Button onClick={() => void send()}>
                 <ArrowUpIcon />
                 {t('action.send')}
               </Button>
@@ -342,6 +314,8 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <ServerIcon className="size-3.5" />
         {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>
       </span>
+      {/* 池子里那条是站点付钱：账单上必须说清这一单有没有落到兜底上。 */}
+      {meta.pool ? <Badge variant="outline">{t('pg.pool_badge')}</Badge> : null}
     </div>
   );
 }

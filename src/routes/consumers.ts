@@ -36,7 +36,7 @@ consumerRoutes.get('/', async (c) => {
 /**
  * 建钥只要一个名字：它回答的是「这段代码是谁」，与「走哪条上游提供商」无关。
  *
- * 少一个必填字段就少一次配置错误——上游提供商在转发时才决定（见 store.resolveProviderId），
+ * 少一个必填字段就少一次配置错误——走哪条上游在转发时才决定（见 store.resolveProvider），
  * 所以给一个新程序发钥匙不必先想清楚它会用哪个上游提供商，也不会因为后来换了上游提供商而作废。
  */
 consumerRoutes.post('/', async (c) => {

@@ -7,12 +7,12 @@ Base: `https://norm.ntnl.io`。
 | 前缀 | 接受什么 | 用来干什么 |
 |---|---|---|
 | `/api/v1/*` | **只**接受 Ed25519 请求签名 | 管理面：账户、上游提供商、下游消费者 Token，都是「浏览器里的人在操作」 |
-| `/v1/*` | **只**接受 `Authorization: Bearer sk-norm-…`（`x-api-key` / `x-goog-api-key` 同义） | 转发面：消费。程序拿一条 Token 就能调用（账户只有一条上游提供商时无需任何专有头） |
+| `/v1/*` | **只**接受 `Authorization: Bearer sk-norm-…`（`x-api-key` / `x-goog-api-key` 同义） | 转发面：消费。程序拿一条 Token 就能调用，没有任何 Norm 专有的头 |
 
 一句话：**身份只管资源，消费只用一个 api key。** 转发面没有签名入口——签名能管资源，不能花钱，
 所以 `POST /v1/chat/completions` 带着 `X-Norm-Address` 那四个头来，只会拿到 `401 consumer_key_required`。
-下游 Token 不绑定上游提供商——账户里只有一条上游提供商时消费侧不需要任何 Norm 专有的头；
-有多条时才用 `X-Norm-Provider` 指名。
+下游 Token 不绑定上游提供商，消费侧也没有任何 Norm 专有的头：走哪条上游由服务端按
+「自己的上游优先、公共池兜底、会话粘住」自己挑。
 
 公开接口（`health` / `stats` / `base-urls` / `attestation`）两种都不需要。
 
@@ -100,7 +100,9 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
                                      // | anthropic-messages | google-gemini
                                      // | deepseek（说 Responses，按官方时段分两档计价）
   "visibility": "private",           // public | private（上游提供商本身是否对公众可用）
-  "enabled": true                   // 禁用后不参与选址，也不能被 X-Norm-Provider 指名
+  "scope": "private",                // private | pool（pool = 进公共池，全站兜底用它；
+                                     // 只有 POOL_ADMIN_ADDRESSES 里的地址能写 pool）
+  "enabled": true                   // 禁用后不参与选址
 }
 ```
 
@@ -170,16 +172,16 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 | `Authorization: Bearer sk-norm-…` | 三选一（OpenAI SDK 的形状） |
 | `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） |
 | `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） |
-| `X-Norm-Provider` | 可选：账户只有一条上游提供商时可省，多条时必填 |
+| `thread-id` / `session-id` | 可选：只影响「粘在哪条上游上」，不影响能不能调通 |
 | `X-Norm-Address` 等四个签名头 | 不收：本面没有签名入口 |
 
 上游提供商密钥始终由服务端解密，客户端不接触它。
 
-**没有凭据头时走哪条上游提供商**：账户里恰好有一条**启用的**（未撤销的）上游提供商就用它；
-一条都没有 → `400 provider_missing`；有多条 → `409 provider_ambiguous`，请在请求里用
-`X-Norm-Provider` 指名。指名了一条不属于本人或已撤销的上游提供商 → `404 provider_not_found`；
-指名了一条已禁用的 → `409 provider_disabled`；一条都没指名而账户里的上游提供商全被禁用 →
-同样是 `409 provider_disabled`。这条规则与身份无关：绑定不是身份的一部分，是每次转发自己的决定。
+**走哪条上游由服务端决定**：自己的上游优先（启用中、未撤销），一条都不可用时落到**公共池**；
+同一个 `thread-id` / `session-id` 在候选不变时粘在同一条上（`thread-id` 优先），两个头都没有的
+请求按 rendezvous 摊开。两条都没有可用上游时：自己的上游都被禁用 → `409 provider_disabled`；
+压根没有上游 → `400 provider_missing`。账单里的 `norm.pool` 说明这一单有没有落到公共池上。
+这条规则与身份无关：绑定不是身份的一部分，是每次转发自己的决定。
 
 三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；一个都没有（或放的是别家的 key）时
 不会退回去验签，而是 `401 consumer_key_required`——转发面只有 Token 这一条路。
@@ -210,7 +212,8 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 {
   "...": "OpenAI 响应原样",
   "norm": { "request_id": "req_…", "fee_nanos": 800, "gas_fee_nanos": 300, "token_nanos": 500,
-            "unbilled_nanos": 0, "balance_nanos": 999200, "latency_ms": 812, "host": "api.openai.com" }
+            "unbilled_nanos": 0, "balance_nanos": 999200, "latency_ms": 812, "host": "api.openai.com",
+            "pool": false }
 }
 ```
 

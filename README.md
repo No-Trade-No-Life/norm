@@ -55,8 +55,8 @@ curl https://norm.ntnl.io/v1/chat/completions \
 ```
 
 `x-api-key`（Anthropic SDK / Claude Code）与 `x-goog-api-key`（Google SDK）同样认——各家 SDK 发什么就用什么。
-换上游提供商不用改程序、也不用换 Token：账户里只有一条上游提供商时它自动就是那一条，有多条时在请求里加
-`X-Norm-Provider: <上游提供商 id>` 指名即可。
+换上游不用改程序、也不用换 Token，更没有任何 Norm 专有的头：走哪条上游由服务端挑——**自己的上游优先，
+公共池兜底**，同一个 `thread-id` / `session-id` 粘在同一条上。
 
 ## 自己部署一份
 

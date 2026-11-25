@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Switch } from '../components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { useCreateProvider, useProviders, useRevokeProvider, useSetEnabled, useSetVisibility } from '../queries';
+import { useCreateProvider, useProviders, useRevokeProvider, useSetEnabled, useSetScope, useSetVisibility } from '../queries';
 import { PROTOCOLS, VISIBILITIES, type Provider } from '../types';
 import { protocolLabel, trustLabel, visibilityLabel } from '../lib/labels';
 
@@ -27,6 +27,7 @@ export function ProvidersPage() {
   const providers = useProviders(true);
   const setVisibility = useSetVisibility();
   const setEnabled = useSetEnabled();
+  const setScope = useSetScope();
   const revoke = useRevokeProvider();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -79,6 +80,7 @@ export function ProvidersPage() {
                   onConfirm={(value) => setConfirmId(value ? item.id : null)}
                   onToggleEnabled={(value) => setEnabled.mutate({ id: item.id, enabled: value })}
                   onTogglePublic={(value) => setVisibility.mutate({ id: item.id, publicListed: value })}
+                  onToggleScope={() => setScope.mutate({ id: item.id, scope: item.scope === 'pool' ? 'private' : 'pool' })}
                   onRevoke={() => {
                     revoke.mutate(item.id, { onSettled: () => setConfirmId(null) });
                   }}
@@ -92,6 +94,7 @@ export function ProvidersPage() {
 
       {setEnabled.isError ? <ErrorNote title={t('common.error')} message={(setEnabled.error as Error).message} /> : null}
       {setVisibility.isError ? <ErrorNote title={t('common.error')} message={(setVisibility.error as Error).message} /> : null}
+      {setScope.isError ? <ErrorNote title={t('common.error')} message={(setScope.error as Error).message} /> : null}
       {revoke.isError ? <ErrorNote title={t('common.error')} message={(revoke.error as Error).message} /> : null}
 
       <NewProviderDialog
@@ -112,6 +115,7 @@ function ProviderRow({
   onConfirm,
   onToggleEnabled,
   onTogglePublic,
+  onToggleScope,
   onRevoke,
 }: {
   item: Provider;
@@ -120,6 +124,7 @@ function ProviderRow({
   onConfirm: (value: boolean) => void;
   onToggleEnabled: (value: boolean) => void;
   onTogglePublic: (value: boolean) => void;
+  onToggleScope: () => void;
   onRevoke: () => void;
 }) {
   const { t } = useI18n();
@@ -127,7 +132,22 @@ function ProviderRow({
 
   return (
     <TableRow className={off ? 'opacity-60' : undefined}>
-      <TableCell className="font-medium">{item.label}</TableCell>
+      <TableCell className="font-medium">
+        <span className="flex flex-wrap items-center gap-1.5">
+          {item.label}
+          {/* 池子里那条不是这个账户的资源：标出来，并且不给任何开关。 */}
+          {item.scope === 'pool' ? (
+            <Badge variant="secondary" className="font-normal">
+              {t('pr.scope_pool')}
+            </Badge>
+          ) : null}
+          {item.mine ? null : (
+            <Badge variant="outline" className="font-normal">
+              {t('pr.scope_readonly')}
+            </Badge>
+          )}
+        </span>
+      </TableCell>
       <TableCell className="hidden max-w-64 lg:table-cell">
         <span className="block truncate font-mono text-xs text-muted-foreground" title={item.base_url}>
           {item.base_url}
@@ -150,7 +170,12 @@ function ProviderRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
-          <Switch checked={item.enabled === 1} onCheckedChange={onToggleEnabled} aria-label={t('pr.col_enabled')} />
+          <Switch
+            checked={item.enabled === 1}
+            onCheckedChange={onToggleEnabled}
+            disabled={!item.mine}
+            aria-label={t('pr.col_enabled')}
+          />
           <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground xl:inline">
             {item.enabled === 1 ? t('pr.enabled_on') : t('pr.enabled_off')}
           </span>
@@ -158,21 +183,36 @@ function ProviderRow({
       </TableCell>
       <TableCell>
         <div className="flex items-center gap-2">
-          <Switch checked={item.public_listed === 1} onCheckedChange={onTogglePublic} aria-label={t('pr.col_public')} />
+          <Switch
+            checked={item.public_listed === 1}
+            onCheckedChange={onTogglePublic}
+            disabled={!item.mine}
+            aria-label={t('pr.col_public')}
+          />
           <span className="hidden text-[11px] whitespace-nowrap text-muted-foreground xl:inline">
             {item.public_listed === 1 ? t('pr.public_on') : t('pr.public_off')}
           </span>
         </div>
       </TableCell>
       <TableCell className="text-right">
-        <Button
-          variant={confirming ? 'destructive' : 'ghost'}
-          size="sm"
-          className="whitespace-nowrap"
-          onClick={() => (confirming ? onRevoke() : onConfirm(true))}
-        >
-          {confirming ? t('action.revoke_confirm') : t('action.revoke')}
-        </Button>
+        {item.mine ? (
+          <div className="flex items-center justify-end gap-1">
+            {/* 只有站点地址能真的拨动这个开关，其余账户会拿到 403 —— 那是服务端的答案，不在这里假装。 */}
+            <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onToggleScope}>
+              {item.scope === 'pool' ? t('pr.from_pool') : t('pr.to_pool')}
+            </Button>
+            <Button
+              variant={confirming ? 'destructive' : 'ghost'}
+              size="sm"
+              className="whitespace-nowrap"
+              onClick={() => (confirming ? onRevoke() : onConfirm(true))}
+            >
+              {confirming ? t('action.revoke_confirm') : t('action.revoke')}
+            </Button>
+          </div>
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
       </TableCell>
     </TableRow>
   );

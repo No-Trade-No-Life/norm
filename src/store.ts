@@ -2,8 +2,10 @@ import type { Env } from './env';
 import type { Protocol, Visibility } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
+import { affinityTtlSeconds } from './env';
 import { fail } from './http';
-import { randomToken } from './ids';
+import { nowSeconds, randomToken } from './ids';
+import { affinityFresh, affinityHash, narrowToOwned, pickByRendezvous, type AffinityKey } from './routing';
 
 export type PrincipalRow = {
   address: string;
@@ -17,7 +19,12 @@ export type PrincipalRow = {
 export type ProviderView = ProviderRow & {
   /** 主机名是否在信任清单里。只回事实，怎么措辞由前端决定。 */
   trusted: boolean;
+  /** true = 本账户名下的一条；false = 公共池里站点持有的那条，只能看不能改。 */
+  mine: boolean;
 };
+
+/** 一条上游属于谁：private 只给主人用，pool 是全站兜底。 */
+export type ProviderScope = 'private' | 'pool';
 
 export type ProviderRow = {
   id: string;
@@ -31,6 +38,8 @@ export type ProviderRow = {
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
   protocol: Protocol;
   visibility: Visibility;
+  /** private / pool。池子里的那条，所有账户都能在兜底时用到它。 */
+  scope: ProviderScope;
   /** 1 = 参与选址；0 = 暂时不用。撤销（revoked_at）才是永久退场。 */
   enabled: number;
   public_listed: number;
@@ -69,14 +78,31 @@ export async function findPrincipal(env: Env, address: string): Promise<Principa
   return row;
 }
 
+/**
+ * 账户看得见的上游：自己名下的 + 公共池里的。
+ *
+ * 池子那条对调用方是只读的，而且只回「是什么」：label / host / protocol / 启用状态。
+ * 「拿什么去打」不回——key_hint 是持有者的信息，摆到所有人面前等于把站点的上游账户
+ * 挂出来示众；sealed_key 更是能解出密钥的密文，一个字都不该离开持有者的账户。
+ */
 export async function listProviders(env: Env, address: string): Promise<ProviderView[]> {
   const { results } = await env.DB.prepare(
-    'SELECT * FROM providers WHERE address = ? AND revoked_at IS NULL ORDER BY created_at DESC, rowid DESC',
+    `SELECT * FROM providers
+      WHERE revoked_at IS NULL AND (address = ? OR scope = 'pool')
+      ORDER BY created_at DESC, rowid DESC`,
   )
     .bind(address)
     .all<ProviderRow>();
   // trusted 由同一份清单算出，不落库：清单改了，所有上游提供商的说法立刻跟着变。
-  return results.map((row) => ({ ...row, trusted: isTrusted(row.base_url, env) }));
+  return results.map((row) => {
+    const mine = row.address === address;
+    return {
+      ...row,
+      trusted: isTrusted(row.base_url, env),
+      mine,
+      ...(mine ? {} : { key_hint: '', sealed_key: '' }),
+    };
+  });
 }
 
 export async function findProvider(env: Env, address: string, id: string): Promise<ProviderRow | null> {
@@ -134,37 +160,110 @@ export async function recordRequest(env: Env, row: RequestRecord): Promise<void>
 }
 
 /**
- * 这次转发用哪条上游提供商：头里点了名就用它，没点名就用账户里唯一的那条。
+ * 这次转发用哪条上游：自己名下的优先，公共池兜底，会话按 thread-id / session-id 粘住。
  *
- * 多条又不指名是 409 而不是猜一条——「钱付给谁」是这个服务里失败代价最高的选择，
- * 不该由一个默认值替用户决定。签名身份与消费者 Token 走同一个判定点。
+ * 旧版本在多条上游时拒绝服务（409 provider_ambiguous），理由是「钱付给谁」不该由默认值
+ * 替用户决定。那条理由现在不成立了：上游只有两种来源——你自己的，或站点的池子——
+ * 两种都是配置好、声明过的，自动选址不再是把钱打给一个陌生账户。剩下的问题只是
+ * 「这一次打到哪台主机上」，而那个问题可以随手给，也可以给得很稳定。
+ *
+ * 判定顺序（每一步都能单独解释）：
+ *   1. 候选 = 启用中、未撤销、(自己名下 或 池子里)
+ *   2. 有自有候选 → 只留自有的；一条都没有 → 这一单落到池子上
+ *   3. 亲和键命中且那条仍在候选里 → 就是它
+ *   4. 否则 rendezvous 重挑（同一会话在候选不变时稳定落在同一条），并写回亲和表
  */
-export async function resolveProviderId(env: Env, address: string, requested: string | null): Promise<string> {
-  const named = requested?.trim();
-  if (named) return named;
+export type ProviderChoice = {
+  provider: ProviderRow;
+  /** owned = 自己名下的一条；pool = 公共池兜底。 */
+  via: 'owned' | 'pool';
+  /** 这次是按亲和表钉住的，还是重新挑的。 */
+  sticky: boolean;
+};
 
-  // 只有启用的上游提供商参与自动选址：禁用的那条等于「这次不想用它」，
-  // 不该因为它是账户里唯一的一条就被悄悄用上。
+export async function resolveProvider(
+  env: Env,
+  address: string,
+  affinityKey: AffinityKey | null,
+): Promise<ProviderChoice> {
+  const now = nowSeconds();
+  // 顺序固定（created_at, id）：rendezvous 的落点必须是候选的确定函数，
+  // 否则两个 Worker 上同一个会话会落到不同上游。
   const { results } = await env.DB.prepare(
-    'SELECT id FROM providers WHERE address = ? AND revoked_at IS NULL AND enabled = 1 ORDER BY created_at DESC, rowid DESC LIMIT 2',
+    `SELECT * FROM providers
+      WHERE revoked_at IS NULL AND enabled = 1 AND (address = ? OR scope = 'pool')
+      ORDER BY created_at, id`,
   )
     .bind(address)
-    .all<{ id: string }>();
+    .all<ProviderRow>();
+  if (results.length === 0) return failNoCandidate(env, address);
 
-  if (results.length === 0) {
-    // 「一条都没有」与「有但都关掉了」是两种处境：前者去添加，后者只需拨回开关。
-    const any = await env.DB.prepare(
-      'SELECT COUNT(*) AS n FROM providers WHERE address = ? AND revoked_at IS NULL',
-    )
-      .bind(address)
-      .first<{ n: number }>();
-    if ((any?.n ?? 0) > 0) fail(409, 'provider_disabled', '账户里的上游提供商都已禁用：到「上游提供商」页启用一条');
-    fail(400, 'provider_missing', '还没有上游提供商：先去「上游提供商」页添加一条');
+  // 自有优先：池子只在「自己的上游一条都不可用」时才接这一单。
+  const candidates = narrowToOwned(results, address);
+  const via = (provider: ProviderRow): 'owned' | 'pool' => (provider.address === address ? 'owned' : 'pool');
+
+  // 没有亲和键 = 这次请求不粘：直接按随机种子摊开，连亲和表都不读。
+  if (!affinityKey) {
+    const chosen = pickByRendezvous(candidates, randomToken(12));
+    return { provider: chosen, via: via(chosen), sticky: false };
   }
-  if (results.length > 1) {
-    fail(409, 'provider_ambiguous', '账户里有多条上游提供商，请用 X-Norm-Provider 指名用哪一条');
+
+  const hash = affinityHash(address, affinityKey.value);
+  const pinned = await env.DB.prepare('SELECT provider_id, expires_at FROM affinities WHERE affinity_hash = ?')
+    .bind(hash)
+    .first<{ provider_id: string; expires_at: number }>();
+
+  if (pinned && affinityFresh(pinned.expires_at, now)) {
+    const hit = candidates.find((candidate) => candidate.id === pinned.provider_id);
+    // 钉住的那条还在候选里才算命中。不在（禁用了、撤销了、自己的上游恢复把池子挤掉）
+    // 就重挑——粘性是「尽量不搬家」，不是「宁可失败也不搬家」。
+    if (hit) return { provider: hit, via: via(hit), sticky: true };
   }
-  return results[0].id;
+
+  const chosen = pickByRendezvous(candidates, hash);
+  await rememberAffinity(env, address, hash, chosen.id, now);
+  return { provider: chosen, via: via(chosen), sticky: false };
+}
+
+/**
+ * 写回亲和。只在「没记住 / 记住的不是这条 / 那条已过期」时才写：稳态下每个请求
+ * 只多一次读，不额外写 D1。顺手清掉本账户的过期行，表因此不会无限长。
+ */
+async function rememberAffinity(
+  env: Env,
+  address: string,
+  hash: string,
+  providerId: string,
+  now: number,
+): Promise<void> {
+  const ttl = affinityTtlSeconds(env);
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM affinities WHERE address = ? AND expires_at <= ?').bind(address, now),
+    env.DB.prepare(
+      `INSERT INTO affinities (affinity_hash, address, provider_id, expires_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(affinity_hash) DO UPDATE SET
+         provider_id = excluded.provider_id,
+         expires_at = excluded.expires_at,
+         updated_at = excluded.updated_at`,
+    ).bind(hash, address, providerId, now + ttl, now),
+  ]);
+}
+
+/**
+ * 一条候选都没有：分「自己的都关了」与「压根没有」两种处境说清楚，并且都提到池子——
+ * 池子也空着时，这两句话是调用方唯一能拿到的线索。
+ */
+async function failNoCandidate(env: Env, address: string): Promise<never> {
+  const own = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM providers WHERE address = ? AND revoked_at IS NULL',
+  )
+    .bind(address)
+    .first<{ n: number }>();
+  if ((own?.n ?? 0) > 0) {
+    fail(409, 'provider_disabled', '自己的上游提供商都已禁用，公共池里也没有可用的：到「上游提供商」页启用一条');
+  }
+  fail(400, 'provider_missing', '还没有上游提供商，公共池里也没有可用的：先去「上游提供商」页添加一条');
 }
 
 /**

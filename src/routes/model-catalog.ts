@@ -5,7 +5,7 @@ import { hostOf } from '../base-urls';
 import { nowSeconds } from '../ids';
 import { mergeCatalog, probeErrorText, probeProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
 import type { ModelInfo, Protocol, Visibility } from '../protocols';
-import { listProviders, type ProviderView } from '../store';
+import { listProviders, type ProviderScope, type ProviderView } from '../store';
 
 /**
  * 账户的模型总表：`GET /api/v1/models`（签名）。
@@ -35,6 +35,10 @@ type CatalogProvider = {
   visibility: Visibility;
   public_listed: number;
   trusted: boolean;
+  /** private / pool：池子里那条是站点给的兜底产能，不是这个账户的资源。 */
+  scope: ProviderScope;
+  /** true = 本账户名下的一条；false = 公共池里的只读那条。 */
+  mine: boolean;
   /** 1 = 启用中。0 的那条不参与探测，也不会出现在任何模型行的 `providers` 里。 */
   enabled: number;
   /** 这次有没有真的去问它。false 时 `ok` 是 null——没问不等于失败。 */
@@ -59,7 +63,8 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
   const overflow = enabled.slice(MAX_PROBES);
 
   const probes = await Promise.all(
-    asked.map((provider) => probeProviderModels({ env: c.env, address, provider })),
+    // 解封用的是持有者地址：池子那条的密文绑在站点名下，用调用方地址解不开。
+    asked.map((provider) => probeProviderModels({ env: c.env, address: provider.address, provider })),
   );
 
   // 同一台主机上的两条上游（两个 key）常常是一模一样的清单：按模型名合并，
@@ -78,6 +83,8 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
       visibility: provider.visibility,
       public_listed: provider.public_listed,
       trusted: provider.trusted,
+      scope: provider.scope,
+      mine: provider.mine,
       enabled: provider.enabled,
       probed: true,
       ok: probe.ok,
@@ -117,6 +124,8 @@ function noProbe(provider: ProviderView, error: string | null): CatalogProvider 
     visibility: provider.visibility,
     public_listed: provider.public_listed,
     trusted: provider.trusted,
+    scope: provider.scope,
+    mine: provider.mine,
     enabled: provider.enabled,
     probed: false,
     ok: null,

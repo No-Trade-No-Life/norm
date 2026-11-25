@@ -32,6 +32,11 @@
     "GRANT_NANOS": "1000000000",
     // 签名时间窗。
     "SIGNATURE_WINDOW_SECONDS": "120",
+    // 亲和有效期：一个 thread-id / session-id 在这段时间里留在同一条上游上。
+    "AFFINITY_TTL_SECONDS": "604800",
+    // 可以往公共池里放上游的地址（逗号分隔，空 = 谁都不行）。
+    // 地址是 Ed25519 公钥，不是秘密；但它决定「谁能让全站用自己的密钥」，所以是显式清单。
+    "POOL_ADMIN_ADDRESSES": "",
     // 信任清单：只有落在这些主机上的上游提供商才会被前端标成「官方」。
     // 精确主机名匹配，不做后缀匹配（api.openai.com.evil.tld 不该被放进来）。
     "TRUSTED_BASE_URLS": "api.openai.com,api.deepseek.com,api.anthropic.com,generativelanguage.googleapis.com,api.x.ai,api.moonshot.cn,open.bigmodel.cn,dashscope.aliyuncs.com",

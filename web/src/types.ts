@@ -49,6 +49,9 @@ export type BaseUrlGroup = {
   last_seen_at: number;
 };
 
+/** 一条上游属于谁：私有只给主人用，公共池是全站兜底。 */
+export type ProviderScope = 'private' | 'pool';
+
 export type Provider = {
   id: string;
   address: string;
@@ -59,7 +62,11 @@ export type Provider = {
   kdf: string;
   protocol: Protocol;
   visibility: Visibility;
-  /** 1 = 启用，0 = 禁用。禁用后不参与选址，也不能被指名。 */
+  /** private = 只有我这条能用；pool = 公共池，全站在自己的上游不可用时兜底用它。 */
+  scope: ProviderScope;
+  /** true = 本账户名下的；false = 池子里站点那条（只读，密钥提示与密文都不回）。 */
+  mine: boolean;
+  /** 1 = 启用，0 = 禁用。禁用后不参与选址。 */
   enabled: number;
   public_listed: number;
   /** 主机名是否在信任清单里；由后端用同一份清单算出，前端只负责措辞。 */
@@ -145,6 +152,8 @@ export type CallBill = {
   balance_nanos: number | null;
   latency_ms: number;
   host: string;
+  /** true = 这一单落到了公共池上（自己的上游一条都不可用）。 */
+  pool: boolean;
 };
 
 /** 按下游消费者密钥聚合的用量：哪把钥匙花了多少。 */
@@ -293,6 +302,10 @@ export type CatalogProvider = {
   visibility: Visibility;
   public_listed: number;
   trusted: boolean;
+  /** private / pool：池子那条是站点提供的兜底产能。 */
+  scope: ProviderScope;
+  /** true = 本账户名下；false = 池子里只读的那条。 */
+  mine: boolean;
   enabled: number;
   probed: boolean;
   ok: boolean | null;

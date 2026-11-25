@@ -50,27 +50,23 @@ export function useProviders(enabled: boolean) {
 }
 
 /**
- * 上游有哪些模型。
+ * 接下来会打到的那条上游有哪些模型。
  *
  * 只有服务端能问：上游密钥在库里是密文，客户端不接触明文。所以这是一次转发面请求，
- * 带一条下游消费者 Token，用 `X-Norm-Provider` 指名问哪条上游。
+ * 带一条下游消费者 Token——**不指定上游**：哪一条由服务端按「自有优先、公共池兜底、
+ * thread-id / session-id 粘住」自己挑，与真正发出去的那次转发是同一套判定。
  *
- * 它不扣费，所以取回来可以多放一会儿；换上游（key 变）必然重取，
- * 因为不同上游的清单是两份不同的东西，缓存不能串。
+ * 它不扣费，所以取回来可以多放一会儿。
  */
-export function useModels(enabled: boolean, providerId: string) {
+export function useModels(enabled: boolean) {
   const { identity } = useIdentity();
   return useQuery({
-    queryKey: ['models', identity.address, providerId],
-    enabled: enabled && providerId.length > 0,
+    queryKey: ['models', identity.address],
+    enabled,
     retry: false,
     staleTime: 5 * 60_000,
     queryFn: async () => {
-      const response = await consumerResponse({
-        address: identity.address,
-        path: '/v1/models',
-        headers: { 'X-Norm-Provider': providerId },
-      });
+      const response = await consumerResponse({ address: identity.address, path: '/v1/models' });
       if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
       return (await response.json()) as ModelList;
     },
@@ -251,6 +247,26 @@ export function useSetVisibility() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['providers'] });
       void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
+    },
+  });
+}
+
+/**
+ * 把一条自己的上游放进 / 拿回公共池。服务端只认站点地址，别的账户会拿到 403——
+ * 池子里的密钥是站点付钱，谁都不该替它决定这件事。
+ */
+export function useSetScope() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, scope }: { id: string; scope: 'private' | 'pool' }) =>
+      requestJson<{ id: string; scope: string }>({
+        path: `/api/v1/providers/${id}/scope`,
+        method: 'POST',
+        body: JSON.stringify({ scope }),
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['model-catalog'] });
     },
   });
 }

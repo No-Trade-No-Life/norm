@@ -5,7 +5,8 @@ import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { randomToken } from '../ids';
 import { probeProviderModels, type ModelProbe } from '../models';
-import { findProvider, resolveProviderId } from '../store';
+import { resolveProvider } from '../store';
+import { affinityKeyOf } from '../routing';
 import { type ModelInfo } from '../protocols';
 
 type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -71,14 +72,15 @@ type Resolved =
  */
 async function resolve(c: ModelsContext): Promise<Resolved> {
   const address = c.get('principal').address;
-  const providerId = await resolveProviderId(c.env, address, c.req.header('X-Norm-Provider') ?? null);
-
-  const provider = await findProvider(c.env, address, providerId);
-  if (!provider) fail(404, 'provider_not_found', 'Provider 不存在或已撤销');
-  if (provider.enabled === 0) fail(409, 'provider_disabled', '上游提供商已禁用：到「上游提供商」页启用它，或改用另一条');
+  // 与转发面同一套判定（store.resolveProvider）：自己的上游优先、公共池兜底、
+  // thread-id / session-id 粘住。于是「GET /v1/models 列出的清单」就是
+  // 「接下来 POST 会打到的那台」的清单，两者不会各说各话。
+  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers));
+  const provider = choice.provider;
 
   const startedAt = Date.now();
-  const probe: ModelProbe = await probeProviderModels({ env: c.env, address, provider });
+  // 探测要解封密钥，而密钥的 AAD 绑在持有者身上：池子那条归站点，不归调用方。
+  const probe: ModelProbe = await probeProviderModels({ env: c.env, address: provider.address, provider });
 
   if (!probe.ok) {
     // 本站自己的问题（密钥解不开）没有上游原话可交，只能自己说清楚。
@@ -109,6 +111,7 @@ async function resolve(c: ModelsContext): Promise<Resolved> {
       balance_nanos: null,
       latency_ms: Date.now() - startedAt,
       host: hostOf(provider.base_url),
+      pool: choice.via === 'pool',
     },
   };
 }

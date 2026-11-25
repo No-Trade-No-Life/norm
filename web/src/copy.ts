@@ -82,6 +82,12 @@ export const COPY = {
     en: 'This call uses a consumer token named playground — inference only accepts tokens, never signatures',
   },
   'pg.provider': { zh: '上游提供商', en: 'Provider' },
+  'pg.routing': { zh: '上游', en: 'Upstream' },
+  'pg.routing_hint': {
+    zh: '自己的上游优先，公共池兜底',
+    en: 'Your own upstream first, the public pool as a fallback',
+  },
+  'pg.pool_badge': { zh: '公共池', en: 'Pool' },
   'pg.provider_empty': { zh: '还没有上游提供商', en: 'No providers yet' },
   'pg.provider_none': { zh: '先添加上游提供商', en: 'Add a provider first' },
   'pg.model': { zh: '模型', en: 'Model' },
@@ -129,6 +135,10 @@ export const COPY = {
   'pr.col_enabled': { zh: '启用', en: 'Enabled' },
   'pr.col_public': { zh: '公开', en: 'Public' },
   'pr.col_actions': { zh: '', en: '' },
+  'pr.scope_pool': { zh: '公共池', en: 'Pool' },
+  'pr.scope_readonly': { zh: '站点', en: 'Site' },
+  'pr.to_pool': { zh: '放进池子', en: 'Add to pool' },
+  'pr.from_pool': { zh: '移出池子', en: 'Remove from pool' },
   'pr.empty': { zh: '还没有上游提供商。先加一个，Playground 才能用。', en: 'No providers yet. Add one to use the Playground.' },
   'pr.enabled_on': { zh: '启用', en: 'On' },
   'pr.enabled_off': { zh: '已禁用', en: 'Disabled' },
@@ -160,8 +170,8 @@ export const COPY = {
   },
   'pr.field_enabled': { zh: '启用这条上游提供商', en: 'Enable this provider' },
   'pr.field_enabled_hint': {
-    zh: '禁用后不参与转发，也不能被 X-Norm-Provider 指名；密钥与历史都留着，随时可以再打开。',
-    en: 'A disabled provider is skipped for relay and cannot be named with X-Norm-Provider. Its key and history stay — flip it back anytime.',
+    zh: '禁用后不参与选址；密钥与历史都留着，随时可以再打开。',
+    en: 'A disabled provider is skipped when Norm picks a provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
     zh: '入口方言与这里选的协议同名时不转换，请求体按原始字节转发；不同的 12 格才由 Norm 翻译。DeepSeek 选 deepseek：底层同样说 OpenAI Responses，但计价按官方高峰 / 低谷两档，低谷价只在这一条协议上生效。',
@@ -195,8 +205,8 @@ export const COPY = {
     en: 'Once this dialog closes the key is gone for good. Lose it and you rotate.',
   },
   'co.usage_hint': {
-    zh: '把它当普通 api key 用：Bearer、x-api-key 或 x-goog-api-key 都认（各家 SDK 的习惯）。账户里只有一条启用的上游提供商时不用再加任何 Norm 专有的头；有多条时用 X-Norm-Provider 指名要哪一条。',
-    en: 'Use it as an ordinary api key: Bearer, x-api-key or x-goog-api-key (whatever your SDK sends). With a single enabled provider you need no Norm-specific header at all; with several, name one via X-Norm-Provider.',
+    zh: '把它当普通 api key 用：Bearer、x-api-key 或 x-goog-api-key 都认（各家 SDK 的习惯）。没有任何 Norm 专有的头：走哪条上游由 Norm 自己挑——自己的上游优先，公共池兜底，同一个 thread-id / session-id 粘在同一条上。',
+    en: 'Use it as an ordinary api key: Bearer, x-api-key or x-goog-api-key (whatever your SDK sends). There is no Norm-specific header: Norm picks the upstream itself — your own providers first, the public pool as a fallback, sticky per thread-id / session-id.',
   },
   'co.entries_title': { zh: '四个入口 · 四种协议', en: 'Four entries · four providers' },
   'co.entries_body': {
@@ -326,6 +336,7 @@ export const COPY = {
   },
   'md.page': { zh: '第 {page} 页', en: 'Page {page}' },
   'md.page_hint': { zh: '每页 20 行', en: '20 rows per page' },
+  'md.pool': { zh: '公共池', en: 'Pool' },
   'md.probes_title': { zh: '探测情况', en: 'Probe results' },
   'md.probes_desc': {
     zh: '这几条上游这次没有给出清单，表里只有真的问到的模型。',
