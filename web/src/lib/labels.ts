@@ -1,4 +1,5 @@
 import { translate, type CopyKey, type Lang } from '../copy';
+import type { Attestation } from '../types';
 
 const PROTOCOL_KEYS: Record<string, CopyKey> = {
   'openai-chat': 'proto.openai-chat',
@@ -24,6 +25,20 @@ export function protocolLabel(protocol: string, lang: Lang): string {
 
 export function visibilityLabel(visibility: string, lang: Lang): string {
   return labelOf(VISIBILITY_KEYS, visibility, lang);
+}
+
+/**
+ * ZDR 策略：后端只报「是哪一条」（no-bodies / billing-fields-only / sealed-at-rest），
+ * 句子留在字典里——否则英文界面会原样显示中文。
+ */
+const POLICY_KEYS: Record<keyof Attestation['policy'], Record<string, CopyKey>> = {
+  logs: { 'no-bodies': 'at.policy_logs_none' },
+  storage: { 'billing-fields-only': 'at.policy_storage_billing_only' },
+  keys: { 'sealed-at-rest': 'at.policy_keys_sealed' },
+};
+
+export function policyLabel(kind: keyof Attestation['policy'], code: string, lang: Lang): string {
+  return labelOf(POLICY_KEYS[kind], code, lang);
 }
 
 /**
