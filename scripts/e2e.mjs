@@ -85,6 +85,14 @@ const provider = createServer((request, response) => {
 
     // 1) openai-chat
     if (url.pathname.endsWith('/chat/completions')) {
+      if (parsed.model === 'flaky-model') {
+        response.writeHead(400, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({
+          message: 'The supported API model names are gpt-test, but you passed flaky-model.',
+          type: 'invalid_request_error',
+        }));
+        return;
+      }
       if (parsed.stream) {
         const frames = [{ choices: [{ delta: { content: '你' } }] }, { choices: [{ delta: { content: '好' } }] }];
         // 仿 DeepSeek：用量只在你显式 `stream_options.include_usage` 的时候才回。
@@ -177,6 +185,9 @@ const provider = createServer((request, response) => {
       if (url.pathname.endsWith('/v1beta/models')) {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ models: [
+          // `gpt-test` 是夹具默认的模型名：清单里必须有它，否则它会被按模型筛掉——
+          // 假上游嘴上不认自己应答的型号，本来就不该被路由。
+          { name: 'models/gpt-test', displayName: 'GPT Test' },
           { name: 'models/gemini-2.0-flash', displayName: 'Gemini 2.0 Flash' },
           { name: 'models/gemini-2.0-pro', displayName: 'Gemini 2.0 Pro' },
         ] }));
@@ -185,6 +196,7 @@ const provider = createServer((request, response) => {
       if (url.pathname.endsWith('/v1/models')) {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ data: [
+          { id: 'gpt-test', type: 'model', created_at: '2025-05-14T00:00:00Z' },
           { id: 'claude-sonnet-4-20250514', type: 'model', created_at: '2025-05-14T00:00:00Z' },
           { id: 'claude-haiku-3', type: 'model', created_at: '2024-03-07T00:00:00Z' },
         ] }));
@@ -193,8 +205,11 @@ const provider = createServer((request, response) => {
       if (url.pathname.endsWith('/models')) {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ object: 'list', data: [
+          { id: 'gpt-test', object: 'model', created: 1721174400, owned_by: 'openai' },
           { id: 'gpt-4o-mini', object: 'model', created: 1721174400, owned_by: 'openai' },
           { id: 'gpt-4o', object: 'model', created: 1715367049, owned_by: 'openai' },
+          // 清单说它有、跑起来却说没有的那种上游：验证 Norm 会划掉这一行并只重试一次。
+          { id: 'flaky-model', object: 'model', created: 1715367049, owned_by: 'openai' },
         ] }));
         return;
       }
@@ -1144,11 +1159,14 @@ console.log('12. 4×4 矩阵：入口方言 × 上游提供商协议');
 
 console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣费');
 {
+  // 顺序与假上游给的顺序一致：这一节验的是「归一」，不是排序。
+  // `gpt-test` 在四条清单里都有 —— 夹具用它当默认模型名，清单里就必须有它，
+  // 否则转发会按模型把请求筛掉（见最后一节）。
   const WANT = {
-    'openai-chat': ['gpt-4o-mini', 'gpt-4o'],
-    'openai-responses': ['gpt-4o-mini', 'gpt-4o'],
-    'anthropic-messages': ['claude-sonnet-4-20250514', 'claude-haiku-3'],
-    'google-gemini': ['gemini-2.0-flash', 'gemini-2.0-pro'],
+    'openai-chat': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model'],
+    'openai-responses': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model'],
+    'anthropic-messages': ['gpt-test', 'claude-sonnet-4-20250514', 'claude-haiku-3'],
+    'google-gemini': ['gpt-test', 'gemini-2.0-flash', 'gemini-2.0-pro'],
   };
 
   // 余额与请求数在清单这一路上一分都不能动：先记下来，最后对一遍。
@@ -1183,13 +1201,15 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   const one = await relayVia('openai-chat', aliceKey, 'GET', '/v1/models/gpt-4o-mini', undefined);
   check('单个模型 200', one.status === 200 && one.json.id === 'gpt-4o-mini' && one.json.object === 'model', one.json);
   const missing = await relayVia('openai-chat', aliceKey, 'GET', '/v1/models/no-such-model', undefined);
-  check('不存在的模型 404 model_not_found', missing.status === 404 && missing.json.error === 'model_not_found', missing.json);
+  // 模型名现在也是选址条件：谁的清单里都没有它时，在选址这一步就拒绝了
+  // （`model_not_served`），而不是先挑一条上游再去它的清单里找。
+  check('不存在的模型 404 model_not_served', missing.status === 404 && missing.json.error === 'model_not_served', missing.json);
 
   // 消费者密钥同样能列清单：程序拿着一条 Token 就能看见自己能调什么。
   const token = (await createConsumer(alice, 'models bot')).json.key;
   await onlyProvider('openai-chat');
   const byKey = await raw('GET', '/v1/models', undefined, { Authorization: `Bearer ${token}` });
-  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 2, byKey.json);
+  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 4, byKey.json);
 
   const anonymous = await raw('GET', '/v1/models');
   check('无身份 401', anonymous.status === 401, anonymous.status);
@@ -1224,7 +1244,7 @@ console.log('14. 模型总表：账户里所有上游的清单并成一张表，
   const probeRows = catalog.json.providers ?? [];
   const probed = probeRows.filter((row) => row.probed);
   check('每条启用中的上游都探测了', probed.length === 4 && probed.every((row) => row.ok === true), probeRows);
-  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 2, probeRows);
+  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 4, probeRows);
 
   // 禁用的一条：不参与探测，它的模型也不该留在「可用」里。
   await call(alice, 'POST', `/api/v1/providers/${providers['google-gemini']}/enabled`, JSON.stringify({ enabled: false }));
@@ -1307,3 +1327,64 @@ console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协
 provider.close();
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`);
 process.exit(failures === 0 ? 0 : 1);
+
+console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打');
+{
+  // 干净的身份：这一节不依赖前面几节留下的上游、启用状态与亲和。
+  const watcher = identity();
+  await call(watcher, 'POST', '/api/v1/auth/login');
+  const created = await call(watcher, 'POST', '/api/v1/providers', JSON.stringify({
+    label: 'catalog provider',
+    base_url: BASE_URL,
+    provider_key: KEY,
+    protocol: 'openai-chat',
+    visibility: 'private',
+  }));
+  check('新身份建一条上游 201', created.status === 201, created.json);
+  const key = (await createConsumer(watcher, 'catalog bot')).json.key;
+  check('拿到一把下游 Token', typeof key === 'string' && key.length > 0, key);
+
+  const ask = (model) => relay(key, 'POST', '/v1/chat/completions', JSON.stringify({
+    model,
+    messages: [{ role: 'user', content: 'hi' }],
+  }));
+
+  // 清单还没抓过：不知道它有没有，就不该拿一张空表把请求拦下来。
+  const beforeSync = await ask('gpt-test');
+  check('清单还没抓过时照常转发（不知道 ≠ 没有）', beforeSync.status === 200, beforeSync.json);
+
+  // 读一次总表：这次读取顺手把清单写进 provider_models，转发从此按模型筛。
+  const catalog = await call(watcher, 'GET', '/api/v1/models');
+  check('模型总表里有 gpt-test', (catalog.json.models ?? []).some((item) => item.id === 'gpt-test'), catalog.json.models);
+
+  const listed = await ask('gpt-test');
+  check('清单里有的型号继续能跑', listed.status === 200, listed.json);
+
+  const stranger = await ask('stranger-model');
+  check('谁都没有的型号 → 404 model_not_served', stranger.status === 404 && stranger.json?.error === 'model_not_served', stranger.json);
+
+  const flakyFirst = await ask('flaky-model');
+  check(
+    '清单说它有、上游说没有 → 上游原话回传（400）',
+    flakyFirst.status === 400 && String(flakyFirst.json?.message ?? '').includes('flaky-model'),
+    flakyFirst.json,
+  );
+
+  // 那一次失败已经把清单里这一行划掉、把这条会话的粘性清掉；没有别的候选可换，
+  // 于是这一次直接说没有，而不是再白打一次上游。
+  const flakySecond = await ask('flaky-model');
+  check(
+    '划掉的型号下一次直接 404，不再白打上游',
+    flakySecond.status === 404 && flakySecond.json?.error === 'model_not_served',
+    flakySecond.json,
+  );
+
+  // 划掉的只是「这一次的修正」，不是事实：清单端点还在说它有它，再同步又会回来。
+  // 这条断言是故意留着的行为说明——想让它长期消失，得改上游或关掉那条上游。
+  const again = await call(watcher, 'GET', '/api/v1/models');
+  check(
+    '再同步一次，以清单端点为准（划掉不等于改写事实）',
+    (again.json.models ?? []).some((item) => item.id === 'flaky-model'),
+    (again.json.models ?? []).map((item) => item.id),
+  );
+}
