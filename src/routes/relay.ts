@@ -15,7 +15,7 @@ import {
 import { fail } from '../http';
 import { nowSeconds, randomToken } from '../ids';
 import { unsealUpstreamKey } from '../seal';
-import { charge, findCredential, findPrincipal } from '../store';
+import { charge, findCredential, findPrincipal, resolveCredentialId } from '../store';
 import { adapterFor, upstreamUrlFor, type UpstreamProtocol } from '../upstreams';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -55,10 +55,10 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
 
-  // 下游消费者密钥自带绑定的上游；只有人是签名来的，才需要在头里指名用哪一条。
-  // 这条规矩就是「密钥即完整调用」：程序侧永远不用再拼第二个头。
-  const credentialId = principal.credentialId ?? c.req.header('X-Norm-Credential');
-  if (!credentialId) fail(400, 'credential_required', '缺少 X-Norm-Credential');
+  // 身份只说「谁在用」。走哪条上游是这次转发自己的选择：头里指了名就用它，
+  // 没指名就用账户里唯一的那条上游——所以「一条 Token」在只有一条上游时就是完整调用，
+  // 而多上游的账户仍然可以在请求里点名。多条又不指名是错误，不是猜测。
+  const credentialId = await resolveCredentialId(c.env, address, c.req.header('X-Norm-Credential') ?? null);
 
   const credential = await findCredential(c.env, address, credentialId);
   if (!credential) fail(404, 'credential_not_found', '凭证不存在或已撤销');

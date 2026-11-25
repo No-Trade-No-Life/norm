@@ -7,10 +7,10 @@ Base: `https://norm.ntnl.io`。
 | 前缀 | 接受什么 | 用来干什么 |
 |---|---|---|
 | `/api/v1/*` | **只**接受 Ed25519 请求签名 | 管理面：账户、上游提供者、下游消费者 Token，都是「浏览器里的人在操作」 |
-| `/v1/*` | 签名**或** `Authorization: Bearer sk-norm-…` | 转发面：消费。程序拿一条绑好上游的 Token 就能调用 |
+| `/v1/*` | 签名**或** `Authorization: Bearer sk-norm-…` | 转发面：消费。程序拿一条 Token 就能调用（账户只有一条上游时无需任何专有头） |
 
-一句话：**身份只管资源，消费只用一个 api key。** 下游 Token 在创建时就绑死一条上游提供者，
-所以消费侧不需要任何 Norm 专有的头。
+一句话：**身份只管资源，消费只用一个 api key。** 下游 Token 不绑定上游——账户里只有一条上游
+提供者时消费侧不需要任何 Norm 专有的头；有多条时才用 `X-Norm-Credential` 指名。
 
 公开接口（`health` / `stats` / `base-urls` / `attestation`）两种都不需要。
 
@@ -75,21 +75,18 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 ## 下游消费者 Token（签名）
 
-给下游程序用的 `sk-norm-…`。**建的时候必须指定一条上游提供者**，绑定之后不再改动——因此
-一次调用只要一个 Bearer。明文只在创建与轮换的响应里出现一次，之后只有 `key_hint`。
+给下游程序用的 `sk-norm-…`。**只要一个名字**：Token 说明「这段代码是谁在调用」，
+不绑定任何上游。明文只在创建与轮换的响应里出现一次，之后只有 `key_hint`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/consumers` | `{items: [{id, name, credential_id, credential_label, credential_base_url, key_hint, created_at, last_used_at}]}`（不含哈希） |
-| POST | `/api/v1/consumers` | `{name, credential_id}` → `201 {id, name, credential_id, credential_label, key, key_hint}`，`key` 只此一次 |
-| POST | `/api/v1/consumers/:id/rotate` | → `{id, key, key_hint}`，旧钥立刻失效，绑定不变 |
+| GET | `/api/v1/consumers` | `{items: [{id, name, key_hint, created_at, last_used_at}]}`（不含哈希） |
+| POST | `/api/v1/consumers` | `{name}` → `201 {id, name, key, key_hint}`，`key` 只此一次 |
+| POST | `/api/v1/consumers/:id/rotate` | → `{id, key, key_hint}`，旧钥立刻失效，名字不变 |
 | POST | `/api/v1/consumers/:id/name` | `{name}` |
 | DELETE | `/api/v1/consumers/:id` | 撤销 |
 
-`credential_id` 必填：缺少 → `400 credential_missing`，不属于本人或已撤销 → `404 credential_not_found`。
-绑定不可改写——要换上游就轮换到一条新 Token。
-
-`GET` 里的 `credential_label` / `credential_base_url` 由 `LEFT JOIN` 带出，凭证被撤销后为 `null`。
+`name` 必填：缺少 → `400 name_missing`。请求体里若还带着旧的 `credential_id`，直接忽略。
 
 ## 转发（签名或 Bearer 消费者密钥）
 
@@ -124,11 +121,15 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | `Authorization: Bearer sk-norm-…` | 必填，三选一（OpenAI SDK 的形状） | — |
 | `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） | — |
 | `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） | — |
-| `X-Norm-Credential` | **不需要**：上游在建钥时绑好了 | 必填，决定发往哪个上游 |
+| `X-Norm-Credential` | 可选：账户只有一条上游时可省，多条时必填 | 同样可选：只有一条上游时可省 |
 | `X-Norm-Address` 等四个签名头 | — | 必填（见上一节） |
 
-上游密钥始终由服务端解密，客户端不接触它。Token 的绑定优先于任何请求头：
-带一条 Token 又带 `X-Norm-Credential` 时，用的是 Token 绑的那条。
+上游密钥始终由服务端解密，客户端不接触它。
+
+**没有凭据头时走哪条上游**：账户里恰好有一条（未撤销的）上游提供者就用它；一条都没有 →
+`400 credential_missing`；有多条 → `409 credential_ambiguous`，请在请求里用 `X-Norm-Credential`
+指名。指名了一条不属于本人或已撤销的凭证 → `404 credential_not_found`。
+这条规则对签名身份与 Bearer 一视同仁：绑定不是身份的一部分，是每次转发自己的决定。
 
 三个 api key 头里只有带 `sk-norm-` 前缀的值会被当成消费者密钥；别家的 key 会走签名那条路失败。
 
@@ -142,7 +143,7 @@ curl https://norm.ntnl.io/v1/chat/completions \
 
 ```bash
 # Claude Code 的形状：x-api-key + Anthropic Messages 入口，同样不需要别的头
-# （Token 绑的是 anthropic-messages 上游时这一路是直通；绑别的协议则由 Norm 翻译）
+# （上游的 upstream_protocol 是 anthropic-messages 时这一路是直通；别的协议由 Norm 翻译）
 curl https://norm.ntnl.io/v1/messages \
   -H "x-api-key: sk-norm-…" \
   -H 'Content-Type: application/json' \
