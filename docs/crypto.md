@@ -86,7 +86,8 @@ key_hint  = "sk-norm-" + 前 4 + "…" + 后 4           → 列表与页面只�
 
 ## 4. 计费计数器
 
-- 全部是**整数纳美元**（`1e-6 USD`），不用浮点。
-- `REQUEST_FEE_NANOS` 每次成功转发扣一次；失败请求（上游提供商 4xx/5xx、网络错误）**不扣**（`fee_nanos = 0`），
-  但照样记一条 `requests`，因为隔离执行的成本由站点承担——这是给用户的诚实账。
+- 全部是**整数纳美元**（`1e-9 USD`），不用浮点。
+- `GAS_FEE_NANOS` 每一次真的打出去的调用扣一次，成功失败都一样：上游提供商 4xx/5xx 或网络不可达时
+  `token_nanos = 0`、`fee_nanos = gas_fee_nanos`，但照样记一条 `requests`——「这次被执行过」是事实，
+  删掉它就是伪造历史。没打到上游的请求（体不是 JSON、余额不足）不记账也不扣。
 - 账本 `balance_after_nanos` 必须与 `principals.balance_nanos` 在同一事务里一致。

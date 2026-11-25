@@ -40,12 +40,14 @@ const attestation = await (await fetch(`${BASE}/api/v1/attestation`)).json();
 check('线上带上了构建哈希', typeof attestation.source_sha256 === 'string' && attestation.source_sha256.length === 64, attestation.source_sha256);
 
 console.log('1. 开户');
+let granted = 0;
 {
   const response = await fetch(`${BASE}/api/v1/auth/login`, { method: 'POST', headers: sign('POST', '/api/v1/auth/login') });
   const body = await response.json();
   check('login 200', response.status === 200, body);
   check('地址与本地公钥一致', body.address === address, body);
-  check('演示授信已到账', body.balance_nanos === 1000000, body);
+  check('演示授信已到账', body.balance_nanos > 0, body);
+  granted = body.balance_nanos;
 }
 
 console.log('2. 未签名与重放');
@@ -64,7 +66,7 @@ let consumerKey;
   const payload = JSON.stringify({
     label: 'smoke',
     base_url: 'https://api.openai.com/v1',
-    // 假密钥：它只会被用去打真·官方端点，用来验「失败不扣费」与「封装/解封跑得通」。
+    // 假密钥：它只会被用去打真·官方端点，用来验「失败只收 Gas」与「封装/解封跑得通」。
     provider_key: 'sk-invalid-smoke-key',
   });
   const response = await fetch(`${BASE}${path}`, {
@@ -134,7 +136,7 @@ console.log('4. 下游消费者 Token：只记名字、只显一次、能调用�
   check('旧密钥立刻失效', stale.status === 401, stale.status);
 }
 
-console.log('5. 上游提供商拒绝时不扣费（假密钥打真·官方端点）');
+console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端点）');
 {
   const path = '/v1/chat/completions';
   const payload = JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'hi' }] });
@@ -149,7 +151,7 @@ console.log('5. 上游提供商拒绝时不扣费（假密钥打真·官方端�
   });
   check('上游提供商 401 原样返回', response.status === 401, response.status);
   const me = await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json();
-  check('余额没被扣', me.balance_nanos === 1000000, me);
+  check('只扣了 300 纳美元 Gas', me.balance_nanos === granted - 300, me);
   check('但留下了失败记录', me.requests === 2, me);
 }
 

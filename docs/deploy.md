@@ -64,7 +64,7 @@ Workers 运行时本身由 Cloudflare 托管——这一层不在自证范围内
 
 ```bash
 node scripts/e2e.mjs          # 本地：假上游提供商 + 真身份 + 本地 Worker，含消费者密钥用例
-node scripts/smoke-prod.mjs   # 线上：真签名打真域名，覆盖上游提供商封装 / 消费者密钥 / 失败不扣费
+node scripts/smoke-prod.mjs   # 线上：真签名打真域名，覆盖上游提供商封装 / 消费者密钥 / 失败只收 Gas
 ```
 
 `smoke-prod.mjs` 会在线上留下一个测试账户（输出里带 `TEST_ADDRESS=`），清理：
@@ -81,7 +81,7 @@ done
 
 | 变量 | 默认 | 含义 |
 |---|---|---|
-| `REQUEST_FEE_NANOS` | `500` | 每次成功转发的隔离费（纳美元） |
+| `GAS_FEE_NANOS` | `300` | 每一次真的打出去的调用的 Gas 费（纳美元），成功失败都收 |
 | `GRANT_NANOS` | `1000000` | 新地址的演示授信（纳美元，即 $1） |
 | `SIGNATURE_WINDOW_SECONDS` | `120` | 签名时间窗 |
 | `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |

@@ -81,12 +81,21 @@ pnpm attest         # 算出 source_sha256 / assets_sha256，与 /api/v1/attesta
 
 ## 设计上的取舍
 
-- **不做协议转换。** 一家上游提供商一个代理（`-LB` 一族），Norm 只做 OpenAI 兼容转发。
+- **全连接，只有对角线不翻译。** 四条入口方言（OpenAI Chat / Responses、Anthropic Messages、
+  Google Gemini）× 四种上游提供商协议，16 格全通：4 格同格式直通（请求体按原始字节发出去、
+  响应体原样回来），其余 12 格过 OpenAI Chat 这座桥做转换。唯一不做的是**跨方言的工具调用**：
+  三家的 `tools` 形状不同，硬拼一个「尽力而为」的映射只会在客户端以为有 function calling 时
+  收到一段散文，所以跨方言带 `tools` 直接 400。协议转换是 Norm 自己的事——`-LB` 一族照样能接，
+  只是不再是接入的前提。
 - **不留内容。** 记账只需要模型名、token 数、状态、延迟、费用——这已经足够解释一笔账，
   再多记一个字都是对 ZDR 的破坏。
-- **按 Token 记账，外加服务费。** 输入 / 缓存命中 / 输出三种 token 分开计价（价目表在
-  `src/pricing.ts`，公开在 `GET /api/v1/pricing`），再加一笔摊 Cloudflare 固定成本的服务费。
-  每条记录都满足 `fee = service_fee + token − unbilled`，谁都能自己重算一遍。
-- **失败不扣费。** 隔离执行的成本由站点承担；用户只看到一条诚实的失败记录与 `fee_nanos: 0`。
+- **按 Token 记账，外加 Gas 费。** 输入 / 缓存命中 / 输出三种 token 分开计价（价目表在
+  `src/pricing.ts`，公开在 `GET /api/v1/pricing`），再加一笔固定 300 纳美元（$0.0000003）的
+  Gas 费——它摊的是 Cloudflare 侧的固定成本（一次 Worker 调用、几次 D1 读写）。
+  每条记录都满足 `fee = gas_fee + token − unbilled`，谁都能自己重算一遍。
+- **失败收 Gas，不收 Token。** Gas 买的是「这次被执行」，不是答案：上游 500、密钥被吊销、
+  地址根本打不通，Worker 与 D1 的成本照样发生过了，所以 Gas 照收（响应头 `X-Norm-Gas-Fee-Nanos`
+  写明扣了多少），token 那部分才是 0。没打到上游的请求（体不是 JSON、余额不足、没配上游提供商）
+  不记账也不扣——那些没有「执行」可言。
 - **诚实标注边界。** 来源核验是信号不是证明，官方订阅额度无法在协议层证明——所以在
   `/api/v1/provenance` 里公开 `base_url` 原文与核验时间，让任何人都能自己重跑一次。
