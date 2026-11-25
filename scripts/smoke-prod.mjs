@@ -163,7 +163,6 @@ console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端�
     headers: {
       Authorization: `Bearer ${rotatedKey}`,
       'Content-Type': 'application/json',
-      'X-Norm-Provider': providerId,
     },
     body: payload,
   });

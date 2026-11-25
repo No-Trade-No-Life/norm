@@ -294,6 +294,11 @@ export function ModelsPage() {
                 <Badge variant="outline" className="font-normal">
                   {protocolLabel(provider.protocol, lang)}
                 </Badge>
+                {provider.scope === 'pool' ? (
+                  <Badge variant="secondary" className="font-normal">
+                    {t('md.pool')}
+                  </Badge>
+                ) : null}
                 <span
                   className={`min-w-0 flex-1 truncate ${provider.probed ? 'text-destructive' : 'text-muted-foreground'}`}
                   title={provider.error ?? undefined}

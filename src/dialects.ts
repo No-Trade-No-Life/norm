@@ -51,6 +51,8 @@ export type NormMeta = {
   balance_nanos: number | null;
   latency_ms: number;
   host: string;
+  /** true = 这一单落到了公共池上（自己的上游一条都不可用）。 */
+  pool: boolean;
 };
 
 /** 四家方言里表示「用量」的那几个字段名，集中在这里，别处不出现。 */

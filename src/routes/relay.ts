@@ -18,7 +18,8 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
-import { findProvider, findPrincipal, resolveProviderId, settle, type RequestRecord, type Settled } from '../store';
+import { findPrincipal, resolveProvider, settle, type RequestRecord, type Settled } from '../store';
+import { affinityKeyOf } from '../routing';
 import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
@@ -78,19 +79,18 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
 
-  // 身份只说「谁在用」，走哪条上游提供商是这次转发自己的选择：头里点了名就用它，
-  // 没点名就用账户里唯一的那条（多条又不指名是 409，见 store.resolveProviderId）。
-  const providerId = await resolveProviderId(c.env, address, c.req.header('X-Norm-Provider') ?? null);
-
-  const provider = await findProvider(c.env, address, providerId);
-  if (!provider) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
-  if (provider.enabled === 0) fail(409, 'provider_disabled', '这条上游提供商已禁用：到「上游提供商」页启用它，或改用另一条');
+  // 走哪条上游是 Norm 自己的决定，调用方一个头都不用带：自己的上游优先、公共池兜底，
+  // 同一个 thread-id / session-id 粘在同一条上（见 store.resolveProvider 与 routing.ts）。
+  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers));
+  const provider = choice.provider;
 
   // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，
   // 只在本次请求的作用域里存在：不写日志、不进响应、不返回给客户端。
+  //
+  // 解封用的是**持有者**的地址，不是调用方的：公共池里那条属于站点，调用方只是借用。
   const providerKey = await unsealProviderKey({
     env: c.env,
-    address,
+    address: provider.address,
     providerId: provider.id,
     sealed: provider.sealed_key,
   });
@@ -157,6 +157,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     env: c.env,
     address,
     providerId: provider.id,
+    /** 这一单是不是落到了公共池上：账单里要说，否则「为什么打到别人的主机」无从解释。 */
+    pool: choice.via === 'pool',
     // 谁花的：消费者密钥的 id；签名直连时为空（那是人，不是一把程序凭据）。
     consumerId: principal.consumerId,
     baseUrl,
@@ -222,6 +224,8 @@ type Accounting = {
   env: Env;
   address: string;
   providerId: string;
+  /** true = 公共池兜底，false = 自己名下的上游。 */
+  pool: boolean;
   consumerId: string;
   /** 打到的上游提供商地址：账本要能回答「这一笔打给哪台机器」。 */
   baseUrl: string;
@@ -260,6 +264,7 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
     balance_nanos: billed.balanceNanos,
     latency_ms: Date.now() - accounting.startedAt,
     host: accounting.host,
+    pool: accounting.pool,
   };
 }
 
