@@ -39,7 +39,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 ### 4.1 上游密钥的存放
 
-- 添加凭证时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
+- 添加一个上游提供者时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
   做 AES-256-GCM 封装，AAD 绑 `address|credentialId`。库里存：label、provider、base_url、
   `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及两个用户配置项（上游协议、上游是否公开可用）。
 - 调用模型时 Worker 现解现用，明文只在本次请求的作用域里存在——不写日志、不进 D1、不回响应。
@@ -87,7 +87,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 ### 6.2 四种协议，两侧同名：4×4
 
-四种协议既是**入口**（客户端怎么说），也是**上游**（凭证怎么存）。因为两侧同名，
+四种协议既是**入口**（客户端怎么说），也是**上游**（上游提供者怎么存）。因为两侧同名，
 「入口方言 === 上游协议」就是一句字符串相等，而那 4 格**不转换**——请求体按原始字节
 发出去，响应体原样回来。一个字段都不碰，包括我们不打算理解的 `tools`、`response_format`。
 
