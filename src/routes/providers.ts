@@ -141,6 +141,66 @@ providerRoutes.post('/:id/enabled', async (c) => {
   return c.json({ id: existing.id, enabled: enabled ? 1 : 0 });
 });
 
+/**
+ * 编辑一条上游：只有本人名下的那条能动。密钥是**可换不可看**的——请求里给新值就重新
+ * 封装并更新提示，留空就保持原密文；明文既不进日志、也不进响应。
+ *
+ * 基址仍由协议决定：固定基址的协议不接受另一个地址；从固定基址的协议换到通用协议时
+ * 必须给一个新地址，否则会把官方地址悄悄当成用户自己的上游。
+ */
+providerRoutes.patch('/:id', async (c) => {
+  const address = c.get('principal').address;
+  const existing = await findProvider(c.env, address, c.req.param('id'));
+  if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
+
+  const body = await c.req.json<Body>();
+  const label = body.label === undefined ? existing.label : body.label.trim();
+  const protocol = body.protocol ?? existing.protocol;
+  const visibility = body.visibility ?? existing.visibility;
+  const enabled = body.enabled === undefined ? existing.enabled === 1 : body.enabled;
+
+  if (!label) fail(400, 'label_missing', '缺少 label');
+  if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
+  if (!isVisibility(visibility)) fail(400, 'visibility_invalid', 'visibility 只能是 public / private');
+  if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
+
+  const fixedBaseUrl = adapterFor(protocol).base_url;
+  const givenBaseUrl = (body.base_url ?? '').trim().replace(/\/+$/, '');
+  let baseUrl: string;
+  if (fixedBaseUrl !== undefined) {
+    if (givenBaseUrl && givenBaseUrl !== fixedBaseUrl) {
+      fail(400, 'base_url_fixed', `${protocol} 协议的基址固定为 ${fixedBaseUrl}，不要另填 base_url`);
+    }
+    baseUrl = fixedBaseUrl;
+  } else if (givenBaseUrl) {
+    baseUrl = givenBaseUrl;
+  } else if (protocol === existing.protocol || adapterFor(existing.protocol).base_url === undefined) {
+    // 通用方言之间换协议，地址还是用户自己那一个，沿用；只有从厂商给定的地址
+    // 换回通用方言时，才必须重新填一次。
+    baseUrl = existing.base_url;
+  } else {
+    fail(400, 'base_url_invalid', '切换到这个协议要填 base_url');
+  }
+  if (!hostOf(baseUrl)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
+
+  const nextKey = body.provider_key?.trim() ?? '';
+  const sealedKey = nextKey
+    ? await sealProviderKey({ env: c.env, address, providerId: existing.id, providerKey: nextKey })
+    : existing.sealed_key;
+  const keyHint = nextKey ? keyHintOf(nextKey) : existing.key_hint;
+
+  await c.env.DB.prepare(
+    `UPDATE providers
+        SET label = ?, base_url = ?, protocol = ?, visibility = ?, enabled = ?,
+            sealed_key = ?, key_hint = ?, kdf = ?
+      WHERE id = ? AND address = ?`,
+  )
+    .bind(label, baseUrl, protocol, visibility, enabled ? 1 : 0, sealedKey, keyHint, KDF, existing.id, address)
+    .run();
+
+  return c.json({ id: existing.id });
+});
+
 providerRoutes.delete('/:id', async (c) => {
   const address = c.get('principal').address;
   const existing = await findProvider(c.env, address, c.req.param('id'));

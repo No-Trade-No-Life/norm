@@ -47,7 +47,7 @@ function randomNonce(): string {
 
 export type SignedRequest = {
   path: string;
-  method?: 'GET' | 'POST' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   /** 已序列化好的字符串；不传就是无 body。序列化只发生一次，签名与发送同源。 */
   body?: string;
   headers?: Record<string, string>;

@@ -246,6 +246,19 @@ export function useCreateProvider() {
   });
 }
 
+export function useUpdateProvider() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: Record<string, unknown> }) =>
+      requestJson<{ id: string }>({ path: `/api/v1/providers/${id}`, method: 'PATCH', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['providers'] });
+      void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
+      void queryClient.invalidateQueries({ queryKey: ['me'] });
+    },
+  });
+}
+
 export function useSetVisibility() {
   const queryClient = useQueryClient();
   return useMutation({

@@ -84,6 +84,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 |---|---|---|
 | GET | `/api/v1/providers` | 本人的上游提供商（含密文与 hint，不含明文密钥） |
 | POST | `/api/v1/providers` | 新建，body 见下 |
+| PATCH | `/api/v1/providers/:id` | 编辑已保存的配置，body 同下（全部可选，密钥留空即不改） |
 | POST | `/api/v1/providers/:id/visibility` | `{public_listed: bool}` |
 | POST | `/api/v1/providers/:id/enabled` | `{enabled: bool}`，禁用/启用 |
 | DELETE | `/api/v1/providers/:id` | 撤销 |
@@ -97,7 +98,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 // POST /api/v1/providers  → 201 { id }
 {
   "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
-  "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后不可改写。
+  "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后只有本人能改。
                                             // deepseek / opencode-go 的基址由协议给定，
                                             // 不能也不用填
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
@@ -117,6 +118,12 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 ```
 
 `key_hint` 由服务端从明文算出（前 4 + `…` + 后 4），不接受客户端自报——否则提示与真实密钥可以不一致。
+这也是已保存密钥**唯一**的展示方式：`PATCH` 只能替换它（`provider_key` 给新值就重新封装并更新提示），
+没有任何一条路径能把明文读回来。
+
+`PATCH /api/v1/providers/:id` 的字段全部可选：`label` / `protocol` / `visibility` / `enabled` /
+`base_url` / `provider_key`。基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
+从固定基址换到通用方言时要带上新的 `base_url`，否则 `400 base_url_invalid`。
 
 响应里的每条上游提供商还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的
 `TRUSTED_BASE_URLS` 清单里。后端只回这个事实，「官方 / 清单外」的措辞是前端的事。
