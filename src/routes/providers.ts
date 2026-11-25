@@ -3,7 +3,7 @@ import { canOwnPool, type Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
-import { PROTOCOLS, adapterFor, isProtocol, isVisibility } from '../protocols';
+import { PROTOCOLS, adapterFor, isProtocol } from '../protocols';
 import { hostOf } from '../base-urls';
 import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
@@ -16,7 +16,6 @@ type Body = {
   /** 上游提供商明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
   provider_key?: string;
   protocol?: string;
-  visibility?: string;
   /**
    * private / pool，默认 private。pool 的那条是**公共池**：所有账户在自己的上游
    * 不可用时都能兜底用到它。只有站点地址（POOL_ADMIN_ADDRESSES）能写这个值。
@@ -31,21 +30,27 @@ const KDF = 'aes-256-gcm+worker-secret';
 
 export const providerRoutes = new Hono<{ Bindings: Env; Variables: { principal: Identity } }>();
 
-providerRoutes.get('/', async (c) => c.json({ items: await listProviders(c.env, c.get('principal').address) }));
+providerRoutes.get('/', async (c) => {
+  const address = c.get('principal').address;
+  return c.json({
+    items: await listProviders(c.env, address),
+    // 「公开」只有一个开关（进公共池），但能拨它的只有站点地址：前端据此把开关置灰，
+    // 而不是让人点完才收一个 403。
+    can_own_pool: canOwnPool(c.env, address),
+  });
+});
 
 providerRoutes.post('/', async (c) => {
   const body = await c.req.json<Body>();
   const label = (body.label ?? '').trim();
-  // 两个都可选，但默认值必须是"最保守"的那个：协议默认 chat，公开性默认私有。
+  // 协议可省，默认最通用的 chat；scope 不写就绝不会进池子。
   const protocol = body.protocol ?? 'openai-chat';
-  const visibility = body.visibility ?? 'private';
   // 不写就绝不会进池子：池子里的密钥是站点的，进不进是一个显式动作。
   const scope = body.scope ?? 'private';
   const enabled = body.enabled ?? true;
 
   if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
-  if (!isVisibility(visibility)) fail(400, 'visibility_invalid', `visibility 只能是 public / private`);
   if (scope !== 'private' && scope !== 'pool') fail(400, 'scope_invalid', 'scope 只能是 private / pool');
   if (scope === 'pool' && !canOwnPool(c.env, c.get('principal').address)) {
     fail(403, 'pool_forbidden', '只有站点地址可以把上游放进公共池');
@@ -80,8 +85,8 @@ providerRoutes.post('/', async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO providers
        (id, address, label, base_url, key_hint, sealed_key, kdf,
-        protocol, visibility, scope, enabled, public_listed, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+        protocol, scope, enabled, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -92,7 +97,6 @@ providerRoutes.post('/', async (c) => {
       sealedKey,
       KDF,
       protocol,
-      visibility,
       scope,
       enabled ? 1 : 0,
       now,
@@ -111,17 +115,6 @@ providerRoutes.post('/', async (c) => {
   );
 
   return c.json({ id, scope }, 201);
-});
-
-providerRoutes.post('/:id/visibility', async (c) => {
-  const { public_listed } = await c.req.json<{ public_listed?: boolean }>();
-  const address = c.get('principal').address;
-  const existing = await findProvider(c.env, address, c.req.param('id'));
-  if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
-  await c.env.DB.prepare('UPDATE providers SET public_listed = ? WHERE id = ? AND address = ?')
-    .bind(public_listed ? 1 : 0, existing.id, address)
-    .run();
-  return c.json({ id: existing.id, public_listed: public_listed ? 1 : 0 });
 });
 
 /**
@@ -168,12 +161,10 @@ providerRoutes.patch('/:id', async (c) => {
   const body = await c.req.json<Body>();
   const label = body.label === undefined ? existing.label : body.label.trim();
   const protocol = body.protocol ?? existing.protocol;
-  const visibility = body.visibility ?? existing.visibility;
   const enabled = body.enabled === undefined ? existing.enabled === 1 : body.enabled;
 
   if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
-  if (!isVisibility(visibility)) fail(400, 'visibility_invalid', 'visibility 只能是 public / private');
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
 
   const fixedBaseUrl = adapterFor(protocol).base_url;
@@ -203,11 +194,11 @@ providerRoutes.patch('/:id', async (c) => {
 
   await c.env.DB.prepare(
     `UPDATE providers
-        SET label = ?, base_url = ?, protocol = ?, visibility = ?, enabled = ?,
+        SET label = ?, base_url = ?, protocol = ?, enabled = ?,
             sealed_key = ?, key_hint = ?, kdf = ?
       WHERE id = ? AND address = ?`,
   )
-    .bind(label, baseUrl, protocol, visibility, enabled ? 1 : 0, sealedKey, keyHint, KDF, existing.id, address)
+    .bind(label, baseUrl, protocol, enabled ? 1 : 0, sealedKey, keyHint, KDF, existing.id, address)
     .run();
 
   // 换了协议、地址或密钥，这一条能跑的型号可能全变了：重新抓一次清单。

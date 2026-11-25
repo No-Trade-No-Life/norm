@@ -85,7 +85,7 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 | GET | `/api/v1/providers` | 本人的上游提供商（含密文与 hint，不含明文密钥） |
 | POST | `/api/v1/providers` | 新建，body 见下 |
 | PATCH | `/api/v1/providers/:id` | 编辑已保存的配置，body 同下（全部可选，密钥留空即不改） |
-| POST | `/api/v1/providers/:id/visibility` | `{public_listed: bool}` |
+| POST | `/api/v1/providers/:id/scope` | `{scope: 'private' \| 'pool'}`，进 / 出公共池（只有站点地址能写 `pool`） |
 | POST | `/api/v1/providers/:id/enabled` | `{enabled: bool}`，禁用/启用 |
 | DELETE | `/api/v1/providers/:id` | 撤销 |
 
@@ -103,15 +103,14 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
                                             // 不能也不用填
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
-  // 可选。protocol / visibility 的默认值取最保守的那侧；enabled 默认 true——
-  // 新加的一条上游提供商就是拿来用的，禁用是用户主动做的减法。
+  // 可选。protocol 默认最通用的 openai-chat；scope 默认 private，不写就绝不会进池子；
+  // enabled 默认 true——新加的一条上游提供商就是拿来用的，禁用是用户主动做的减法。
   "protocol": "openai-chat",         // openai-chat | openai-responses
                                      // | anthropic-messages | google-gemini
                                      // | deepseek（说 Responses，按官方时段分两档计价）
                                      // | opencode-go（说 Chat，基址是 OpenCode Go 官方推理面，
                                      //    每个请求自动带 x-opencode-session）
-  "visibility": "private",           // public | private（上游提供商本身是否对公众可用）
-  "scope": "private",                // private | pool（pool = 进公共池，全站兜底用它；
+  "scope": "private",                // private | pool（pool = 公开：进公共池，全站兜底用它；
                                      // 只有 POOL_ADMIN_ADDRESSES 里的地址能写 pool）
   "enabled": true                   // 禁用后不参与选址
 }
@@ -121,14 +120,17 @@ fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 这也是已保存密钥**唯一**的展示方式：`PATCH` 只能替换它（`provider_key` 给新值就重新封装并更新提示），
 没有任何一条路径能把明文读回来。
 
-`PATCH /api/v1/providers/:id` 的字段全部可选：`label` / `protocol` / `visibility` / `enabled` /
+`PATCH /api/v1/providers/:id` 的字段全部可选：`label` / `protocol` / `enabled` /
 `base_url` / `provider_key`。基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
 从固定基址换到通用方言时要带上新的 `base_url`，否则 `400 base_url_invalid`。
 
 响应里的每条上游提供商还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的
 `TRUSTED_BASE_URLS` 清单里。后端只回这个事实，「官方 / 清单外」的措辞是前端的事。
 
-`enabled = 0` 只是暂时不用它：密钥、历史记账、公开看板都还在，拨回来立刻恢复。
+`GET /api/v1/providers` 的响应另外带一个 `can_own_pool` 布尔：本账户在不在
+`POOL_ADMIN_ADDRESSES` 里，也就是那个「公开」开关拨不拨得动。
+
+`enabled = 0` 只是暂时不用它：密钥、历史记账、看板计数都还在，拨回来立刻恢复。
 撤销（`DELETE`）才是永久退场。禁用同时影响三处：自动选址跳过它、`/v1/models` 拒绝它、
 `/api/v1/base-urls` 与 `/api/v1/stats` 不再计入它。
 

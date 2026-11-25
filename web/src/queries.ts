@@ -46,7 +46,8 @@ export function useProviders(enabled: boolean) {
     queryKey: ['providers'],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: Provider[] }>({ path: '/api/v1/providers' }),
+    queryFn: () =>
+      requestJson<{ items: Provider[]; can_own_pool: boolean }>({ path: '/api/v1/providers' }),
   });
 }
 
@@ -255,22 +256,6 @@ export function useUpdateProvider() {
       void queryClient.invalidateQueries({ queryKey: ['providers'] });
       void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
       void queryClient.invalidateQueries({ queryKey: ['me'] });
-    },
-  });
-}
-
-export function useSetVisibility() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, publicListed }: { id: string; publicListed: boolean }) =>
-      requestJson<{ id: string; public_listed: number }>({
-        path: `/api/v1/providers/${id}/visibility`,
-        method: 'POST',
-        body: JSON.stringify({ public_listed: publicListed }),
-      }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['providers'] });
-      void queryClient.invalidateQueries({ queryKey: ['base-urls'] });
     },
   });
 }

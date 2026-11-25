@@ -10,11 +10,6 @@ const PROTOCOL_KEYS: Record<string, CopyKey> = {
   'opencode-go': 'proto.opencode-go',
 };
 
-const VISIBILITY_KEYS: Record<string, CopyKey> = {
-  public: 'vis.public',
-  private: 'vis.private',
-};
-
 /** 枚举值原样兜底，避免后端新增取值被前端吞掉。 */
 function labelOf(table: Record<string, CopyKey>, value: string, lang: Lang): string {
   const key = table[value];
@@ -23,10 +18,6 @@ function labelOf(table: Record<string, CopyKey>, value: string, lang: Lang): str
 
 export function protocolLabel(protocol: string, lang: Lang): string {
   return labelOf(PROTOCOL_KEYS, protocol, lang);
-}
-
-export function visibilityLabel(visibility: string, lang: Lang): string {
-  return labelOf(VISIBILITY_KEYS, visibility, lang);
 }
 
 /**

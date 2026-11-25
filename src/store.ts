@@ -1,5 +1,5 @@
 import type { Env } from './env';
-import { type Protocol, type Visibility } from './protocols';
+import { type Protocol } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
@@ -60,12 +60,10 @@ export type ProviderRow = {
   // INVARIANT: 这两列只由 providers 路由写入，写入前已校验枚举；
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
   protocol: Protocol;
-  visibility: Visibility;
-  /** private / pool。池子里的那条，所有账户都能在兜底时用到它。 */
+  /** private / pool。池子里的那条，所有账户都能在兜底时用到它——「公开」就是这一列。 */
   scope: ProviderScope;
   /** 1 = 参与选址；0 = 暂时不用。撤销（revoked_at）才是永久退场。 */
   enabled: number;
-  public_listed: number;
   created_at: number;
   revoked_at: number | null;
 };

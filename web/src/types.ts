@@ -47,7 +47,8 @@ export type BaseUrlGroup = {
   host: string;
   trusted: boolean;
   providers: number;
-  public_listed: number;
+  /** 其中有几条进了公共池。公开只有一个语义：进池子。 */
+  pool: number;
   protocols: string[];
   last_seen_at: number;
 };
@@ -64,14 +65,12 @@ export type Provider = {
   sealed_key: string;
   kdf: string;
   protocol: Protocol;
-  visibility: Visibility;
-  /** private = 只有我这条能用；pool = 公共池，全站在自己的上游不可用时兜底用它。 */
+  /** private = 只有我这条能用；pool = 公共池，全站在自己的上游不可用时兜底用它。「公开」就是这一列。 */
   scope: ProviderScope;
   /** true = 本账户名下的；false = 池子里站点那条（只读，密钥提示与密文都不回）。 */
   mine: boolean;
   /** 1 = 启用，0 = 禁用。禁用后不参与选址。 */
   enabled: number;
-  public_listed: number;
   /** 主机名是否在信任清单里；由后端用同一份清单算出，前端只负责措辞。 */
   trusted: boolean;
   created_at: number;
@@ -297,10 +296,6 @@ export type ProtocolSchema = {
   fields: Array<'base_url' | 'provider_key'>;
 };
 
-/** 上游提供商本身是否对公众可用。私有不代表掺水，只代表不对外。 */
-export const VISIBILITIES = ['public', 'private'] as const;
-export type Visibility = (typeof VISIBILITIES)[number];
-
 /** 管理面看到的模型：一行一个模型名，providers 是提供它的上游提供商 id。 */
 export type CatalogModel = {
   id: string;
@@ -330,8 +325,6 @@ export type CatalogProvider = {
   base_url: string;
   host: string;
   protocol: Protocol;
-  visibility: Visibility;
-  public_listed: number;
   trusted: boolean;
   /** private / pool：池子那条是站点提供的兜底产能。 */
   scope: ProviderScope;

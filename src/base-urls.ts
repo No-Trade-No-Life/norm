@@ -35,7 +35,8 @@ export type BaseUrlGroup = {
   host: string;
   trusted: boolean;
   providers: number;
-  public_listed: number;
+  /** 其中有几条进了公共池。公开只有一个语义：进池子。 */
+  pool: number;
   protocols: string[];
   last_seen_at: number;
 };
@@ -43,20 +44,20 @@ export type BaseUrlGroup = {
 type GroupRow = {
   base_url: string;
   providers: number;
-  public_listed: number;
+  pool: number;
   protocols: string;
   last_seen_at: number;
 };
 
 /**
- * 按 base_url 聚合：同一个上游提供商被多少条上游提供商用着、其中有几条公开、说过哪些协议。
+ * 按 base_url 聚合：同一个上游提供商被多少条上游提供商用着、其中有几条在公共池里、说过哪些协议。
  * 这是后端唯一关于「上游提供商」的视图——没有官方/第三方，只有地址与计数。
  */
 export async function groupByBaseUrl(env: Env): Promise<BaseUrlGroup[]> {
   const { results } = await env.DB.prepare(
     `SELECT base_url,
             COUNT(*) AS providers,
-            SUM(public_listed) AS public_listed,
+            SUM(CASE WHEN scope = 'pool' THEN 1 ELSE 0 END) AS pool,
             GROUP_CONCAT(DISTINCT protocol) AS protocols,
             MAX(created_at) AS last_seen_at
      FROM providers
@@ -70,7 +71,7 @@ export async function groupByBaseUrl(env: Env): Promise<BaseUrlGroup[]> {
     host: hostOf(row.base_url),
     trusted: isTrusted(row.base_url, env),
     providers: row.providers,
-    public_listed: row.public_listed ?? 0,
+    pool: row.pool ?? 0,
     protocols: (row.protocols ?? '').split(',').filter((p) => p.length > 0),
     last_seen_at: row.last_seen_at,
   }));

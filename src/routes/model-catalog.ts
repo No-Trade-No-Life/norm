@@ -4,7 +4,7 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { nowSeconds } from '../ids';
 import { mergeCatalog, probeErrorText, syncProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
-import type { ModelInfo, Protocol, Visibility } from '../protocols';
+import type { ModelInfo, Protocol } from '../protocols';
 import { listProviders, type ProviderScope, type ProviderView } from '../store';
 
 /**
@@ -34,8 +34,6 @@ type CatalogProvider = {
   base_url: string;
   host: string;
   protocol: Protocol;
-  visibility: Visibility;
-  public_listed: number;
   trusted: boolean;
   /** private / pool：池子里那条是站点给的兜底产能，不是这个账户的资源。 */
   scope: ProviderScope;
@@ -82,8 +80,6 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
       base_url: provider.base_url,
       host: hostOf(provider.base_url),
       protocol: provider.protocol,
-      visibility: provider.visibility,
-      public_listed: provider.public_listed,
       trusted: provider.trusted,
       scope: provider.scope,
       mine: provider.mine,
@@ -123,8 +119,6 @@ function noProbe(provider: ProviderView, error: string | null): CatalogProvider 
     base_url: provider.base_url,
     host: hostOf(provider.base_url),
     protocol: provider.protocol,
-    visibility: provider.visibility,
-    public_listed: provider.public_listed,
     trusted: provider.trusted,
     scope: provider.scope,
     mine: provider.mine,

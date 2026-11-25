@@ -375,13 +375,12 @@ async function call(who, method, path, body, extra = {}) {
   return { status: response.status, json, text, headers: response.headers };
 }
 
-async function createProvider(protocol, visibility = 'private') {
+async function createProvider(protocol) {
   const payload = JSON.stringify({
     label: `${protocol} provider`,
     base_url: BASE_URL,
     provider_key: KEY,
     protocol: protocol,
-    visibility: visibility,
   });
   const result = await call(alice, 'POST', '/api/v1/providers', payload);
   return { id: result.json.id, status: result.status, body: result.json };
@@ -523,10 +522,10 @@ console.log('2. 身份与完整性');
 // 转发面要用的那把钥匙：从此处起，所有 /v1/* 的调用都只带它。
 aliceKey = (await createConsumer(alice, 'alice e2e bot')).json.key;
 
-console.log('3. 上游提供商：明文密钥交给服务端封装，协议与公开性可配置');
+console.log('3. 上游提供商：明文密钥交给服务端封装，协议可配置');
 const providers = {};
 for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini']) {
-  const created = await createProvider(protocol, protocol === 'openai-responses' ? 'public' : 'private');
+  const created = await createProvider(protocol);
   check(`${protocol} 创建 201`, created.status === 201 && typeof created.id === 'string', created.body);
   // 创建响应里只有 id：提示是服务端从明文算出来的，不该由客户端自报。
   check(`${protocol} 创建响应不含密钥`, !JSON.stringify(created.body).includes(KEY), created.body);
@@ -535,7 +534,6 @@ for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages',
 {
   for (const [field, value, code] of [
     ['protocol', 'anthropic', 'protocol_invalid'],
-    ['visibility', 'maybe', 'visibility_invalid'],
     ['enabled', 'yes', 'enabled_invalid'],
   ]) {
     const payload = JSON.stringify({
@@ -785,16 +783,8 @@ console.log('9. 上游提供商按 base_url 聚合；「可信」只是一份清
   const group = groups.find((item) => item.base_url === BASE_URL);
   check('按 base_url 聚合成一条', group !== undefined, groups);
   check('统计了上游提供商数量', group?.providers === 4, group);
-  // 两个概念不能混：visibility=public 说的是「这个上游提供商别人也能用」，
-  // public_listed 说的是「我愿意把这条上游提供商挂到公开看板」。没勾后者就是 0。
-  check('没人勾公开看板时 public_listed 为 0', group?.public_listed === 0, group);
-
-  const visPath = `/api/v1/providers/${providers['openai-responses']}/visibility`;
-  const visBody = JSON.stringify({ public_listed: true });
-  await call(alice, 'POST', visPath, visBody);
-  const after = (await (await fetch(`${BASE}/api/v1/base-urls`)).json()).items
-    .find((item) => item.base_url === BASE_URL);
-  check('勾上公开看板后 public_listed 变 1', after?.public_listed === 1, after);
+  // 「公开」只有一个语义：进公共池。alice 名下的这些都没进，所以池子计数是 0。
+  check('没人进公共池时 pool 计数为 0', group?.pool === 0, group);
   check('统计了协议集合', group?.protocols?.length === 4, group?.protocols);
   check('本地假上游提供商不在信任清单里', group?.trusted === false, group?.trusted);
 
@@ -982,14 +972,13 @@ console.log('10c2. 编辑上游提供商：配置可改、密钥可换不可看'
 
   // 改配置：只发要改的字段，没发的保持不动。
   const patched = await call(erin, 'PATCH', `/api/v1/providers/${id}`, JSON.stringify({
-    label: 'after', protocol: 'openai-responses', visibility: 'public', enabled: false,
+    label: 'after', protocol: 'openai-responses', enabled: false,
   }));
   check('PATCH 200', patched.status === 200, patched.json);
   const rowOf = async () => (await call(erin, 'GET', '/api/v1/providers')).json.items.find((item) => item.id === id);
   const row = await rowOf();
   check('标签已更新', row?.label === 'after', row?.label);
   check('协议已更新', row?.protocol === 'openai-responses', row?.protocol);
-  check('公开性已更新', row?.visibility === 'public', row?.visibility);
   check('启用状态已更新', row?.enabled === 0, row?.enabled);
   check('没提交的 base_url 保持不变', row?.base_url === EDIT_BASE_URL, row?.base_url);
 
@@ -1477,7 +1466,6 @@ console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打')
     base_url: BASE_URL,
     provider_key: KEY,
     protocol: 'openai-chat',
-    visibility: 'private',
   }));
   check('新身份建一条上游 201', created.status === 201, created.json);
   const key = (await createConsumer(watcher, 'catalog bot')).json.key;
@@ -1534,7 +1522,6 @@ console.log('\nN. 转发按模型筛上游：没在清单里的型号不硬打')
     base_url: `http://127.0.0.1:${PROVIDER_PORT}/v1/big`,
     provider_key: KEY,
     protocol: 'openai-chat',
-    visibility: 'private',
   }));
   check('大体量上游建得起来 201', big.status === 201, big.json);
 
@@ -1555,7 +1542,7 @@ console.log('\nN+1. 工具调用的翻译：跨方言也能用');
   const tooler = identity();
   await call(tooler, 'POST', '/api/v1/auth/login');
   const responses = await call(tooler, 'POST', '/api/v1/providers', JSON.stringify({
-    label: 'responses only', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-responses', visibility: 'private',
+    label: 'responses only', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-responses',
   }));
   check('建一条 Responses 方言的上游 201', responses.status === 201, responses.json);
   const key = (await createConsumer(tooler, 'tools bot')).json.key;
@@ -1624,7 +1611,7 @@ console.log('\nN+1. 工具调用的翻译：跨方言也能用');
   // 3) 反向：Anthropic 入口 → Chat 上游。
   await call(tooler, 'POST', `/api/v1/providers/${responses.json.id}/enabled`, JSON.stringify({ enabled: false }));
   const chatProvider = await call(tooler, 'POST', '/api/v1/providers', JSON.stringify({
-    label: 'chat upstream', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-chat', visibility: 'private',
+    label: 'chat upstream', base_url: BASE_URL, provider_key: KEY, protocol: 'openai-chat',
   }));
   check('换成一条 Chat 方言的上游 201', chatProvider.status === 201, chatProvider.json);
 
