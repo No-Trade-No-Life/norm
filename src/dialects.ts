@@ -492,7 +492,12 @@ export function usageSniffer(dialect: Dialect): { push(data: string): void; usag
       }
       if (dialect === 'openai-chat') takeChat(obj(json.usage));
       else if (dialect === 'openai-responses') {
-        if (json.type === 'response.completed') takeChat(obj(obj(json.response).usage));
+        // `response.completed` 是正常收尾，`response.incomplete` 是撞了 max_output_tokens；
+        // 两种都带 usage，都算这次调用的账。
+        const type = typeof json.type === 'string' ? json.type : '';
+        if (type === 'response.completed' || type === 'response.incomplete') {
+          takeChat(obj(obj(json.response).usage));
+        }
       } else if (dialect === 'anthropic-messages') {
         // 输入在 `message_start`（包里套一层 message.usage），输出在 `message_delta`（顶层）。
         takeAnthropic(obj(json.usage ?? obj(json.message).usage));
