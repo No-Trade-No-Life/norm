@@ -9,6 +9,7 @@ import {
   readAnswer,
   renderInbound,
   streamEmitter,
+  streamError,
   usageSniffer,
   type AnswerCore,
   type Dialect,
@@ -431,11 +432,15 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
    * 每读到一帧就做两件事：喂用量嗅探器，并把「第一个字」的时刻记下来。
    * 首字按真正的文本增量算，不按第一帧算——第一帧往往只有一个空的 delta.role。
    */
+  /** 上游在流里报的错：拿到它、又一个字都没生成，这一单就不是「成功」。 */
+  let upstreamError: string | null = null;
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
     if (accounting.firstTokenMs === undefined && carriesOutput(dialect, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
+    // 上游也可能在 200 的流里说「我失败了」。记下来，收尾时按它算账。
+    if (upstreamError === null) upstreamError = streamError(dialect, payload);
   };
   const requestId = accounting.requestId;
   let buffer = '';
@@ -443,6 +448,11 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 
   const finish = async (): Promise<NormMeta> => {
     const usage = sniffer.usage();
+    // 一个字节都没生成、上游却报了错：这不是「成功但零 token」。照失败收 Gas、不收
+    // token——否则一次上游拒绝会在账本上被记成一次正常执行，而客户端只看到一片空白。
+    if (upstreamError !== null && accounting.firstTokenMs === undefined) {
+      return normMeta(accounting, usage, await recordFailure(accounting, 'provider_error', 200));
+    }
     const answer: AnswerCore = { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 };
     const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenNanos: price.total_nanos }));
@@ -553,11 +563,16 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   const emit = (chunks: string[]) => chunks.map((chunk) => encoder.encode(chunk));
   const toChat = entry === 'openai-chat';
   const sniffer = usageSniffer(adapter.dialect);
+  /** 上游在流里报的错：拿到它、又一个字都没生成，这一单就不是「成功」。 */
+  let upstreamError: string | null = null;
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
     if (accounting.firstTokenMs === undefined && carriesOutput(adapter.dialect, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
+    // 跨方言这条路上，认不出的帧会被适配器丢掉——错误帧也在其中。这一丢，客户端就只剩
+    // 「200 + 空白」，所以这里单独认一次，收尾时把原话说回去。
+    if (upstreamError === null) upstreamError = streamError(adapter.dialect, payload);
   };
   /**
    * 这次回答里的工具调用，按上游给的序号攒着：参数是增量的，收尾时要用完整的那一份，
@@ -572,6 +587,10 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
 
   const finish = async (): Promise<NormMeta> => {
     const usage = sniffer.usage();
+    // 同上：空白 + 上游报错 = 一次失败，不是一次「成功但零 token」。
+    if (upstreamError !== null && accounting.firstTokenMs === undefined) {
+      return normMeta(accounting, usage, await recordFailure(accounting, 'provider_error', 200));
+    }
     const price = quote(accounting.model, usage, accounting.rate);
     const settled = await settle(env, recordOf(accounting, {
       answer: { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 },
@@ -633,6 +652,10 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
       const meta = await finish();
 
       if (toChat) {
+        // 一句话都没生成时，把上游的原话交出去：空白的 200 是最难查的一种失败。
+        if (upstreamError !== null && accounting.firstTokenMs === undefined) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: upstreamError } })}\n\n`));
+        }
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
       } else {
         const core: AnswerCore = {

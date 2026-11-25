@@ -91,6 +91,17 @@ const provider = createServer((request, response) => {
       return;
     }
 
+    // 上游先回 200、再在流里报错：这是真实上游的常见形状（配额、模型下线、内容被拦）。
+    // 它不能被当成「成功但零 token」记账，也不能让客户端只看到一片空白。
+    if (parsed.model === 'silent-error-model') {
+      if (url.pathname.endsWith('/responses')) {
+        sse(response, [{ type: 'error', error: { message: 'quota exhausted for silent-error-model' } }]);
+        return;
+      }
+      sse(response, [{ error: { message: 'quota exhausted for silent-error-model' } }]);
+      return;
+    }
+
     // 工具调用：请求里声明了哪个工具，假上游就按**这一家的形状**要一次调用。
     // 名字取自请求体，所以「声明有没有被翻译对」也一并验到了。
     const declared = {
@@ -325,6 +336,8 @@ const provider = createServer((request, response) => {
           { id: 'gpt-4o', object: 'model', created: 1715367049, owned_by: 'openai' },
           // 清单说它有、跑起来却说没有的那种上游：验证 Norm 会划掉这一行并只重试一次。
           { id: 'flaky-model', object: 'model', created: 1715367049, owned_by: 'openai' },
+          // 200 但流里只有一句错误：验证它不会被记成「成功但零 token」。
+          { id: 'silent-error-model', object: 'model', created: 1715367049, owned_by: 'openai' },
         ] }));
         return;
       }
@@ -1292,8 +1305,8 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   // `gpt-test` 在四条清单里都有 —— 夹具用它当默认模型名，清单里就必须有它，
   // 否则转发会按模型把请求筛掉（见最后一节）。
   const WANT = {
-    'openai-chat': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model'],
-    'openai-responses': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model'],
+    'openai-chat': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model'],
+    'openai-responses': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model'],
     'anthropic-messages': ['gpt-test', 'claude-sonnet-4-20250514', 'claude-haiku-3'],
     'google-gemini': ['gpt-test', 'gemini-2.0-flash', 'gemini-2.0-pro'],
   };
@@ -1338,7 +1351,7 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   const token = (await createConsumer(alice, 'models bot')).json.key;
   await onlyProvider('openai-chat');
   const byKey = await raw('GET', '/v1/models', undefined, { Authorization: `Bearer ${token}` });
-  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 4, byKey.json);
+  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 5, byKey.json);
 
   const anonymous = await raw('GET', '/v1/models');
   check('无身份 401', anonymous.status === 401, anonymous.status);
@@ -1373,7 +1386,7 @@ console.log('14. 模型总表：账户里所有上游的清单并成一张表，
   const probeRows = catalog.json.providers ?? [];
   const probed = probeRows.filter((row) => row.probed);
   check('每条启用中的上游都探测了', probed.length === 4 && probed.every((row) => row.ok === true), probeRows);
-  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 4, probeRows);
+  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 5, probeRows);
 
   // 禁用的一条：不参与探测，它的模型也不该留在「可用」里。
   await call(alice, 'POST', `/api/v1/providers/${providers['google-gemini']}/enabled`, JSON.stringify({ enabled: false }));
@@ -1677,6 +1690,35 @@ console.log('\nN+1. 工具调用的翻译：跨方言也能用');
     assistantTurn?.tool_calls?.[0]?.id !== undefined && assistantTurn.tool_calls[0].id === toolTurn?.tool_call_id,
     { assistantTurn, toolTurn },
   );
+}
+
+console.log('N+2. 上游 200 + 流里的错误帧：不许记成「成功但零 token」');
+{
+  // 同格式（chat 入口 → chat 上游）：错误帧本来就原样转发，这里验的是账单说实话。
+  const sameShape = await relayVia('openai-chat', aliceKey, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'silent-error-model',
+    stream: true,
+    messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('同格式：HTTP 仍按上游说的 200 回', sameShape.status === 200, sameShape.status);
+  check('同格式：流里没有内容增量', !sameShape.text.includes('"content":"'), sameShape.text.slice(0, 200));
+  check('同格式：上游的原话在流里', sameShape.text.includes('quota exhausted for silent-error-model'), sameShape.text.slice(0, 300));
+
+  // 跨方言（chat 入口 → responses 上游）：错误帧不该被适配器悄悄丢掉。
+  const bridged = await relayVia('openai-responses', aliceKey, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'silent-error-model',
+    stream: true,
+    messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('跨方言：客户端收到 error 帧', bridged.text.includes('"error"') && bridged.text.includes('quota exhausted for silent-error-model'), bridged.text.slice(0, 300));
+  check('跨方言：仍然有结尾的 norm 与 DONE', bridged.text.includes('"norm"') && bridged.text.trimEnd().endsWith('data: [DONE]'), bridged.text.slice(-160));
+
+  // 账单：一句话都没生成 → 只有 Gas，没有 token；状态记成 provider_error 而不是 ok。
+  const usage = await call(alice, 'GET', '/api/v1/account/usage?limit=20');
+  const rows = (usage.json.items ?? []).filter((row) => row.model === 'silent-error-model');
+  check('两次空响应都被记下来了', rows.length >= 2, rows.length);
+  check('状态是 provider_error（不是 ok）', rows.every((row) => row.status === 'provider_error'), rows.map((row) => row.status));
+  check('token 为 0、只收 Gas', rows.every((row) => row.input_tokens === 0 && row.output_tokens === 0), rows.slice(0, 2));
 }
 
 provider.close();

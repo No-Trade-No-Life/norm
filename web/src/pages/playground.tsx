@@ -111,13 +111,33 @@ export function PlaygroundPage() {
 
       if (!stream) {
         const payload = (await response.json()) as ChatChunk & { choices?: Array<{ message?: { content?: string } }> };
-        setOutput(payload.choices?.[0]?.message?.content ?? '');
+        if (payload.error) throw new ApiError(200, 'upstream_error', errorText(payload.error, t('pg.empty_stream')));
+        const answer = payload.choices?.[0]?.message?.content ?? '';
+        setOutput(answer);
         if (payload.norm) setMeta(payload.norm);
+        if (!answer) setError(t('pg.empty_stream'));
       } else if (response.body) {
+        // 本地攒一份：`setOutput` 是异步的，收尾时要判断「到底有没有出过字」，不能读状态。
+        let collected = '';
+        let failed = false;
+        const take = (delta: string) => {
+          if (!delta) return;
+          collected += delta;
+          setOutput(collected);
+        };
         await consumeStream(response.body, {
-          onDelta: (delta) => setOutput((prev) => prev + delta),
+          onDelta: take,
+          // 推理模型的「思考」也是上游真的产出的字：只认 `content` 会让这类模型看起来
+          // 一片空白（Playground 里最容易被当成「根本没生成」）。
+          onReasoning: take,
           onNorm: (payload) => setMeta(payload),
+          onError: (message) => {
+            failed = true;
+            setError(message);
+          },
         });
+        // 200、没有错、也没有一个字：把这件事说出来，不要留一个空框让人猜。
+        if (!collected && !failed) setError(t('pg.empty_stream'));
       }
     } catch (caught) {
       if ((caught as Error).name === 'AbortError') {
@@ -322,7 +342,12 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
 
 async function consumeStream(
   body: ReadableStream<Uint8Array>,
-  handlers: { onDelta: (delta: string) => void; onNorm: (meta: NormMeta) => void },
+  handlers: {
+    onDelta: (delta: string) => void;
+    onReasoning: (delta: string) => void;
+    onNorm: (meta: NormMeta) => void;
+    onError: (message: string) => void;
+  },
 ): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -342,8 +367,12 @@ async function consumeStream(
       return;
     }
     if (chunk.norm) handlers.onNorm(chunk.norm);
-    const delta = chunk.choices?.[0]?.delta?.content;
-    if (delta) handlers.onDelta(delta);
+    // 上游可以在 200 的流里报错（配额、模型下线、内容被拦）。之前这里只找内容，
+    // 于是「上游说了为什么不行」被丢掉，用户看到的是一次什么都没有的发送。
+    if (chunk.error) handlers.onError(errorText(chunk.error, ''));
+    const delta = chunk.choices?.[0]?.delta;
+    if (delta?.content) handlers.onDelta(delta.content);
+    if (delta?.reasoning_content) handlers.onReasoning(delta.reasoning_content);
   };
 
   for (;;) {
