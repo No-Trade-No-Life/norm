@@ -528,69 +528,101 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (finished) return;
-      const { value, done } = await reader.read();
+      // Cloudflare workerd 的 ReadableStream 要求每次 pull 至少 enqueue 一块或关闭流；
+      // 若单个 TCP 分片里没有换行、或只含被跳过的 `data: [DONE]` / 额外用量帧而直接 return，
+      // workerd 会提前结束响应流，导致内容截断且 finish()/settle() 永远不被执行。
+      let enqueued = false;
+      const push = (bytes: Uint8Array) => {
+        enqueued = true;
+        controller.enqueue(bytes);
+      };
 
-      if (value) {
-        if (!injectNorm) {
-          // 字节一个都不改（这几条路的客户端是第三方 SDK），但要把用量读出来：
-          // 不读，responses / anthropic / gemini 的流式调用在账本上就是 0 / 0 / 0。
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            if (!line.startsWith('data:')) continue;
-            const payload = line.slice(5).trim();
-            if (payload.length === 0 || payload === '[DONE]') continue;
-            noteFrame(payload);
+      try {
+        while (!enqueued) {
+          const { value, done } = await reader.read();
+
+          if (value) {
+            if (!injectNorm) {
+              // 字节一个都不改（这几条路的客户端是第三方 SDK），但要把用量读出来：
+              // 不读，responses / anthropic / gemini 的流式调用在账本上就是 0 / 0 / 0。
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() ?? '';
+              for (const line of lines) {
+                if (!line.startsWith('data:')) continue;
+                const payload = line.slice(5).trim();
+                if (payload.length === 0 || payload === '[DONE]') continue;
+                noteFrame(payload);
+              }
+              if (value.byteLength > 0) push(value);
+            } else {
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() ?? '';
+              for (const line of lines) {
+                // 上游提供商的 `[DONE]` 由我们自己发：这样 norm 一定排在它前面。
+                if (line.trim() === 'data: [DONE]') continue;
+                if (line.startsWith('data:')) {
+                  const payload = line.slice(5).trim();
+                  noteFrame(payload);
+                  // 我们自己要来记账的那条用量帧：客户端没要就不转发。
+                  if (!wantsUsage && usageOnlyFrame(payload)) continue;
+                }
+                push(encoder.encode(`${line}\n`));
+              }
+            }
           }
-          controller.enqueue(value);
-        } else {
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() ?? '';
-          for (const line of lines) {
-            // 上游提供商的 `[DONE]` 由我们自己发：这样 norm 一定排在它前面。
-            if (line.trim() === 'data: [DONE]') continue;
-            if (line.startsWith('data:')) noteFrame(line.slice(5).trim());
-            controller.enqueue(encoder.encode(`${line}\n`));
+
+          if (!done) continue;
+          finished = true;
+          buffer += decoder.decode();
+
+          if (injectNorm) {
+            if (buffer.length > 0 && buffer.trim() !== 'data: [DONE]') {
+              if (buffer.startsWith('data:')) {
+                const payload = buffer.slice(5).trim();
+                noteFrame(payload);
+                if (wantsUsage || !usageOnlyFrame(payload)) push(encoder.encode(buffer));
+              } else {
+                push(encoder.encode(buffer));
+              }
+            }
+            const meta = await finish();
+            // 入口是 chat 且客户端要了用量：上游那一家可能把用量放在别的帧里，
+            // 这里统一补一条 chat 形状的用量帧（choices 为空），OpenAI SDK 认这个形状。
+            if (wantsUsage) {
+              const usageChunk = {
+                object: 'chat.completion.chunk',
+                model: accounting.model,
+                choices: [],
+                usage: {
+                  prompt_tokens: meta.input_tokens,
+                  completion_tokens: meta.output_tokens,
+                  total_tokens: meta.input_tokens + meta.output_tokens,
+                  prompt_tokens_details: { cached_tokens: meta.cached_tokens },
+                },
+              };
+              push(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
+            }
+            push(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
+          } else {
+            // 上游有时不补换行，最后一段留在 buffer 里——它可能就是那条 response.completed。
+            const rest = buffer.startsWith('data:') ? buffer.slice(5).trim() : '';
+            if (rest.length > 0 && rest !== '[DONE]') noteFrame(rest);
+            await finish();
+          }
+          controller.close();
+          return;
+        }
+      } catch (error) {
+        if (!finished) {
+          finished = true;
+          if (!accounting.gas.isFinalized) {
+            await recordFailure(accounting, 'network_error', 502).catch(() => undefined);
           }
         }
+        controller.error(error);
       }
-
-      if (!done) return;
-      finished = true;
-
-      if (injectNorm) {
-        if (buffer.length > 0 && buffer.trim() !== 'data: [DONE]') {
-          if (buffer.startsWith('data:')) noteFrame(buffer.slice(5).trim());
-          // 我们自己要来记账的那条用量帧：客户端没要就不转发。
-          if (wantsUsage || !usageOnlyFrame(buffer.slice(5).trim())) controller.enqueue(encoder.encode(buffer));
-        }
-        const meta = await finish();
-        // 入口是 chat 且客户端要了用量：上游那一家可能把用量放在别的帧里，
-        // 这里统一补一条 chat 形状的用量帧（choices 为空），OpenAI SDK 认这个形状。
-        if (wantsUsage) {
-          const usageChunk = {
-            object: 'chat.completion.chunk',
-            model: accounting.model,
-            choices: [],
-            usage: {
-              prompt_tokens: meta.input_tokens,
-              completion_tokens: meta.output_tokens,
-              total_tokens: meta.input_tokens + meta.output_tokens,
-              prompt_tokens_details: { cached_tokens: meta.cached_tokens },
-            },
-          };
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
-        }
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
-      } else {
-        // 上游有时不补换行，最后一段留在 buffer 里——它可能就是那条 response.completed。
-        const rest = buffer.startsWith('data:') ? buffer.slice(5).trim() : '';
-        if (rest.length > 0 && rest !== '[DONE]') noteFrame(rest);
-        await finish();
-      }
-      controller.close();
     },
     cancel() {
       void reader.cancel();
@@ -672,70 +704,95 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (done) return;
-      const { value, done: finished } = await reader.read();
-
-      if (value) {
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          if (!line.startsWith('data:')) continue;
-          const data = line.slice(5).trim();
-          if (data.length === 0 || data === '[DONE]') continue;
-          noteFrame(data);
-          for (const event of adapter.streamEvents(data)) {
-            if (event.kind === 'text') {
-              emit(emitter.delta(event.text)).forEach((bytes) => controller.enqueue(bytes));
-              continue;
-            }
-            if (event.kind === 'tool_start') {
-              const call = calls.get(event.index) ?? { id: '', name: '', arguments: '', started: false, forwarded: 0 };
-              call.id = event.id || call.id;
-              call.name = event.name || call.name;
-              calls.set(event.index, call);
-              if (!call.started && call.name.length > 0) {
-                call.started = true;
-                emit(emitter.toolStart(event.index, { id: call.id, name: call.name })).forEach((bytes) => controller.enqueue(bytes));
-                const pending = call.arguments.slice(call.forwarded);
-                if (pending.length > 0) {
-                  call.forwarded = call.arguments.length;
-                  emit(emitter.toolArgs(event.index, pending)).forEach((bytes) => controller.enqueue(bytes));
-                }
+      // 同 passThroughStream：持续读取直到至少产出 1 块输出或上游 EOF，
+      // 防止部分 TCP 分片、空 role 帧或独立 `[DONE]` 帧触发 0-enqueue pull 导致 workerd 提前断流。
+      let enqueued = false;
+      const push = (bytes: Uint8Array) => {
+        enqueued = true;
+        controller.enqueue(bytes);
+      };
+      const processLine = (line: string) => {
+        if (!line.startsWith('data:')) return;
+        const data = line.slice(5).trim();
+        if (data.length === 0 || data === '[DONE]') return;
+        noteFrame(data);
+        for (const event of adapter.streamEvents(data)) {
+          if (event.kind === 'text') {
+            emit(emitter.delta(event.text)).forEach(push);
+            continue;
+          }
+          if (event.kind === 'tool_start') {
+            const call = calls.get(event.index) ?? { id: '', name: '', arguments: '', started: false, forwarded: 0 };
+            call.id = event.id || call.id;
+            call.name = event.name || call.name;
+            calls.set(event.index, call);
+            if (!call.started && call.name.length > 0) {
+              call.started = true;
+              emit(emitter.toolStart(event.index, { id: call.id, name: call.name })).forEach(push);
+              const pending = call.arguments.slice(call.forwarded);
+              if (pending.length > 0) {
+                call.forwarded = call.arguments.length;
+                emit(emitter.toolArgs(event.index, pending)).forEach(push);
               }
-              continue;
             }
-            const call = calls.get(event.index);
-            if (!call) continue;
-            call.arguments += event.args;
-            if (call.started) {
-              call.forwarded = call.arguments.length;
-              emit(emitter.toolArgs(event.index, event.args)).forEach((bytes) => controller.enqueue(bytes));
-            }
+            continue;
+          }
+          const call = calls.get(event.index);
+          if (!call) continue;
+          call.arguments += event.args;
+          if (call.started) {
+            call.forwarded = call.arguments.length;
+            emit(emitter.toolArgs(event.index, event.args)).forEach(push);
           }
         }
-      }
+      };
 
-      if (!finished) return;
-      done = true;
-      const meta = await finish();
+      try {
+        while (!enqueued) {
+          const { value, done: finished } = await reader.read();
 
-      if (toChat) {
-        // 一句话都没生成时，把上游的原话交出去：空白的 200 是最难查的一种失败。
-        if (upstreamError !== null && accounting.firstTokenMs === undefined) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: { message: upstreamError } })}\n\n`));
+          if (value) {
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() ?? '';
+            for (const line of lines) processLine(line);
+          }
+
+          if (!finished) continue;
+          done = true;
+          buffer += decoder.decode();
+          if (buffer.length > 0) processLine(buffer);
+
+          const meta = await finish();
+
+          if (toChat) {
+            // 一句话都没生成时，把上游的原话交出去：空白的 200 是最难查的一种失败。
+            if (upstreamError !== null && accounting.firstTokenMs === undefined) {
+              push(encoder.encode(`data: ${JSON.stringify({ error: { message: upstreamError } })}\n\n`));
+            }
+            push(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
+          } else {
+            const core: AnswerCore = {
+              text: '',
+              toolCalls: [...calls.values()].map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })),
+              model: accounting.model,
+              usage: { input: meta.input_tokens, cached: meta.cached_tokens, output: meta.output_tokens },
+              createdAt: Math.floor(Date.now() / 1000),
+            };
+            emit(emitter.tail(core)).forEach(push);
+          }
+          controller.close();
+          return;
         }
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
-      } else {
-        const core: AnswerCore = {
-          text: '',
-          toolCalls: [...calls.values()].map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })),
-          model: accounting.model,
-          usage: { input: meta.input_tokens, cached: meta.cached_tokens, output: meta.output_tokens },
-          createdAt: Math.floor(Date.now() / 1000),
-        };
-        emit(emitter.tail(core)).forEach((bytes) => controller.enqueue(bytes));
+      } catch (error) {
+        if (!done) {
+          done = true;
+          if (!accounting.gas.isFinalized) {
+            await recordFailure(accounting, 'network_error', 502).catch(() => undefined);
+          }
+        }
+        controller.error(error);
       }
-      controller.close();
     },
     cancel() {
       void reader.cancel();

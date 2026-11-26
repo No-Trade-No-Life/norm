@@ -107,6 +107,32 @@ const provider = createServer((request, response) => {
       return;
     }
 
+    // 真实上游会把 SSE 拆成极小 TCP 分片（不含换行）、独立空 role 帧、独立 usage 帧与独立 [DONE] 帧：
+    // pull() 若对单个空分片直接 return 而未循环读到有效输出，workerd 会提前断流且漏记账。
+    if (parsed.model === 'fragmented-stream-model') {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      const raw = [
+        `data: ${JSON.stringify({ choices: [{ delta: { role: 'assistant' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '碎' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '片' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 15, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 5 } } })}\n\n`,
+        'data: [DONE]\n\n',
+      ].join('');
+      const bytes = Buffer.from(raw, 'utf8');
+      let offset = 0;
+      const drip = () => {
+        if (offset >= bytes.length) {
+          response.end();
+          return;
+        }
+        response.write(bytes.subarray(offset, offset + 11));
+        offset += 11;
+        setTimeout(drip, 1);
+      };
+      drip();
+      return;
+    }
+
     // 工具调用：请求里声明了哪个工具，假上游就按**这一家的形状**要一次调用。
     // 名字取自请求体，所以「声明有没有被翻译对」也一并验到了。
     const declared = {
@@ -343,6 +369,7 @@ const provider = createServer((request, response) => {
           { id: 'flaky-model', object: 'model', created: 1715367049, owned_by: 'openai' },
           // 200 但流里只有一句错误：验证它不会被记成「成功但零 token」。
           { id: 'silent-error-model', object: 'model', created: 1715367049, owned_by: 'openai' },
+          { id: 'fragmented-stream-model', object: 'model', created: 1715367049, owned_by: 'openai' },
         ] }));
         return;
       }
@@ -1452,8 +1479,8 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   // `gpt-test` 在四条清单里都有 —— 夹具用它当默认模型名，清单里就必须有它，
   // 否则转发会按模型把请求筛掉（见最后一节）。
   const WANT = {
-    'openai-chat': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model'],
-    'openai-responses': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model'],
+    'openai-chat': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model', 'fragmented-stream-model'],
+    'openai-responses': ['gpt-test', 'gpt-4o-mini', 'gpt-4o', 'flaky-model', 'silent-error-model', 'fragmented-stream-model'],
     'anthropic-messages': ['gpt-test', 'claude-sonnet-4-20250514', 'claude-haiku-3'],
     'google-gemini': ['gpt-test', 'gemini-2.0-flash', 'gemini-2.0-pro'],
   };
@@ -1498,7 +1525,7 @@ console.log('13. 模型清单：四种上游归一成 OpenAI /models，且不扣
   const token = (await createConsumer(alice, 'models bot')).json.key;
   await onlyProvider('openai-chat');
   const byKey = await raw('GET', '/v1/models', undefined, { Authorization: `Bearer ${token}` });
-  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 5, byKey.json);
+  check('消费者密钥能列清单', byKey.status === 200 && byKey.json?.data?.length === 6, byKey.json);
 
   const anonymous = await raw('GET', '/v1/models');
   check('无身份 401', anonymous.status === 401, anonymous.status);
@@ -1533,7 +1560,7 @@ console.log('14. 模型总表：账户里所有上游的清单并成一张表，
   const probeRows = catalog.json.providers ?? [];
   const probed = probeRows.filter((row) => row.probed);
   check('每条启用中的上游都探测了', probed.length === 4 && probed.every((row) => row.ok === true), probeRows);
-  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 5, probeRows);
+  check('探测结果带着上游自己报的条数', probeRows.find((row) => row.id === providers['openai-chat'])?.count === 6, probeRows);
 
   // 禁用的一条：不参与探测，它的模型也不该留在「可用」里。
   await call(alice, 'POST', `/api/v1/providers/${providers['google-gemini']}/enabled`, JSON.stringify({ enabled: false }));
@@ -1864,6 +1891,34 @@ console.log('N+2. 上游 200 + 流里的错误帧：不许记成「成功但零 
   check('两次空响应都被记下来了', rows.length >= 2, rows.length);
   check('状态是 provider_error（不是 ok）', rows.every((row) => row.status === 'provider_error'), rows.map((row) => row.status));
   check('token 为 0、只收 Gas', rows.every((row) => row.input_tokens === 0 && row.output_tokens === 0), rows.slice(0, 2));
+}
+
+console.log('N+3. 分片滴流 SSE：部分行/空帧/独立 [DONE] 不得提前断流或漏记账');
+{
+  const pass = await relayVia('openai-chat', aliceKey, 'POST', '/v1/chat/completions', JSON.stringify({
+    model: 'fragmented-stream-model',
+    stream: true,
+    messages: [{ role: 'user', content: 'hi' }],
+  }));
+  const passNormLine = pass.text.split('\n').filter((l) => l.startsWith('data: {') && l.includes('"norm"')).at(-1);
+  const passNorm = passNormLine ? JSON.parse(passNormLine.slice(6)).norm : null;
+  check('直通分片流 200 且完整收到「碎片」', pass.status === 200 && pass.text.includes('"content":"碎"') && pass.text.includes('"content":"片"'), pass.text.slice(0, 300));
+  check('直通分片流带回 norm 与 [DONE]', passNorm !== null && pass.text.trimEnd().endsWith('data: [DONE]'), pass.text.slice(-200));
+  check('直通分片流准确记下三项 token 与 2,480 Gas', passNorm?.input_tokens === 15 && passNorm?.cached_tokens === 5 && passNorm?.output_tokens === 4 && passNorm?.gas_fee_nanos === 2480, passNorm);
+  check('直通分片流客户端未要用量时不透传用量帧', !pass.text.includes('"prompt_tokens_details"'), pass.text.slice(-300));
+
+  const bridged = await relayVia('openai-chat', aliceKey, 'POST', '/v1/messages', JSON.stringify({
+    model: 'fragmented-stream-model',
+    max_tokens: 32,
+    stream: true,
+    messages: [{ role: 'user', content: 'hi' }],
+  }));
+  check('跨方言分片流 200 且翻译出完整 text_delta', bridged.status === 200 && bridged.text.includes('碎') && bridged.text.includes('片'), bridged.text.slice(0, 300));
+  check('跨方言分片流收尾带 message_stop', bridged.text.includes('message_stop'), bridged.text.slice(-200));
+  const reqId = bridged.headers.get('x-norm-request-id');
+  const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=20')).json.items ?? [];
+  const row = rows.find((item) => item.id === reqId);
+  check('跨方言分片流已落账且记下 token 与 2,580 Gas', row?.input_tokens === 15 && row?.output_tokens === 4 && row?.gas_fee_nanos === 2580, row);
 }
 
 provider.close();
