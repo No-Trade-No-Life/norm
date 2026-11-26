@@ -48,6 +48,8 @@ export type Principal = {
   consumerId: string;
   /** 鉴权时通过 consumers JOIN principals 顺手读出的可用余额快照（零额外 D1 读）。 */
   balanceNanos: number;
+  /** 上次记录消费者密钥使用时间的 unix 秒（null = 从未用过），用于按 UTC 自然日节流写入。 */
+  consumerLastUsedAt: number | null;
 };
 
 /**

@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import { minBalanceNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
-import { touchConsumer } from '../consumers';
+import { needsConsumerTouch, touchConsumer } from '../consumers';
 import {
   carriesOutput,
   parseInbound,
@@ -147,8 +147,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     );
   }
 
-  /** 是否已写入 consumers.last_used_at：整次请求最多写一次，且只在确认执行时才写。 */
-  let consumerTouched = false;
+  /** 是否已满足本日 consumers.last_used_at 记录：按 UTC 自然日节流，每天最多写 1 行，同日后续 0 写、+0 Gas。 */
+  let consumerTouched = !needsConsumerTouch(principal.consumerLastUsedAt, Math.floor(startedAt / 1000));
   /** 这次请求试过的上游：重挑时传给选址，保证换的是另一条。 */
   const tried: string[] = [];
   /** 上一条候选的原话：换候选换到没得换时，交回去的应该是它，不是一句「没有候选」。 */
