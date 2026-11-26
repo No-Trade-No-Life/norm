@@ -426,7 +426,9 @@ function NewProviderDialog({
                     placeholder={t('pr.field_base_url_placeholder')}
                     spellCheck={false}
                   />
-                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_base_url_hint')}</p>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    {schema.oauth ? t('pr.field_base_url_oauth_hint') : t('pr.field_base_url_hint')}
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-1.5">

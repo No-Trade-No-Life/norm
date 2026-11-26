@@ -174,7 +174,7 @@ Norm 把**线缆方言（`Dialect`）**和**上游协议契约（`Protocol`）**
 | `google-gemini` | `google-gemini` | `{base}/v1beta/models/{model}:generateContent` | `x-goog-api-key`；`contents/parts`；流式走 `:streamGenerateContent?alt=sse` |
 | `deepseek` | `openai-responses` | `{base}/responses` | 零翻译复用 `openai-responses`；叠加官方固定基址与高峰 / 低谷两档分时计价（见 `src/deepseek.ts`） |
 | `opencode-go` | `openai-chat` | `{base}/openai/v1/chat/completions` | 零翻译复用 `openai-chat`；叠加官方推理面基址（`https://opencode.ai/inference/go`）、版本段路径与必带会话头（`x-opencode-session: ses_<sha256>`，由 `src/sessions.ts` 派生） |
-| `openai-oauth` | `openai-responses` | `{base}/responses` | 零翻译复用 `openai-responses`；叠加**凭据契约**（一对 OAuth 令牌而不是 API key：用之前拿 `refresh_token` 换新的，换完写回库——上游会轮换 `refresh_token`，不写回这条上游就只剩重连，见 `src/oauth.ts` / `src/credentials.ts`）、基址 `https://chatgpt.com/backend-api/codex`、两个头（`chatgpt-account-id` + `originator: codex_cli_rs`）与**只认流式**（缺 `stream: true` 上游直接 400，转发层提前挡住） |
+| `openai-oauth` | `openai-responses` | `{base}/responses` | 零翻译复用 `openai-responses`；叠加**凭据契约**（一对 OAuth 令牌而不是 API key：用之前拿 `refresh_token` 换新的，换完写回库——上游会轮换 `refresh_token`，不写回这条上游就只剩重连，见 `src/oauth.ts` / `src/credentials.ts`）、两个头（`chatgpt-account-id` + `originator: codex_cli_rs`）、**基址由用户填**（必须是一跳自己的转发：Worker 出站被盖 `cf-worker`，chatgpt.com 回 403；一跳同时决定出口 IP，等同 LB 的 `http_proxy_url`）与**只认流式**（缺 `stream: true` 上游直接 400，转发层提前挡住） |
 
 四种方言都支持流式：同方言直通时上游 SSE 原样透传（仅 `openai-chat` 入口在流末补一条 `norm` 事件与 `data: [DONE]`）；跨方言时由 `src/codecs.ts` 拆成规范事件，再由 `src/dialects.ts` 渲染成入口方言自己的 SSE 帧。
 

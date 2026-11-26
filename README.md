@@ -99,7 +99,7 @@ Norm 刻意**不做** $M \times N$ 的成对翻译矩阵，而是把「线缆方
 
 - **同方言直通**：判定只看线缆方言（`entry.dialect === profile.dialect`）——例如 Responses 客户端打向 `deepseek`、Chat 客户端打向 `opencode-go` 均为直通；请求体按原始字节发出、响应体原样回来，不碰扩展字段（仅对 chat 流式补 `stream_options.include_usage` 以便记账，且客户端没要时自动吃掉多余用量帧）。
 - **跨方言桥接**：经由规范中间态互译，**完整支持流式与跨方言 Tool Calling**（`tools` / `tool_choice` / `tool_calls` / 工具结果双向互译）。
-- **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存；`openai-oauth` 复用 `openai-responses` 方言，把一份 **ChatGPT 订阅**接成上游——凭据是一对 OAuth 令牌（`access_token` 过期前自动换新并写回库），基址钉在 `chatgpt.com/backend-api/codex`，请求头由 `src/oauth.ts` 给，且上游只认流式（非流式调用在 Norm 这一侧就被 `400 stream_required` 挡住，不去换一次注定失败的上游 400 与 Gas）。
+- **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存；`openai-oauth` 复用 `openai-responses` 方言，把一份 **ChatGPT 订阅**接成上游——凭据是一对 OAuth 令牌（`access_token` 过期前自动换新并写回库），基址填你自己的**一跳**（自建一跳：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，chatgpt.com 见到直接 403，一跳同时决定出口 IP 与绕开这条被盖戳的管线），请求头由 `src/oauth.ts` 给，且上游只认流式（非流式调用在 Norm 这一侧就被 `400 stream_required` 挡住，不去换一次注定失败的上游 400 与 Gas）。
 - **统一模型清单**：`GET /v1/models` 按方言将上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
 
 ### 服务端选址规则

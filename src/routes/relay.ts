@@ -100,6 +100,12 @@ function usageOnlyFrame(payload: string): boolean {
  * 给上游补一句「把用量也回给我」：OpenAI 兼容的流默认**不**回 usage，而账本就靠它算钱。
  * 少了这一步，真实的流式调用在账本上永远是 0 / 0 / 0，只剩一笔 Gas。
  */
+/**
+ * 把 `store` 钉成 false：这条上游只认这一个值（写 true、或不写，回的都是
+ * `400 Store must be set to false`）。只对声明了 `store_false` 的协议生效。
+ */
+const withStoreFalse = (body: string): string => JSON.stringify({ ...obj(JSON.parse(body)), store: false });
+
 const withUsage = (body: Record<string, unknown>): string =>
   JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
 
@@ -255,6 +261,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
         ? withUsage(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
         : JSON.stringify(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model));
 
+    // 有的上游只认 `store: false`（ChatGPT 的 responses 端点：写 true 或干脆不写，回的都是
+    // `400 Store must be set to false`）。补在这一层，是因为它既可能是客户端的原始字节，
+    // 也可能是刚由桥重建出来的请求体——同一条路补一次，就不用两条路各写一遍。
+    const upstreamBody = profile.store_false === true ? withStoreFalse(outbound) : outbound;
+
     // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
     // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
     const rate = rateAt(provider.protocol, model, Math.floor(startedAt / 1000));
@@ -284,7 +295,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       reply = await fetch(protocolUrlFor(provider.protocol, provider.base_url, model, stream), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey), ...sessionHeaders },
-        body: outbound,
+        body: upstreamBody,
       });
     } catch (error) {
       const settled = await recordFailure(accounting, 'network_error', 502);

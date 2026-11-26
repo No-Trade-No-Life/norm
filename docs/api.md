@@ -111,6 +111,12 @@ Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
 给固定基址的协议另填一个不同的 `base_url` 会被拒（`400 base_url_fixed`）——那不是在配置，
 是在以为它能选。
 
+`openai-oauth` 的基址**必须填你自己的一跳**（`https://<你的跳板>`，内部转发到
+`https://chatgpt.com/backend-api/codex`）：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，
+chatgpt.com 见到直接 403（实测直连 200、从边缘出去 403，把 `cf-worker` 置空也依旧 403）。
+一跳同时决定这次调用的出口 IP——就是 OpenAI-LB 里 `http_proxy_url` 在做的那件事。
+配方见 `docs/deploy.md` 末节。
+
 ```jsonc
 // POST /api/v1/providers  → 201 { id }
 {

@@ -132,3 +132,46 @@ pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
 已有同名 token（`norm-deploy-github-actions`）时不要重复铸造：先去
 `/profile/api-tokens` 看它是否还在、是否未过期。`wrangler login` 的 OAuth 凭据**不能**代铸 token
 （`/user/tokens` 对它返回 9109），这一步必须走浏览器里的会话。
+
+## ChatGPT 订阅（`openai-oauth`）需要的一跳
+
+Cloudflare Worker 的 `fetch` 会在每个出站请求上盖 `cf-worker` / `cf-connecting-ip`，
+`chatgpt.com` 见到就回 403（实测：同一条请求直连 200、从边缘出去 403，把 `cf-worker`
+置空也依旧 403）。所以 `openai-oauth` 的 `base_url` 要指向**你自己的一跳**，由它替 Norm
+把请求发出去。一跳同时决定这次调用的出口 IP——也就是 OpenAI-LB 里 `http_proxy_url` 的作用。
+
+最小一跳（Node 22，二十行，流式直通）：
+
+```js
+import { createServer } from 'node:http';
+
+const UPSTREAM = 'https://chatgpt.com/backend-api/codex';
+
+createServer(async (req, res) => {
+  // 关键：把 Worker 盖的戳摘掉。cf-worker / cf-connecting-ip 是「这是从 Cloudflare 内部
+  // 发出来的」的信号，原样转发过去上游照样 403——CONNECT 代理之所以没用，就是因为那些头
+  // 在 TLS 里面，它搬不走；只有重建请求的转发器才摘得掉。
+  const headers = Object.fromEntries(
+    Object.entries(req.headers).filter(([name]) => !name.startsWith('cf-') && name !== 'host'),
+  );
+  const upstream = await fetch(UPSTREAM + req.url, {    // /responses 原样拼上去
+    method: req.method,
+    headers,
+    body: ['GET', 'HEAD'].includes(req.method) ? undefined : req,
+    duplex: 'half',
+  });
+  res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
+  for await (const chunk of upstream.body) res.write(chunk);   // 不缓冲：SSE 要逐帧出去
+  res.end();
+}).listen(8080);
+```
+
+挂到公网（`cloudflared` 那条最省事：一跳自己待在 Cloudflare 后面没关系，它不是 Worker，
+不盖戳）：
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8080   # 拿到的 https://xxx.trycloudflare.com 就是 base_url
+```
+
+然后在 Norm 里新建上游提供商：协议选 `OpenAI OAuth（ChatGPT 订阅）`，`base_url` 填这一跳的
+地址，凭据用「连接 ChatGPT」走一遍授权。

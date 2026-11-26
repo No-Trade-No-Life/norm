@@ -44,20 +44,20 @@ describe('协议契约（protocol schema）', () => {
     });
   });
 
-  it('openai-oauth：基址是 ChatGPT 订阅的推理面，凭据走 OAuth，上游只认流式', () => {
+  it('openai-oauth：凭据走 OAuth、上游只认流式，基址是用户填的那一跳（不是官方地址）', () => {
     expect(schemaOf('openai-oauth')).toEqual({
       protocol: 'openai-oauth',
       dialect: 'openai-responses',
-      base_url: 'https://chatgpt.com/backend-api/codex',
-      fields: ['provider_key'],
+      base_url: null,
+      fields: ['base_url', 'provider_key'],
       oauth: true,
       stream_only: true,
     });
   });
 
-  it('钉死基址的协议只有 deepseek、opencode-go 与 openai-oauth：哪条协议不要 base_url 是数据，不是判断', () => {
+  it('钉死基址的协议只有 deepseek 与 opencode-go：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
-    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'openai-oauth']);
+    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go']);
   });
 
   it('「OAuth 凭据」与「只认流式」各只落在 openai-oauth 一条协议上', () => {
@@ -75,12 +75,12 @@ describe('协议契约（protocol schema）', () => {
  * `oauth.ts`（见 tests/oauth.test.ts）。少一条，线上拿到的都是上游一句不好查的 4xx。
  */
 describe('openai-oauth 协议', () => {
-  it('路径就是 Codex 的 /responses，基址钉死在 chatgpt.com', () => {
+  it('路径就是 Codex 的 /responses，拼在用户填的那一跳后面', () => {
     const profile = protocolFor('openai-oauth');
     expect(profile.path('gpt-5.6-luna')).toBe('/responses');
     expect(streamPathFor('openai-oauth', 'gpt-5.6-luna')).toBe('/responses');
-    expect(protocolUrlFor('openai-oauth', 'https://chatgpt.com/backend-api/codex', 'gpt-5.6-luna', true)).toBe(
-      'https://chatgpt.com/backend-api/codex/responses',
+    expect(protocolUrlFor('openai-oauth', 'https://hop.example.com/codex/', 'gpt-5.6-luna', true)).toBe(
+      'https://hop.example.com/codex/responses',
     );
   });
 

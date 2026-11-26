@@ -144,6 +144,12 @@ export type ProtocolProfile = {
    * 声明在这里，转发层就能把注定失败的请求挡在自己这一侧，并说清为什么。
    */
   stream_only?: true;
+  /**
+   * 上游只认 `store: false`（同一个端点：带上 `store` 为真、或干脆没写，回
+   * `400 Store must be set to false`）。声明在这里，转发层发出去之前补上这一个字段——
+   * 它是这条上游的请求契约，不是方言翻译。
+   */
+  store_false?: true;
 };
 
 /** 补齐方言默认传输规则后的协议契约（仍不含任何翻译方法）。 */
@@ -159,6 +165,7 @@ export type ResolvedProtocol = {
   pricing?: ProtocolPricing;
   oauth?: true;
   stream_only?: true;
+  store_false?: true;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -203,10 +210,15 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
   /**
    * openai-oauth：复用 `openai-responses` 方言，把一份 ChatGPT 订阅接成一条上游
    * （Codex CLI 走的就是这条路）。叠加的只有凭据与传输契约：
-   *   1. 基址钉死 `https://chatgpt.com/backend-api/codex`，路径 `/responses`；
-   *   2. 请求头由 `oauth.ts` 给：Bearer + `chatgpt-account-id` + `originator: codex_cli_rs`；
-   *   3. 凭据是一对 OAuth 令牌（`oauth: true`）：转发前先换新，换完写回库；
-   *   4. 上游只认流式（`stream_only: true`）：非流式调用在 Norm 这一侧就被挡住。
+   *   1. 请求头由 `oauth.ts` 给：Bearer + `chatgpt-account-id` + `originator: codex_cli_rs`；
+   *   2. 凭据是一对 OAuth 令牌（`oauth: true`）：转发前先换新，换完写回库；
+   *   3. 上游只认流式（`stream_only: true`）：非流式调用在 Norm 这一侧就被挡住。
+   *
+   * 基址**不钉死**，由用户填——它必须是一跳自己的转发（`https://<你的跳板>`，内部转到
+   * `https://chatgpt.com/backend-api/codex`）。两个理由都来自同一个事实：Worker 的 `fetch`
+   * 会在出站请求上盖 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接回 403 一页 HTML
+   * （实测：直连 200，从边缘出去 403；把 `cf-worker` 置空也依旧 403）。一跳既是**选出口 IP**
+   * 的办法（等同 LB 的 `http_proxy_url`），也是**离开那条被盖戳的管线**的办法。
    *
    * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
    * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
@@ -214,10 +226,10 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    */
   'openai-oauth': {
     dialect: 'openai-responses',
-    base_url: 'https://chatgpt.com/backend-api/codex',
     headers: openaiHeaders,
     oauth: true,
     stream_only: true,
+    store_false: true,
   },
 };
 
@@ -236,6 +248,7 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     ...(profile.pricing === undefined ? {} : { pricing: profile.pricing }),
     ...(profile.oauth === undefined ? {} : { oauth: profile.oauth }),
     ...(profile.stream_only === undefined ? {} : { stream_only: profile.stream_only }),
+    ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
   };
 }
 
