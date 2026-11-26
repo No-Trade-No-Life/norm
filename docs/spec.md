@@ -97,7 +97,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | 项 | 怎么算 | 为什么 |
 |---|---|---|
 | `token_nanos` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
-| `gas_fee_nanos` | 每一次真的打出去的调用固定一笔（300 纳美元 = $0.0000003） | 摊 Cloudflare Serverless 侧的固定成本：Worker 调用、D1 读写、日志与观测——与 token 无关，也与成败无关 |
+| `gas_fee_nanos` | 动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的付费点逐项累加，结算前冻结，见 `src/gas.ts` 与 `GET /api/v1/pricing` | 如实覆盖 Cloudflare Serverless 侧的边际资源成本（Worker 调用、D1 行写、日志、CPU）——当前 1.0× 纯成本价，与 token 无关、与成败无关 |
 
 三种 token 分开记，因为它们的价不同、含义也不同：
 

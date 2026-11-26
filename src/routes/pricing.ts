@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
-import { gasFeeNanos } from '../env';
+import { minBalanceNanos } from '../env';
+import { D1_ROW_WRITES, GAS_FLOOR_NANOS, GAS_MARGIN_BPS, GAS_SCHEDULE } from '../gas';
 import { DEFAULT_RATES, MODEL_RATES } from '../pricing';
 import { PROTOCOLS, adapterFor } from '../protocols';
 
@@ -34,8 +35,16 @@ pricingRoutes.get('/', (c) =>
       ];
     }),
     gas_fee: {
-      nanos: gasFeeNanos(c.env),
-      note: '每一次真的打出去的调用固定收一笔，与 token 无关、与成败无关：它摊的是 Worker 调用与 D1 读写的固定成本。',
+      nanos: GAS_FLOOR_NANOS,
+      base_nanos: GAS_SCHEDULE.worker_invocation,
+      floor_nanos: GAS_FLOOR_NANOS,
+      min_balance_nanos: minBalanceNanos(c.env),
+      margin_bps: GAS_MARGIN_BPS,
+      schedule: {
+        ...GAS_SCHEDULE,
+        d1_writes: D1_ROW_WRITES,
+      },
+      note: '动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的 Cloudflare 资源付费点逐项累加，结算前冻结；当前 1.0× 成本价计费。',
     },
   }),
 );

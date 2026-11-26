@@ -1,8 +1,9 @@
 import { Hono, type Context } from 'hono';
 import type { Env } from '../env';
-import { gasFeeNanos } from '../env';
+import { minBalanceNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
+import { touchConsumer } from '../consumers';
 import {
   carriesOutput,
   parseInbound,
@@ -15,15 +16,20 @@ import {
   type Dialect,
   type NormMeta,
 } from '../dialects';
+import {
+  D1_ROW_WRITES,
+  GAS_CONSUMER_TOUCH_NANOS,
+  GAS_SCHEDULE,
+  GAS_SETTLE_NANOS,
+  GasMeter,
+} from '../gas';
 import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { isModelNotServed } from '../models';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
 import { unsealProviderKey } from '../seal';
 import {
-  availableNanos,
   dropProviderModel,
-  findPrincipal,
   forgetAffinity,
   resolveProvider,
   settle,
@@ -126,24 +132,41 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
   const requestId = uuidv7();
   const startedAt = Date.now();
-  // Gas 是「执行一次」的价：付不起就不打上游，也就没有这次执行，不记账。
-  const gasFee = gasFeeNanos(c.env);
-  const account = await findPrincipal(c.env, address);
-  if (availableNanos(account) < gasFee) {
-    fail(402, 'insufficient_balance', `余额不足：需要 ${gasFee} 纳美元，当前 ${availableNanos(account)}`);
+  // 动态 Gas 计量器：从 300 纳（Worker 调用）起累加所有实际经过的付费点，
+  // 余额快照来自鉴权阶段 consumers JOIN principals（零额外 D1 读）。
+  const gas = new GasMeter({
+    availableNanos: principal.balanceNanos,
+    minBalanceNanos: minBalanceNanos(c.env),
+  });
+  // 闸门 A（入口安全阈值）：低于安全阈值直接 402 拒绝，0 次 D1 写、0 次上游请求。
+  if (!gas.canStart()) {
+    fail(
+      402,
+      'insufficient_balance',
+      `余额不足：至少需要 ${gas.minBalanceNanos} 纳美元安全余额，当前 ${principal.balanceNanos}`,
+    );
   }
 
+  /** 是否已写入 consumers.last_used_at：整次请求最多写一次，且只在确认执行时才写。 */
+  let consumerTouched = false;
   /** 这次请求试过的上游：重挑时传给选址，保证换的是另一条。 */
   const tried: string[] = [];
   /** 上一条候选的原话：换候选换到没得换时，交回去的应该是它，不是一句「没有候选」。 */
   let refused: { failure: UpstreamFailure; accounting: Accounting } | null = null;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const pendingTouch = consumerTouched ? 0 : GAS_CONSUMER_TOUCH_NANOS;
     // 走哪条上游是 Norm 自己的决定，调用方一个头都不用带：模型跑得了是前提，自己的上游
     // 优先、公共池兜底，同一个 thread-id / session-id 粘在同一条上（见 store.resolveProvider）。
     let choice: ProviderChoice;
     try {
-      choice = await resolveProvider(c.env, address, affinity, { model, exclude: tried });
+      choice = await resolveProvider(c.env, address, affinity, {
+        model,
+        exclude: tried,
+        gas,
+        pendingRequiredNanos: pendingTouch + GAS_SETTLE_NANOS,
+        abortOnInsufficientBalance: attempt === 0,
+      });
     } catch (error) {
       // 换候选时发现没有下一条了：这不是新错误，把上一条上游的原话交回去。
       if (attempt > 0 && refused) return upstreamFailure(c, refused.accounting, refused.failure);
@@ -151,6 +174,34 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     }
     const provider = choice.provider;
     tried.push(provider.id);
+
+    const adapter = adapterFor(provider.protocol);
+    // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
+    // 所以 Responses 客户端打给它一样一个字节都不动。
+    const sameShape = entry.dialect === adapter.dialect;
+
+    // 这一轮转发实际会产生的 CPU 成本：二次重试多一次基础 CPU，跨方言多桥接 CPU，流式多拆帧 CPU。
+    const attemptCpu =
+      (attempt > 0 ? GAS_SCHEDULE.cpu_base : 0) +
+      (sameShape ? 0 : GAS_SCHEDULE.cpu_bridge) +
+      (stream ? GAS_SCHEDULE.cpu_stream : 0);
+
+    // 闸门 B（发往上游前预算检查）：如果写亲和或高成本路径后余额已不够覆盖本次执行与结算，
+    // 在首次尝试阶段直接 402 中止——省掉 consumer_touch、上游 fetch 与 settle 写库。
+    if (attempt === 0 && !gas.canAfford(attemptCpu + pendingTouch + GAS_SETTLE_NANOS)) {
+      fail(
+        402,
+        'insufficient_balance',
+        `余额不足：本次请求预计需要 ${gas.projectedTotal(attemptCpu + pendingTouch + GAS_SETTLE_NANOS)} 纳美元 Gas，当前 ${principal.balanceNanos}`,
+      );
+    }
+
+    if (attemptCpu > 0) gas.charge(attemptCpu);
+    if (!consumerTouched) {
+      await touchConsumer(c.env, principal.consumerId);
+      gas.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
+      consumerTouched = true;
+    }
 
     // 明文密钥在库里是密文，用 Worker secret 里那把高熵对称密钥现解现用，只在本次请求的
     // 作用域里存在：不写日志、不进响应、不返回给客户端。
@@ -162,11 +213,6 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       providerId: provider.id,
       sealed: provider.sealed_key,
     });
-
-    const adapter = adapterFor(provider.protocol);
-    // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
-    // 所以 Responses 客户端打给它一样一个字节都不动。
-    const sameShape = entry.dialect === adapter.dialect;
 
     /**
      * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
@@ -212,7 +258,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       baseUrl: provider.base_url,
       requestId,
       startedAt,
-      gasFee,
+      gas,
       host,
       model,
       rate,
@@ -263,8 +309,23 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     // 会话的粘性，换一条候选再试一次。只换一次，而且只在上游原话点名了这次的模型时。
     // 少了这一步，一次按错清单的选择会让同一条会话在亲和表里错满整个 TTL（7 天）。
     if (attempt + 1 < MAX_ATTEMPTS && isModelNotServed(failure.status, failure.text, model)) {
-      await dropProviderModel(c.env, provider.id, model);
-      if (affinity) await forgetAffinity(c.env, address, affinityHash(address, affinity.value));
+      // 闸门 C（二次重试前熔断）：余额不够覆盖「清理写库 + 二次执行 + 结算」时放弃重试，
+      // 直接结算第 1 次失败并返回上游原话，替双方省掉清理 D1 写与第 2 次上游调用。
+      const retryEstimate =
+        (D1_ROW_WRITES.provider_model_delete + (affinity ? D1_ROW_WRITES.affinity_delete : 0)) *
+          GAS_SCHEDULE.d1_row_write +
+        GAS_SCHEDULE.cpu_base +
+        GAS_SETTLE_NANOS;
+      if (!gas.canAfford(retryEstimate)) {
+        return upstreamFailure(c, accounting, failure);
+      }
+
+      const dropped = await dropProviderModel(c.env, provider.id, model);
+      if (dropped > 0) gas.chargeD1Writes(dropped * D1_ROW_WRITES.provider_model_delete);
+      if (affinity) {
+        const forgotten = await forgetAffinity(c.env, address, affinityHash(address, affinity.value));
+        if (forgotten > 0) gas.chargeD1Writes(forgotten * D1_ROW_WRITES.affinity_delete);
+      }
       continue;
     }
 
@@ -302,8 +363,8 @@ type Accounting = {
   baseUrl: string;
   requestId: string;
   startedAt: number;
-  /** 这一次「执行」的价，与成败无关。 */
-  gasFee: number;
+  /** 请求级动态 Gas 计量器：结算前冻结，之后只读不改。 */
+  gas: GasMeter;
   host: string;
   model: string;
   /**
@@ -326,7 +387,7 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
   return {
     request_id: accounting.requestId,
     fee_nanos: billed.billedNanos,
-    gas_fee_nanos: accounting.gasFee,
+    gas_fee_nanos: accounting.gas.finalTotal(),
     token_nanos: price.total_nanos,
     input_tokens: usage.input,
     cached_tokens: usage.cached,
@@ -342,10 +403,12 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
 /** 把一次成功的调用折成钱、记下来，返回给客户端看的账单结论。 */
 async function bill(accounting: Accounting, answer: AnswerCore, statusCode: number): Promise<NormMeta> {
   const price = quote(accounting.model, answer.usage, accounting.rate);
+  const gasFeeNanos = accounting.gas.finalizeForSettlement();
   const settled = await settle(accounting.env, recordOf(accounting, {
     answer,
     status: 'ok',
     statusCode,
+    gasFeeNanos,
     tokenNanos: price.total_nanos,
   }));
   return normMeta(accounting, answer.usage, settled);
@@ -357,9 +420,11 @@ async function bill(accounting: Accounting, answer: AnswerCore, statusCode: numb
  * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少。
  */
 async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<Settled> {
+  const gasFeeNanos = accounting.gas.finalizeForSettlement();
   return settle(accounting.env, recordOf(accounting, {
     status,
     statusCode,
+    gasFeeNanos,
     tokenNanos: 0,
     usage: { input: 0, cached: 0, output: 0 },
   }));
@@ -375,7 +440,7 @@ function failureHeaders(requestId: string, settled: Settled): Record<string, str
 
 function recordOf(
   accounting: Accounting,
-  parts: { status: string; statusCode: number; tokenNanos: number; answer?: AnswerCore; usage?: Usage },
+  parts: { status: string; statusCode: number; gasFeeNanos: number; tokenNanos: number; answer?: AnswerCore; usage?: Usage },
 ): RequestRecord {
   // 记客户端要的那个模型名，不记上游提供商回的那个：价格跟着它算，两者必须是同一个字符串，
   // 否则一个把自己响应改写成便宜模型的上游提供商就顺手给自己定了价。 上游提供商实际跑的版本
@@ -398,7 +463,7 @@ function recordOf(
     inputTokens: usage.input,
     cachedTokens: usage.cached,
     outputTokens: usage.output,
-    gasFeeNanos: accounting.gasFee,
+    gasFeeNanos: parts.gasFeeNanos,
     tokenNanos: parts.tokenNanos,
     // 由 settle 覆盖成「真正扣掉的」：成功是 Gas + token，失败只有 Gas。
     feeNanos: 0,
@@ -455,7 +520,8 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
     }
     const answer: AnswerCore = { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 };
     const price = quote(accounting.model, usage, accounting.rate);
-    const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, tokenNanos: price.total_nanos }));
+    const gasFeeNanos = accounting.gas.finalizeForSettlement();
+    const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, gasFeeNanos, tokenNanos: price.total_nanos }));
     return normMeta(accounting, usage, settled);
   };
 
@@ -592,10 +658,12 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
       return normMeta(accounting, usage, await recordFailure(accounting, 'provider_error', 200));
     }
     const price = quote(accounting.model, usage, accounting.rate);
+    const gasFeeNanos = accounting.gas.finalizeForSettlement();
     const settled = await settle(env, recordOf(accounting, {
       answer: { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 },
       status: 'ok',
       statusCode: 200,
+      gasFeeNanos,
       tokenNanos: price.total_nanos,
     }));
     return normMeta(accounting, usage, settled);

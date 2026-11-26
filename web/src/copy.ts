@@ -247,8 +247,8 @@ export const COPY = {
 
   'us.title': { zh: '用量与账本', en: 'Usage & Ledger' },
   'us.desc': {
-    zh: '按 Token 记账：输入、缓存命中、输出分开记，外加一次性的 Gas 费。只存记账所需的字段，没有 prompt，也没有 completion。',
-    en: 'Billed by token: input, cache hits and output are recorded separately, plus a flat gas fee. Only billing fields are stored — no prompts, no completions.',
+    zh: '按 Token 记账：输入、缓存命中、输出分开记，外加按执行路径动态累加的 Gas 费。只存记账所需的字段，没有 prompt，也没有 completion。',
+    en: 'Billed by token: input, cache hits and output are recorded separately, plus a dynamic gas fee metered along the execution path. Only billing fields are stored — no prompts, no completions.',
   },
   'us.balance': { zh: '余额', en: 'Balance' },
   'us.spend': { zh: '累计花费', en: 'Total spend' },
@@ -265,8 +265,8 @@ export const COPY = {
   'us.billed_tokens': { zh: 'Token 费用', en: 'Token cost' },
   'us.billed_unbilled': { zh: '未收（站点承担）', en: 'Unbilled (absorbed)' },
   'us.gas_note': {
-    zh: '每一次真的打出去的调用固定收一笔，成功失败都收：它买的是「这次被执行」，不是答案；摊的是 Worker 调用与 D1 读写的固定成本。',
-    en: 'A flat fee on every call that actually went out, charged whether it succeeds or fails: you pay for the execution, not the answer — it covers the fixed Worker and D1 cost.',
+    zh: '从 300 纳美元（Worker 调用）起步，按实际经过的付费点（D1 写入、日志、桥接/流式 CPU）动态累加，成功失败都收：它买的是「这次被执行」的资源成本。',
+    en: 'Starts at 300 nano-USD (Worker invocation) and accumulates along actual billed steps (D1 writes, logs, bridge/stream CPU), charged whether it succeeds or fails: you pay for actual execution cost.',
   },
   'us.cache_share': { zh: '缓存率', en: 'Cache rate' },
   'us.avg_ttft': { zh: '平均首字', en: 'Avg first token' },
@@ -464,8 +464,8 @@ export const COPY = {
   'ab.not_3': { zh: '不做真实支付：演示版只给 $1 授信。', en: 'No real payments: the demo grants $1.' },
   'ab.fee_title': { zh: '计费', en: 'Billing' },
   'ab.fee_body': {
-    zh: '上游提供商 token 账单由你直接付给上游提供商。Norm 每次调用只收 300 纳美元（$0.0000003）的 Gas 费，外加按 Token 算的部分；Gas 成功失败都收，失败时只免 Token。',
-    en: 'You pay provider token bills directly. Norm charges a 300 nano-USD ($0.0000003) gas fee per call plus the token cost; gas is charged whether the call succeeds or fails, and only tokens are waived on failure.',
+    zh: '上游提供商 token 账单由你直接付给上游提供商。Norm 从 300 纳美元起步按实际资源付费点动态累加 Gas（直通非流式最低 6,730 纳美元，余额低于 10,000 纳美元提前拒单），外加按 Token 算的部分；Gas 成功失败都收，失败时只免 Token。',
+    en: 'You pay provider token bills directly. Norm meters Gas dynamically from 300 nano-USD along actual execution steps (6,730 nano-USD floor for passthrough non-stream, pre-rejected below 10,000 nano-USD balance) plus the token cost; gas is charged whether the call succeeds or fails, and only tokens are waived on failure.',
   },
 
   'common.loading': { zh: '加载中…', en: 'Loading…' },

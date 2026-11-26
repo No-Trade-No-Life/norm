@@ -46,6 +46,8 @@ export type Identity = {
 export type Principal = {
   address: string;
   consumerId: string;
+  /** 鉴权时通过 consumers JOIN principals 顺手读出的可用余额快照（零额外 D1 读）。 */
+  balanceNanos: number;
 };
 
 /**

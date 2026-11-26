@@ -123,17 +123,20 @@ pnpm install && pnpm build && pnpm attest
 ## 计费与定价原则
 
 - **纳美元整数记账**：单位一律是纳美元（1e-9 USD，不用浮点），避免极便宜调用被四舍五入为 0。
-- **按 Token + 固定 Gas**：`input_tokens`（含缓存命中）/ `cached_tokens` / `output_tokens` 三项分开计价（价目表写在 `src/pricing.ts`，公开在 `GET /api/v1/pricing`），外加每笔固定 **300 纳美元**（$0.0000003，即 Workers Paid 单次调用列表价）的 Gas 费。每条记录都满足 `fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos`，余额永不为负。
+- **按 Token + 动态 Gas**：`input_tokens`（含缓存命中）/ `cached_tokens` / `output_tokens` 三项分开计价（价目表写在 `src/pricing.ts`），外加按执行路径实时累加的**动态 Gas 费**（单价表写在 `src/gas.ts`，两者一并公开在 `GET /api/v1/pricing` 并进入 `source_sha256` 构建哈希）：
+  - 从 **300 纳美元**（Worker 调用）起步，累加本次请求实际发生的 Cloudflare 成本（Workers Logs、基础/桥接/流式 CPU、D1 读上界与每一次真实 D1 行写含二级索引）；
+  - 普通同方言直通非流式稳态为 **6,730 纳美元**（$0.00000673），流式 +60、跨方言桥接 +100、首次写会话亲和 +3,000（稳态命中 +0）；
+  - 结算前冻结计量器，绝不事后补数；每条记录恒满足 `fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos`，余额永不为负。
+- **余额不足提前中止（零额外写库）**：入口设置安全余额阈值 **`MIN_BALANCE_NANOS = 10,000`**（$0.00001），低于该值直接返回 `402 insufficient_balance`，产生 **0 次 D1 写、0 次上游调用**；写亲和前、发往上游前与纠偏重试前同样在内存里做余额预算熔断。
 - **失败收 Gas，不收 Token**：只要请求打到上游，Worker 与 D1 成本就已发生，上游 4xx/5xx 或超时照收 Gas（通过响应头 `X-Norm-Gas-Fee-Nanos` 标明），token 费为 0；未打到上游的校验失败（非 JSON、余额不足、无可用上游）不记账也不扣费。
-- **诚实算清真实成本**：300 纳 Gas 只覆盖单次 Worker 调用；一旦越过 Cloudflare Paid $5/月包含额度，加上 D1 行写与 Workers Logs，一次推理的真实边际成本约为 **6,000–6,800 纳美元**（Gas 的 20–23 倍）。
 
 > 原则上 Norm 只赚取合理的毛利率，会在技术手段上最小化用户的使用成本，但绝对不会做贴钱留用户的不可持续的事情。
 
-1. **只赚合理毛利**：定价与成本关系透明公开，价目与 Gas 写在代码里，改价即一次可审查的提交。
-2. **用工程降本，不靠涨价了事**：索引预算、去重免写库、日志采样都是定价的一部分（例如已落地 #49 去重免写库与 #50 砍掉 `requests` 4 条冗余索引）。
-3. **不贴钱留客**：额度内边际成本 ≈ 0；越过额度后通过架构降本或透明调价维持可持续，不靠烧钱换量。
+1. **当前按 1.0× 成本价计费，只维持不亏本**：`GAS_MARGIN_BPS = 0`，单价表直接写在 `src/gas.ts` 里，未来调毛利率或改价 = 一次可被审查的代码提交。
+2. **用工程降本直接反哺用户**：动态 Gas 按实际经过的付费点累加——少写一行 D1、调低日志采样率，用户账单自动变便宜（如已落地 #49 去重免写库、#50 砍掉 `requests` 4 条冗余索引，以及鉴权合并 JOIN + 延后 `last_used_at` 写库）。
+3. **不贴钱留客**：每一条转发路径的边际成本都如实覆盖，不靠烧钱换量，也不因过线而倒挂。
 
-完整的 Cloudflare 列表价拆解、Workers Logs 新旧口径测算、额度见底顺序与降本记录见 [`docs/economics.md`](docs/economics.md)。
+完整的动态 Gas 操作码单价表、Cloudflare 列表价拆解、Workers Logs 建模与降本记录见 [`docs/economics.md`](docs/economics.md)。
 
 ## 自己部署一份
 
