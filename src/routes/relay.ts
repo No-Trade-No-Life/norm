@@ -29,7 +29,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { isModelNotServed } from '../models';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
-import { unsealProviderKey } from '../seal';
+import { providerCredential } from '../credentials';
 import {
   dropProviderModel,
   forgetAffinity,
@@ -100,6 +100,12 @@ function usageOnlyFrame(payload: string): boolean {
  * 给上游补一句「把用量也回给我」：OpenAI 兼容的流默认**不**回 usage，而账本就靠它算钱。
  * 少了这一步，真实的流式调用在账本上永远是 0 / 0 / 0，只剩一笔 Gas。
  */
+/**
+ * 把 `store` 钉成 false：这条上游只认这一个值（写 true、或不写，回的都是
+ * `400 Store must be set to false`）。只对声明了 `store_false` 的协议生效。
+ */
+const withStoreFalse = (body: string): string => JSON.stringify({ ...obj(JSON.parse(body)), store: false });
+
 const withUsage = (body: Record<string, unknown>): string =>
   JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
 
@@ -213,12 +219,21 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     // 作用域里存在：不写日志、不进响应、不返回给客户端。
     //
     // 解封用的是**持有者**的地址，不是调用方的：公共池里那条属于站点，调用方只是借用。
-    const providerKey = await unsealProviderKey({
-      env: c.env,
-      address: provider.address,
-      providerId: provider.id,
-      sealed: provider.sealed_key,
-    });
+    // OAuth 协议的凭据会过期，换新也在这一步里（见 `credentials.ts`）。
+    let providerKey: string;
+    try {
+      providerKey = await providerCredential({ env: c.env, address: provider.address, provider });
+    } catch (error) {
+      // 这把钥匙用不了（换新被上游拒了、密文解不开）：请求根本没打出去，所以不记账，
+      // 但必须把原因交回去——「服务内部错误」会把唯一一条能诊断的信息吞掉。
+      return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
+    }
+
+    // 只认流式的上游（ChatGPT 的 responses 端点）在这里把注定失败的请求挡住：
+    // 放过去，代价是一次上游 400 加一笔 Gas，换来的还是一句「stream must be true」。
+    if (profile.stream_only === true && !stream) {
+      fail(400, 'stream_required', `${provider.protocol} 协议的上游只接受流式请求：请带 "stream": true`);
+    }
 
     /**
      * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
@@ -245,6 +260,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       : askForUsage
         ? withUsage(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
         : JSON.stringify(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model));
+
+    // 有的上游只认 `store: false`（ChatGPT 的 responses 端点：写 true 或干脆不写，回的都是
+    // `400 Store must be set to false`）。补在这一层，是因为它既可能是客户端的原始字节，
+    // 也可能是刚由桥重建出来的请求体——同一条路补一次，就不用两条路各写一遍。
+    const upstreamBody = profile.store_false === true ? withStoreFalse(outbound) : outbound;
 
     // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
     // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
@@ -275,7 +295,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       reply = await fetch(protocolUrlFor(provider.protocol, provider.base_url, model, stream), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey), ...sessionHeaders },
-        body: outbound,
+        body: upstreamBody,
       });
     } catch (error) {
       const settled = await recordFailure(accounting, 'network_error', 502);

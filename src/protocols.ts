@@ -29,6 +29,7 @@ import {
   type StreamEvent,
 } from './codecs';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
+import { openaiHeaders } from './oauth';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
 import { SESSION_HEADER } from './sessions';
 
@@ -50,12 +51,13 @@ export {
   type StreamEvent,
 };
 
-export type Protocol = Dialect | 'deepseek' | 'opencode-go';
+export type Protocol = Dialect | 'deepseek' | 'opencode-go' | 'openai-oauth';
 
 export const PROTOCOLS: Protocol[] = [
   ...DIALECTS,
   'deepseek',
   'opencode-go',
+  'openai-oauth',
 ];
 
 export function isProtocol(value: string): value is Protocol {
@@ -99,6 +101,10 @@ export type ProtocolSchema = {
   base_url: string | null;
   /** 配置一条这种上游要填的字段，按表单顺序；`provider_key` 是唯一恒有的那个。 */
   fields: Array<'base_url' | 'provider_key'>;
+  /** 凭据是一对 OAuth 令牌：前端要渲染「连接」这一步，而不是一个密钥输入框。 */
+  oauth: boolean;
+  /** 上游只接受流式请求：非流式调用会被转发层挡下并说清原因。 */
+  stream_only: boolean;
 };
 
 /**
@@ -128,6 +134,22 @@ export type ProtocolProfile = {
    * 只有按时刻变价的厂商才需要它。
    */
   pricing?: ProtocolPricing;
+  /**
+   * 凭据是一对会过期的 OAuth 令牌：用之前先拿 refresh_token 换新的，换完写回库
+   * （见 `src/credentials.ts`）。这是**凭据契约**，不是编解码——翻译仍然只在 codecs.ts 里。
+   */
+  oauth?: true;
+  /**
+   * 上游只接受流式请求（ChatGPT 的 responses 端点缺 `stream: true` 直接 400）。
+   * 声明在这里，转发层就能把注定失败的请求挡在自己这一侧，并说清为什么。
+   */
+  stream_only?: true;
+  /**
+   * 上游只认 `store: false`（同一个端点：带上 `store` 为真、或干脆没写，回
+   * `400 Store must be set to false`）。声明在这里，转发层发出去之前补上这一个字段——
+   * 它是这条上游的请求契约，不是方言翻译。
+   */
+  store_false?: true;
 };
 
 /** 补齐方言默认传输规则后的协议契约（仍不含任何翻译方法）。 */
@@ -141,6 +163,9 @@ export type ResolvedProtocol = {
   modelsPath: () => string;
   session_header?: string;
   pricing?: ProtocolPricing;
+  oauth?: true;
+  stream_only?: true;
+  store_false?: true;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -181,6 +206,31 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     modelsPath: () => '/openai/v1/models',
     session_header: SESSION_HEADER,
   },
+
+  /**
+   * openai-oauth：复用 `openai-responses` 方言，把一份 ChatGPT 订阅接成一条上游
+   * （Codex CLI 走的就是这条路）。叠加的只有凭据与传输契约：
+   *   1. 请求头由 `oauth.ts` 给：Bearer + `chatgpt-account-id` + `originator: codex_cli_rs`；
+   *   2. 凭据是一对 OAuth 令牌（`oauth: true`）：转发前先换新，换完写回库；
+   *   3. 上游只认流式（`stream_only: true`）：非流式调用在 Norm 这一侧就被挡住。
+   *
+   * 基址**不钉死**，由用户填——它必须是一跳自己的转发（`https://<你的跳板>`，内部转到
+   * `https://chatgpt.com/backend-api/codex`）。两个理由都来自同一个事实：Worker 的 `fetch`
+   * 会在出站请求上盖 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接回 403 一页 HTML
+   * （实测：直连 200，从边缘出去 403；把 `cf-worker` 置空也依旧 403）。一跳既是**选出口 IP**
+   * 的办法（等同 LB 的 `http_proxy_url`），也是**离开那条被盖戳的管线**的办法。
+   *
+   * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
+   * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
+   * 原话）：选址把清单未知的上游当可用，一次跑错型号会被 `isModelNotServed` 划掉。
+   */
+  'openai-oauth': {
+    dialect: 'openai-responses',
+    headers: openaiHeaders,
+    oauth: true,
+    stream_only: true,
+    store_false: true,
+  },
 };
 
 function resolveProtocol(protocol: Protocol): ResolvedProtocol {
@@ -196,6 +246,9 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     modelsPath: profile.modelsPath ?? codec.defaultModelsPath,
     ...(profile.session_header === undefined ? {} : { session_header: profile.session_header }),
     ...(profile.pricing === undefined ? {} : { pricing: profile.pricing }),
+    ...(profile.oauth === undefined ? {} : { oauth: profile.oauth }),
+    ...(profile.stream_only === undefined ? {} : { stream_only: profile.stream_only }),
+    ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
   };
 }
 
@@ -206,6 +259,7 @@ const RESOLVED_PROTOCOLS: Record<Protocol, ResolvedProtocol> = {
   'google-gemini': resolveProtocol('google-gemini'),
   deepseek: resolveProtocol('deepseek'),
   'opencode-go': resolveProtocol('opencode-go'),
+  'openai-oauth': resolveProtocol('openai-oauth'),
 };
 
 /** 取一条上游协议的传输与计价契约（编解码请按 `.dialect` 调 `dialectCodecFor`）。 */
@@ -222,6 +276,8 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     dialect: profile.dialect,
     base_url: fixed,
     fields: fixed === null ? ['base_url', 'provider_key'] : ['provider_key'],
+    oauth: profile.oauth === true,
+    stream_only: profile.stream_only === true,
   };
 }
 

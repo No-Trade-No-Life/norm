@@ -9,6 +9,14 @@ import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
 import { findProvider, listProviders } from '../store';
 import { applyOnce, idempotentId, type ApplyOutcome } from '../idempotent';
+import {
+  openaiAccountHint,
+  openaiAuthorize,
+  openaiCredentialOf,
+  openaiCredentialText,
+  openaiExchange,
+  type CredentialParse,
+} from '../oauth';
 
 type Body = {
   label?: string;
@@ -39,6 +47,40 @@ providerRoutes.get('/', async (c) => {
     // 而不是让人点完才收一个 403。
     can_own_pool: canOwnPool(c.env, address),
   });
+});
+
+/**
+ * 开始一次 OpenAI OAuth：现生成 PKCE（S256）与 state，把授权地址交给浏览器。
+ *
+ * Norm 不存这次流程的任何状态。verifier 随响应回到浏览器，回调回来时再一起送回来——
+ * 换币要的正是它，而它只存在于发起授权的这只浏览器里。没有服务端那张流程表，就没有
+ * 过期清理，也没有多实例一致性问题。
+ *
+ * 回调地址是 `http://localhost:1455/auth/callback`：那台机器上不会有服务在听，浏览器会停在
+ * 「连不上」，而地址栏里已经有 code 与 state。把那一行贴回来就是这一步的人机接口。
+ */
+providerRoutes.post('/oauth/start', async (c) => c.json(await openaiAuthorize()));
+
+/**
+ * 用回调 URL 里的 code 换一对令牌，回给浏览器当 provider_key。
+ *
+ * 令牌走的还是 BYOK 那条老路：经过浏览器、由浏览器在创建上游时交回来一次，服务端立刻封装。
+ * 所以这里不回别的、也不落库——它只是一次「把 code 换成令牌」的翻译。
+ */
+providerRoutes.post('/oauth/exchange', async (c) => {
+  const body = await c.req.json<{ code?: string; verifier?: string }>();
+  const code = (body.code ?? '').trim();
+  const verifier = (body.verifier ?? '').trim();
+  if (!code || !verifier) fail(400, 'oauth_parameters_missing', '需要授权码 code 与本次授权的 verifier');
+
+  let credential;
+  try {
+    credential = await openaiExchange({ code, verifier });
+  } catch (error) {
+    // 换币失败是上游的答案（code 过期、verifier 对不上），原话交回去才好查。
+    fail(502, 'oauth_exchange_failed', (error as Error).message);
+  }
+  return c.json({ provider_key: openaiCredentialText(credential), account_id: credential.account_id });
 });
 
 providerRoutes.post('/', async (c) => {
@@ -78,6 +120,7 @@ providerRoutes.post('/', async (c) => {
 
   // 明文只活在这几行里：封装后立刻丢弃，既不进 D1 也不进日志。
   const providerKey = body.provider_key.trim();
+  const oauth = credentialFor(profile.oauth === true, providerKey);
   const sealedKey = await sealProviderKey({ env: c.env, address, providerId: id, providerKey });
 
   const inserted = await c.env.DB.prepare(
@@ -92,7 +135,7 @@ providerRoutes.post('/', async (c) => {
       address,
       label,
       baseUrl,
-      keyHintOf(providerKey),
+      hintOf(providerKey, oauth),
       sealedKey,
       KDF,
       protocol,
@@ -205,10 +248,11 @@ providerRoutes.patch('/:id', async (c) => {
   if (!hostOf(baseUrl)) fail(400, 'base_url_invalid', 'base_url 必须是绝对 URL');
 
   const nextKey = body.provider_key?.trim() ?? '';
+  const oauth = credentialFor(nextKey !== '' && protocolFor(protocol).oauth === true, nextKey);
   const sealedKey = nextKey
     ? await sealProviderKey({ env: c.env, address, providerId: existing.id, providerKey: nextKey })
     : existing.sealed_key;
-  const keyHint = nextKey ? keyHintOf(nextKey) : existing.key_hint;
+  const keyHint = nextKey ? hintOf(nextKey, oauth) : existing.key_hint;
 
   const outcome = await applyOnce({
     env: c.env,
@@ -246,6 +290,22 @@ providerRoutes.delete('/:id', async (c) => {
   const state = settle(outcome);
   return c.json({ id: c.req.param('id'), revoked: true, ...(state === 'replayed' ? { replayed: true } : {}) });
 });
+
+/**
+ * OAuth 协议的凭据在写入口解析一次：贴错的 JSON、缺 refresh_token、不是 OpenAI 的令牌，
+ * 都在这里变成一句 400，而不是等到第一次调用才以上游 401 出现。别的协议原样放行。
+ */
+function credentialFor(oauth: boolean, providerKey: string): Extract<CredentialParse, { ok: true }> | null {
+  if (!oauth) return null;
+  const parsed = openaiCredentialOf(providerKey);
+  if (!parsed.ok) fail(400, 'provider_key_invalid', parsed.message);
+  return parsed;
+}
+
+/** 展示用提示：OAuth 凭据没有「前后四位」可言，能核对的是工作区 id。 */
+function hintOf(providerKey: string, oauth: Extract<CredentialParse, { ok: true }> | null): string {
+  return oauth === null ? keyHintOf(providerKey) : openaiAccountHint(oauth.credential.account_id);
+}
 
 /**
  * 改一行没改着时，回什么由这一个函数决定：

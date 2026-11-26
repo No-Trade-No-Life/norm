@@ -169,6 +169,10 @@ export const COPY = {
   },
   'pr.field_base_url': { zh: 'base_url', en: 'Base URL' },
   'pr.field_base_url_placeholder': { zh: '例如 https://api.openai.com/v1', en: 'e.g. https://api.openai.com/v1' },
+  'pr.field_base_url_oauth_hint': {
+    zh: '填你自己的那一跳（自建一跳：内部转发到 https://chatgpt.com/backend-api/codex）。它决定这次调用的出口 IP，也绕开 Cloudflare 对 Worker 出站的拦截——直接填官方地址会在边缘被 403。',
+    en: 'Point this at your own hop (it forwards to https://chatgpt.com/backend-api/codex). It decides the egress IP and steps around Cloudflare’s block on Worker egress — the official host answers 403 from the edge.',
+  },
   'pr.field_base_url_hint': {
     zh: '打到哪台主机就填哪个地址；之后只有你能改，转发时只读库里的地址，不读任何请求头。',
     en: 'The endpoint Norm will call. Only you can change it; forwarding always reads the stored address, never a request header.',
@@ -249,6 +253,38 @@ export const COPY = {
   'proto.google-gemini': { zh: 'Google Gemini', en: 'Google Gemini' },
   'proto.deepseek': { zh: 'DeepSeek', en: 'DeepSeek' },
   'proto.opencode-go': { zh: 'OpenCode Go', en: 'OpenCode Go' },
+  'proto.openai-oauth': { zh: 'OpenAI OAuth（ChatGPT 订阅）', en: 'OpenAI OAuth (ChatGPT plan)' },
+
+  'pr.oauth_start': { zh: '连接 ChatGPT', en: 'Connect ChatGPT' },
+  'pr.oauth_starting': { zh: '正在打开授权页…', en: 'Opening the authorization page…' },
+  'pr.oauth_hint': {
+    zh: '登录后浏览器会停在 localhost:1455/auth/callback——那台机器上没有服务，页面打不开，但地址栏里已经有 code。把整行贴到下面即可。',
+    en: 'After signing in, the browser lands on localhost:1455/auth/callback. Nothing listens there, so the page fails — but the address bar already holds the code. Paste the whole line below.',
+  },
+  'pr.oauth_paste_placeholder': {
+    zh: 'http://localhost:1455/auth/callback?code=…&state=…',
+    en: 'http://localhost:1455/auth/callback?code=…&state=…',
+  },
+  'pr.oauth_finish': { zh: '完成连接', en: 'Finish connecting' },
+  'pr.oauth_finishing': { zh: '正在换令牌…', en: 'Exchanging the code…' },
+  'pr.oauth_connected': { zh: '已连接工作区 {account}', en: 'Connected to workspace {account}' },
+  'pr.oauth_need_start': { zh: '先点「连接 ChatGPT」发起一次授权。', en: 'Start an authorization first.' },
+  'pr.oauth_url_invalid': {
+    zh: '这段 URL 里没有 code：贴的是授权后那个页面的地址栏吗？',
+    en: 'This URL carries no code — did you paste the address bar of the page after authorizing?',
+  },
+  'pr.oauth_state_mismatch': {
+    zh: '回调里的 state 与本次授权对不上，重新连接一次。',
+    en: 'The callback state does not match this authorization — start over.',
+  },
+  'pr.oauth_credential_hint': {
+    zh: '凭据是一对 OAuth 令牌（access_token + refresh_token），服务端封装后只剩工作区提示；access_token 过期前会自动换新。',
+    en: 'The credential is an OAuth token pair (access_token + refresh_token). The server seals it and keeps only a workspace hint; the access token is refreshed before it expires.',
+  },
+  'pr.stream_only_hint': {
+    zh: '这条上游只接受流式请求：调用它要带 "stream": true。',
+    en: 'This upstream only streams: call it with "stream": true.',
+  },
   'mod.text': { zh: '文', en: 'txt' },
   'mod.image': { zh: '图', en: 'img' },
   'mod.audio': { zh: '音', en: 'aud' },

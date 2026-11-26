@@ -19,6 +19,8 @@ describe('协议契约（protocol schema）', () => {
       dialect: 'openai-responses',
       base_url: 'https://api.deepseek.com',
       fields: ['provider_key'],
+      oauth: false,
+      stream_only: false,
     });
   });
 
@@ -37,12 +39,58 @@ describe('协议契约（protocol schema）', () => {
       dialect: 'openai-chat',
       base_url: 'https://opencode.ai/inference/go',
       fields: ['provider_key'],
+      oauth: false,
+      stream_only: false,
+    });
+  });
+
+  it('openai-oauth：凭据走 OAuth、上游只认流式，基址是用户填的那一跳（不是官方地址）', () => {
+    expect(schemaOf('openai-oauth')).toEqual({
+      protocol: 'openai-oauth',
+      dialect: 'openai-responses',
+      base_url: null,
+      fields: ['base_url', 'provider_key'],
+      oauth: true,
+      stream_only: true,
     });
   });
 
   it('钉死基址的协议只有 deepseek 与 opencode-go：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
     expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go']);
+  });
+
+  it('「OAuth 凭据」与「只认流式」各只落在 openai-oauth 一条协议上', () => {
+    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.oauth).map((schema) => schema.protocol)).toEqual([
+      'openai-oauth',
+    ]);
+    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.stream_only).map((schema) => schema.protocol)).toEqual([
+      'openai-oauth',
+    ]);
+  });
+});
+
+/**
+ * OpenAI OAuth 的上游契约：地址、路径、方言复用三件事钉在协议层，凭据那一段在
+ * `oauth.ts`（见 tests/oauth.test.ts）。少一条，线上拿到的都是上游一句不好查的 4xx。
+ */
+describe('openai-oauth 协议', () => {
+  it('路径就是 Codex 的 /responses，拼在用户填的那一跳后面', () => {
+    const profile = protocolFor('openai-oauth');
+    expect(profile.path('gpt-5.6-luna')).toBe('/responses');
+    expect(streamPathFor('openai-oauth', 'gpt-5.6-luna')).toBe('/responses');
+    expect(protocolUrlFor('openai-oauth', 'https://hop.example.com/codex/', 'gpt-5.6-luna', true)).toBe(
+      'https://hop.example.com/codex/responses',
+    );
+  });
+
+  it('复用 Responses 方言：请求体与清单读法都借那一份，翻译代码增量是 0', () => {
+    const profile = protocolFor('openai-oauth');
+    expect(profile.dialect).toBe('openai-responses');
+    const codec = dialectCodecFor(profile.dialect);
+    expect(
+      codec.encodeRequest({ model: 'm', messages: [{ role: 'user', content: 'hi' }], stream: true }, 'm'),
+    ).toMatchObject({ model: 'm', stream: true, input: [{ role: 'user', content: 'hi' }] });
   });
 });
 

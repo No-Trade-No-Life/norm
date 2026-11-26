@@ -16,7 +16,7 @@ import type { Env } from './env';
 import { nowSeconds } from './ids';
 import { ratesFor, type Rates } from './pricing';
 import { protocolFor, tariffFor, type Protocol } from './protocols';
-import { unsealProviderKey } from './seal';
+import { providerCredential } from './credentials';
 import { recordProviderModels } from './store';
 
 export type ModelProbe =
@@ -60,14 +60,10 @@ export async function probeProviderModels({
 }): Promise<ModelProbe> {
   let upstreamKey: string;
   try {
-    upstreamKey = await unsealProviderKey({
-      env,
-      address,
-      providerId: provider.id,
-      sealed: provider.sealed_key,
-    });
+    // 解封 +（OAuth 协议的）换新都在这里：清单端点与转发面用的是同一把新鲜凭据。
+    upstreamKey = await providerCredential({ env, address, provider });
   } catch (error) {
-    return { ok: false, kind: 'local', message: `上游密钥解不开：${(error as Error).message}` };
+    return { ok: false, kind: 'local', message: `上游凭据用不了：${(error as Error).message}` };
   }
 
   const profile = protocolFor(provider.protocol);

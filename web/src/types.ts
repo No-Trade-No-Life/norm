@@ -363,6 +363,10 @@ export type ProtocolSchema = {
   base_url: string | null;
   /** 要填的字段，按表单顺序。 */
   fields: Array<'base_url' | 'provider_key'>;
+  /** 凭据是一对 OAuth 令牌：这里渲染「连接」这一步，而不是一个密钥输入框。 */
+  oauth: boolean;
+  /** 上游只接受流式请求，非流式调用会被服务端挡住。 */
+  stream_only: boolean;
 };
 
 /** 管理面看到的模型：一行一个模型名，providers 是提供它的上游提供商 id。 */
