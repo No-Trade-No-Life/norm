@@ -1,7 +1,8 @@
 /**
  * 端到端验证：起一个会说四种协议的假上游提供商，用真实 Ed25519 身份打真实 Worker（wrangler dev）。
  *
- * 覆盖：开户、签名验签、nonce 重放、body 篡改、上游提供商密钥的封装与解封、协议不匹配、
+ * 覆盖：开户、签名验签、重放矩阵（读放行 / 创建只一行 / 修改不二次生效 / rotate 409 /
+ * 时间窗外 401）、body 篡改、上游提供商密钥的封装与解封、协议不匹配、
  * 四种上游提供商协议（含流式）的请求翻译与响应翻译、扣费与账本一致、base_url 聚合、
  * 上游提供商的启用/禁用（不参与选址、不能被指名、公开看板不计入）、
  * 下游消费者密钥（只显一次、可轮换、旧钥立刻失效）。
@@ -33,9 +34,13 @@ function identity(seedHex = null) {
   return { seed, address: base58.encode(ed25519.getPublicKey(seed)) };
 }
 
-function sign(who, method, path, body) {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = base58.encode(crypto.getRandomValues(new Uint8Array(16)));
+/**
+ * 一份签名。默认每次都是新的 nonce 与当前时间戳；`options` 可以钉住其中一个：
+ * 重放矩阵要的正是「同一份签名打两次」，以及「一小时前签的那一份」。
+ */
+function sign(who, method, path, body, options = {}) {
+  const timestamp = String(options.at ?? Math.floor(Date.now() / 1000));
+  const nonce = options.nonce ?? base58.encode(crypto.getRandomValues(new Uint8Array(16)));
   const bodyBytes = enc.encode(body ?? '');
   const message = enc.encode(`norm-v1\n${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${hex(sha256(bodyBytes))}`);
   return {
@@ -448,6 +453,14 @@ async function createConsumer(who, name) {
   return call(who, 'POST', '/api/v1/consumers', JSON.stringify({ name }));
 }
 
+/**
+ * 用**同一份**签名再发一次——连 nonce 都不换。重放矩阵要的就是这个：
+ * 服务端必须按幂等键认出「这是同一次意图」，而不是当成第二次操作。
+ */
+async function resend(signature, method, path, body) {
+  return raw(method, path, body, signature);
+}
+
 /** 不带签名的一次请求：Bearer 消费者密钥走的是这条入口。 */
 async function raw(method, path, body, headers = {}) {
   const response = await fetch(`${BASE}${path}`, {
@@ -495,9 +508,10 @@ console.log('2. 身份与完整性');
   const path = '/api/v1/account/me';
   const headers = sign(alice, 'GET', path);
   check('首次 200', (await fetch(`${BASE}${path}`, { headers })).status === 200);
+  // 读重放不是重放攻击：时间窗只管「这个签名新不新鲜」，读既不查也不写任何去重状态。
+  // 完整矩阵见 2b。
   const replay = await fetch(`${BASE}${path}`, { headers });
-  check('重放 401', replay.status === 401, replay.status);
-  check('重放原因是 nonce_replayed', (await replay.json()).error === 'nonce_replayed');
+  check('读重放仍然 200', replay.status === 200, replay.status);
 
   // 签名的绑定对象是 body：管理面上换掉 body，验签必然失败。
   const bodyPath = '/api/v1/consumers';
@@ -521,6 +535,139 @@ console.log('2. 身份与完整性');
 
 // 转发面要用的那把钥匙：从此处起，所有 /v1/* 的调用都只带它。
 aliceKey = (await createConsumer(alice, 'alice e2e bot')).json.key;
+
+/** 上游真正收到的清单请求数：用来证明「重放没有再触发一次后台刷新」。 */
+const probeCount = () => seen.filter((row) => row.path.endsWith('/models')).length;
+
+/** 等后台探测落定：连续两次读到同一个数就算稳（探测是 waitUntil 里跑的，比响应慢一拍）。 */
+async function probeSettled() {
+  let last = probeCount();
+  for (let i = 0; i < 80; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const current = probeCount();
+    if (current === last) return current;
+    last = current;
+  }
+  return last;
+}
+
+console.log('2b. 重放矩阵：窗口只管新鲜度，一次性由幂等键保证');
+{
+  // ── 开户：行内幂等（主键就是地址，授信用 voucher_nanos = 0 兜住），不需要幂等键 ──
+  const newcomer = identity();
+  const loginPath = '/api/v1/auth/login';
+  const loginSignature = sign(newcomer, 'POST', loginPath);
+  const firstLogin = await resend(loginSignature, 'POST', loginPath);
+  const secondLogin = await resend(loginSignature, 'POST', loginPath);
+  check('登录首次 200 且 created=true', firstLogin.status === 200 && firstLogin.json.created === true, firstLogin.json);
+  check('登录重放 200 且 created=false', secondLogin.status === 200 && secondLogin.json.created === false, secondLogin.json);
+  check(
+    '登录重放不会再发一张券',
+    secondLogin.json.balance_nanos === 1_000_000_000 && secondLogin.json.voucher_nanos === 1_000_000_000,
+    secondLogin.json,
+  );
+
+  // ── 读：重放直接放行，一行都不写 ───────────────────────────────────────
+  const readPath = '/api/v1/account/me';
+  const readSignature = sign(alice, 'GET', readPath);
+  const firstRead = await fetch(`${BASE}${readPath}`, { headers: readSignature });
+  const secondRead = await fetch(`${BASE}${readPath}`, { headers: readSignature });
+  check('GET 首次 200', firstRead.status === 200, firstRead.status);
+  check('GET 同一份签名再打一次仍是 200', secondRead.status === 200, secondRead.status);
+
+  // ── 时间窗：超出 60 秒一律 401，与 nonce 无关 ───────────────────────────
+  const staleAt = Math.floor(Date.now() / 1000) - 3600;
+  const stale = await fetch(`${BASE}${readPath}`, { headers: sign(alice, 'GET', readPath, undefined, { at: staleAt }) });
+  const staleBody = await stale.json();
+  check('时间窗外的签名 401', stale.status === 401, stale.status);
+  check('原因是 timestamp_out_of_window', staleBody.error === 'timestamp_out_of_window', staleBody);
+  const future = await fetch(`${BASE}${readPath}`, {
+    headers: sign(alice, 'GET', readPath, undefined, { at: Math.floor(Date.now() / 1000) + 3600 }),
+  });
+  check('未来一小时的时间戳也 401（窗口是双向的）', future.status === 401, future.status);
+
+  // ── 创建：同一份签名打两次 → 库里只有一行 ──────────────────────────────
+  // base_url 与后面的夹具分开，免得把「同一 base_url 有几条」那几节的计数带上。
+  const createPath = '/api/v1/providers';
+  const createBody = JSON.stringify({
+    label: 'idempotent provider',
+    base_url: `${BASE_URL}/idem`,
+    provider_key: KEY,
+    protocol: 'openai-chat',
+  });
+  const createSignature = sign(alice, 'POST', createPath, createBody);
+  const created = await resend(createSignature, 'POST', createPath, createBody);
+  check('创建首次 201', created.status === 201 && typeof created.json.id === 'string', created.json);
+  const createdId = created.json.id;
+
+  const createReplay = await resend(createSignature, 'POST', createPath, createBody);
+  check('创建重放 200', createReplay.status === 200, createReplay.status);
+  check('创建重放标着 replayed', createReplay.json.replayed === true, createReplay.json);
+  check('创建重放回同一个 id', createReplay.json.id === createdId, createReplay.json.id);
+  const listed = (await call(alice, 'GET', '/api/v1/providers')).json.items.filter((item) => item.id === createdId);
+  check('库里只有一行（同一把幂等键造不出第二条）', listed.length === 1, listed.length);
+
+  // ── 修改：重放不产生第二次副作用（第二次不许再抓一次模型清单）──────────
+  await probeSettled();
+  const probesBefore = probeCount();
+  const patchPath = `/api/v1/providers/${createdId}`;
+  const patchBody = JSON.stringify({ label: 'idempotent provider renamed' });
+  const patchSignature = sign(alice, 'PATCH', patchPath, patchBody);
+  const patched = await resend(patchSignature, 'PATCH', patchPath, patchBody);
+  check('修改首次 200', patched.status === 200 && patched.json.replayed === undefined, patched.json);
+  check('修改生效', (await call(alice, 'GET', '/api/v1/providers')).json.items.some((item) => item.id === createdId && item.label === 'idempotent provider renamed'));
+
+  let probes = probesBefore;
+  for (let i = 0; i < 80 && probes === probesBefore; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    probes = probeCount();
+  }
+  check('修改第一次顺手刷新了一次清单', probes === probesBefore + 1, { probesBefore, probes });
+
+  const patchReplay = await resend(patchSignature, 'PATCH', patchPath, patchBody);
+  check('修改重放 200 + replayed', patchReplay.status === 200 && patchReplay.json.replayed === true, patchReplay.json);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  check('修改重放没有再刷新清单（没有第二次副作用）', probeCount() === probes, { probes, after: probeCount() });
+
+  // ── 建钥：重放不造第二行，也不交出第二把明文 ────────────────────────────
+  const consumerPath = '/api/v1/consumers';
+  const consumerBody = JSON.stringify({ name: 'idempotent bot' });
+  const consumerSignature = sign(alice, 'POST', consumerPath, consumerBody);
+  const minted = await resend(consumerSignature, 'POST', consumerPath, consumerBody);
+  check('建钥首次 201 并给明文', minted.status === 201 && typeof minted.json.key === 'string', minted.json);
+  const mintedReplay = await resend(consumerSignature, 'POST', consumerPath, consumerBody);
+  check('建钥重放 200 + replayed', mintedReplay.status === 200 && mintedReplay.json.replayed === true, mintedReplay.json);
+  check('建钥重放不再交出明文（新生成的那把根本没入库）', mintedReplay.json.key === undefined, mintedReplay.json);
+  const mintedRows = (await call(alice, 'GET', '/api/v1/consumers')).json.items.filter((item) => item.id === minted.json.id);
+  check('建钥重放没有第二行', mintedRows.length === 1, mintedRows.length);
+
+  // ── 轮换：第二次必须 409，且绝不再签发第二把 ────────────────────────────
+  const rotatePath = `/api/v1/consumers/${minted.json.id}/rotate`;
+  const rotateSignature = sign(alice, 'POST', rotatePath);
+  const rotated = await resend(rotateSignature, 'POST', rotatePath);
+  check('轮换首次 200 并给新明文', rotated.status === 200 && typeof rotated.json.key === 'string', rotated.json);
+  const rotateReplay = await resend(rotateSignature, 'POST', rotatePath);
+  check('轮换重放 409', rotateReplay.status === 409, rotateReplay.status);
+  check('轮换重放的原因是 nonce_replayed', rotateReplay.json.error === 'nonce_replayed', rotateReplay.json);
+  check('轮换重放不签发第二把密钥', rotateReplay.json.key === undefined, rotateReplay.json);
+  const rotatedRow = (await call(alice, 'GET', '/api/v1/consumers')).json.items.find((item) => item.id === minted.json.id);
+  check('库里仍是第一次轮换换上的那一把', rotatedRow?.key_hint === rotated.json.key_hint, {
+    live: rotatedRow?.key_hint,
+    first: rotated.json.key_hint,
+  });
+
+  // ── 撤销：重放仍是 200，而不是「已经不存在了」的 404 ─────────────────────
+  const deletePath = `/api/v1/providers/${createdId}`;
+  const deleteSignature = sign(alice, 'DELETE', deletePath);
+  const deleted = await resend(deleteSignature, 'DELETE', deletePath);
+  check('撤销首次 200', deleted.status === 200 && deleted.json.revoked === true, deleted.json);
+  const deleteReplay = await resend(deleteSignature, 'DELETE', deletePath);
+  check('撤销重放 200 而不是 404', deleteReplay.status === 200, deleteReplay.status);
+  check('撤销重放标着 replayed', deleteReplay.json.replayed === true, deleteReplay.json);
+
+  // 这一节的消费者密钥不属于后面任何一节：撤掉，列表回到干净状态。
+  await call(alice, 'DELETE', `/api/v1/consumers/${minted.json.id}`);
+}
 
 console.log('3. 上游提供商：明文密钥交给服务端封装，协议可配置');
 const providers = {};

@@ -41,7 +41,8 @@ export function signingMessage({
 }
 
 function randomNonce(): string {
-  // 16 字节随机 → base58，约 22 字符。nonce 一经落库即作废。
+  // 16 字节随机 → base58，约 22 字符。它不是一个「一次性票据」，而是这次请求的幂等键：
+  // 服务端拿它判「这次改动做过没有」（见 docs/crypto.md 2.1）。重试请复用同一把。
   return base58.encode(crypto.getRandomValues(new Uint8Array(16)));
 }
 

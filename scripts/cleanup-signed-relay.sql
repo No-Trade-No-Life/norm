@@ -25,6 +25,3 @@ UPDATE principals SET
   granted_nanos = (SELECT COALESCE(SUM(l.amount_nanos), 0) FROM ledger l WHERE l.address = principals.address AND l.kind = 'grant'),
   spend_nanos   = (SELECT COALESCE(-SUM(l.amount_nanos), 0) FROM ledger l WHERE l.address = principals.address AND l.kind = 'charge');
 
--- 4. 顺手收掉签名 nonce 的存量：重放防护只需要覆盖时间窗（±120s），
---    一小时以前的 nonce 不会再被任何合法请求用到。
-DELETE FROM nonces WHERE seen_at < CAST(strftime('%s', 'now') AS INTEGER) - 3600;

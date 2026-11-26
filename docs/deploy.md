@@ -71,10 +71,13 @@ node scripts/smoke-prod.mjs   # 线上：真签名打真域名，覆盖上游提
 
 ```bash
 ADDR=<TEST_ADDRESS>
-for t in consumers requests ledger providers nonces principals; do
+for t in consumers requests ledger providers principals; do
   pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
     --command "DELETE FROM $t WHERE address='$ADDR'"
 done
+# provider_models 没有外键，按这张账户名下的 provider 删：
+pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
+  --command "DELETE FROM provider_models WHERE provider_id IN (SELECT id FROM providers WHERE address='$ADDR')"
 ```
 
 ## 配置项（`wrangler.jsonc` 的 `vars`）
@@ -83,7 +86,7 @@ done
 |---|---|---|
 | `GAS_FEE_NANOS` | `300` | 每一次真的打出去的调用的 Gas 费（纳美元），成功失败都收 |
 | `GRANT_NANOS` | `1000000` | 新地址的演示授信（纳美元，即 $1） |
-| `SIGNATURE_WINDOW_SECONDS` | `120` | 签名时间窗 |
+| `SIGNATURE_WINDOW_SECONDS` | `60` | 签名时间窗：只管新鲜度（一次性由请求自带的幂等键保证，见 `docs/crypto.md` 2.1） |
 | `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |
 | `NORM_MASTER_KEY` | 无默认 | **Worker secret**，AES-256-GCM 封装上游提供商密钥用的 32 字节密钥 |
 
