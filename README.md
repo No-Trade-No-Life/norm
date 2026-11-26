@@ -4,212 +4,180 @@
 
 **无站的中转站。** 一份公开可复现的转发规则，而不是一台你租给我的机器。
 
-`https://norm.ntnl.io`
+https://norm.ntnl.io
 
 </div>
 
 ## 这是什么
 
-Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker + 一个 D1。它不持有任何上游提供商密钥，
-不签发会话，不存请求内容。用户用自己的上游提供商密钥（BYOK）调用，身份是自己持有的 Ed25519 密钥，
-每一条被隔离执行的请求都单独计费，每一个上游提供商的来源都公开可核验。
+Norm 是一个 **Serverless 的 AI 中转站**：一个 Cloudflare Worker（Hono + 同源 SPA）加一个 D1。
+仓库里不放任何上游提供商密钥，服务端不签发会话，不留存请求体与响应体。管理身份是浏览器本地持有的
+Ed25519 密钥，消费凭据是独立的 `sk-norm-…` Token，每一条被隔离执行的请求都单独记账，每一个上游的
+`base_url` 与构建哈希都公开可核验。
 
-「中转站可信」在 Norm 里不是一个承诺，而是一个**可以自己跑一遍的构建**。
+「中转站可信」在 Norm 里不是一句承诺，而是一个**可以自己跑一遍的构建**。
+
+```mermaid
+flowchart LR
+  User["人 / 浏览器<br/>Ed25519 逐请求签名"] -->|"/api/v1/*"| Admin
+  SDK["程序 / SDK / CLI<br/>sk-norm-… Token"] -->|"/v1/*"| Relay
+  subgraph Worker["Cloudflare Worker（单源部署）"]
+    direction TB
+    Admin["管理面：账户 / 上游 / Token / 模型总表"]
+    Relay["转发面：模型筛 · 自有优先/池子兜底 · 会话亲和<br/>4×6 协议桥 · 跨方言工具调用 · 纳美元记账"]
+  end
+  Admin --> D1[("Cloudflare D1<br/>密文密钥 · 记账字段 · 模型清单")]
+  Relay --> D1
+  Relay -->|"AES-256-GCM 现解现用<br/>不留请求/响应内容"| Upstream["上游提供商<br/>OpenAI · Anthropic · Gemini · DeepSeek · OpenCode Go"]
+```
 
 ## 五条硬承诺
 
 | 承诺 | 落地方式 |
 |---|---|
-| **Serverless，单一部署** | 一个 Worker（Hono）+ 一个 D1 + 同源静态资源。没有运维机器、没有后台进程 |
-| **BYOK** | 上游提供商密钥只在请求头里经过。库里只有客户端加密后的密文，服务端读不懂 |
-| **身份与消费分开** | 身份 = Ed25519 公钥（管资源，私钥永不离开浏览器，无注册无密码无 cookie；密钥是 64 字节拓展形式 `seed‖publicKey`，与 Solana 密钥种子同形）；消费 = `sk-norm-…` Token（只记名字，不绑上游提供商），一条 Bearer 就够 |
-| **ZDR + 可信发布** | 不留请求体、响应体、上游提供商密钥；构建哈希公开，任何人可 `pnpm build` 复算 |
-| **上游提供商来源可核验** | 每个上游提供商必须声明来源，平台自动核验并**公开**，掺水立刻可见 |
-
-完整规格见 [`docs/spec.md`](docs/spec.md)，接口见 [`docs/api.md`](docs/api.md)，
-密码学契约见 [`docs/crypto.md`](docs/crypto.md)，路线图见 [`docs/roadmap.md`](docs/roadmap.md)。
+| **Serverless，单一部署** | 一个 Cloudflare Worker（Hono）+ 一个 D1 + 同源静态资源。没有运维机器、没有后台进程 |
+| **用户 BYOK** | 上游密钥仅在创建/更换时经请求体传一次，服务端以 Worker secret（`NORM_MASTER_KEY`）做 AES-256-GCM 封装入 D1（AAD 绑 `address\|providerId`），转发时现解现用，不落明文、不写日志 |
+| **身份与消费分开** | 身份 = Ed25519 公钥（管资源，64 字节拓展形式 `seed‖publicKey`，与 Solana 密钥同形，私钥永不离开浏览器，无注册无密码无 cookie）；消费 = `sk-norm-…` Token（只记名字、不绑上游），一条 api key 就够 |
+| **ZDR + 可信发布** | 不留请求体、响应体与明文密钥，只存记账所需的最小字段；构建产物 SHA-256 公开在 `/api/v1/attestation`，任何人可 `pnpm build && pnpm attest` 复算 |
+| **上游来源公开可核验** | 后端只存事实：`base_url` 钉死在库里、转发时不可被请求头改写；按 `TRUSTED_BASE_URLS` 精确主机名清单标注 `trusted`，聚合视图公开在 `GET /api/v1/base-urls` |
 
 ## 用起来
 
-打开 <https://norm.ntnl.io>，浏览器会为你生成一把 Ed25519 密钥——**地址就是你的账号**，第一次签名即开户，
-自动获得一笔演示授信。然后到「上游提供商」页加一把上游提供商密钥（服务端用 Worker secret 封装），
-回到 Playground 发一次请求，底部会显示这次调用的扣费、余额、延迟与来源核验结论。
+打开 https://norm.ntnl.io，浏览器会为你生成一把 Ed25519 密钥——**地址就是你的账号**，第一次签名即开户，
+自动获得 $1.00 演示授信。到「上游提供商」页选择协议并添加密钥（服务端用 Worker secret 封装），
+回到 Playground 发一次请求，底部会显示这次调用的请求 ID、扣费、余额、延迟、实际命中的上游主机与是否落入公共池。
 
 ### 两种身份，各管一段
 
-| | 用来 | 凭据 |
-|---|---|---|
-| **身份** | 管理自己的资源：账户、上游提供商、下游 Token | Ed25519 逐请求签名（私钥在浏览器里） |
-| **Token** | 真正消费：调用模型 | `sk-norm-…`，只记一个名字 |
+| | 用来 | 凭据 | 入口前缀 |
+|---|---|---|---|
+| **身份** | 管理自己的资源：账户、上游提供商、下游 Token | Ed25519 逐请求签名（私钥在浏览器） | `/api/v1/*` |
+| **Token** | 真正消费：调用模型、拉取模型清单 | `sk-norm-…`（库里只存 SHA-256） | `/v1/*` |
 
-**推理接口只认 Token。** `/v1/*` 上没有签名入口——签名能管资源，不能花钱；一笔消费必须落回
-一条具体的钥匙，账本才回答得了「这段代码是谁在跑」。所以程序侧不需要懂签名、也不需要懂 Norm 的任何专有头：
-账户里只有一条上游提供商时，**一个 api key 就是一次完整调用**。
+**两侧互不越界：推理接口只认 Token，管理接口只认签名。** `/v1/*` 上没有签名入口——签名能管资源，不能花钱；
+每一笔消费必须落回一条具体的钥匙，账本才能回答「这段代码是谁在跑」。因此程序侧不需要懂签名，也不需要任何 Norm 专有头：
+**一条 api key 就是完整调用**。
 
 ```bash
-# 在「下游消费者」页起个名字建一条 Token，之后当普通 OpenAI key 用
+# 1) OpenAI SDK / Codex CLI / curl（Authorization: Bearer）
 curl https://norm.ntnl.io/v1/chat/completions \
   -H "Authorization: Bearer sk-norm-…" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
+
+# 2) Anthropic SDK / Claude Code（x-api-key）
+#    在 Claude Code 中设置：ANTHROPIC_BASE_URL=https://norm.ntnl.io  ANTHROPIC_API_KEY=sk-norm-…
+curl https://norm.ntnl.io/v1/messages \
+  -H "x-api-key: sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-20250514","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
+
+# 3) Google Gemini SDK（x-goog-api-key）
+curl "https://norm.ntnl.io/v1/models/gemini-2.0-flash:generateContent" \
+  -H "x-goog-api-key: sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}'
 ```
 
-`x-api-key`（Anthropic SDK / Claude Code）与 `x-goog-api-key`（Google SDK）同样认——各家 SDK 发什么就用什么。
-换上游不用改程序、也不用换 Token，更没有任何 Norm 专有的头：走哪条上游由服务端挑——**自己的上游优先，
-公共池兜底**，同一个 `thread-id` / `session-id` 粘在同一条上。
+换上游不用改程序、也不用换 Token：走哪条上游由服务端按规则自动挑。
 
-## Gas 费与定价原则
+## 协议矩阵与路由
 
-这一节只写**单价与用量结构**，不写任何一次真实账单。表里每个 Cloudflare 侧的数字都是**列表价**——
-谁都能去 [Workers 定价](https://developers.cloudflare.com/workers/platform/pricing/) 与
-[Observability 定价](https://developers.cloudflare.com/observability/pricing/) 逐项核对，
-再按下面的表把「一次推理请求」自己算一遍。
+### 4×6 全连接，对角线直通，支持跨方言工具调用
 
-钱的单位一律是**纳美元**（nanodollar，$0.000000001，即十亿分之一美元）：一笔云端成本只有几纳
-到几千纳美元，换成「分」会四舍五入成 0。换算是十进制：1,000 纳 = $0.000001，
-1,000,000 纳 = $0.001。
+四条入口方言 × 六种上游提供商协议，共 **24 格全通**：
 
-### 一次推理请求在 Cloudflare 侧花掉什么
+| 入口方言 | 常见客户端 | `openai-chat` / `opencode-go` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
+|---|---|---|---|---|---|
+| `POST /v1/chat/completions` | OpenAI SDK / curl | **直通** | 转换 | 转换 | 转换 |
+| `POST /v1/responses` | Codex CLI | 转换 | **直通** | 转换 | 转换 |
+| `POST /v1/messages` | Anthropic SDK / Claude Code | 转换 | 转换 | **直通** | 转换 |
+| `POST /v1/models/{model}:generateContent` | Google SDK | 转换 | 转换 | 转换 | **直通** |
 
-`GAS_FEE_NANOS = 300`，即 $0.0000003。它正好等于 Workers Paid 的调用单价
-（$0.30 / 百万次 = 300 纳 / 次）——但一次请求不止一次调用。
+- **6 格同方言直通**：请求体按原始字节发出、响应体原样回来，不碰扩展字段（仅对 chat 流式补 `stream_options.include_usage` 以便记账，且客户端没要时自动吃掉多余用量帧）。
+- **18 格跨方言转换**：经由规范形式桥接，**完整支持流式与跨方言 Tool Calling**（`tools` / `tool_choice` / `tool_calls` / 工具结果双向互译）。
+- **厂商协议内置契约**：`deepseek` 固定官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 固定推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存。
+- **统一模型清单**：`GET /v1/models` 将六种上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
 
-| 项 | 用量 | 列表价 | 纳美元 |
-|---|---|---:|---:|
-| Worker 调用 | 1 次 | $0.30 / 百万次 | 300 |
-| CPU | 3.5–10 ms | $0.02 / 百万 CPU-ms | 70–200 |
-| D1 行写 | **4 行** | $1.00 / 百万行 | 4,000 |
-| D1 行读 | 20–30 行 | $0.001 / 百万行 | ≈ 0 |
-| **小计（不含日志）** | | | **≈ 4,400（$0.0000044）** |
+### 服务端选址规则
 
-这 4 行写是：`UPDATE principals` 1 行（账户累计消费加一笔）+ `INSERT requests` 3 行。后者最
-反直觉——**D1 按行计费，而每一条二级索引也各算一行**：一条请求记录 = 表行 1 + 主键索引 1 +
-`requests_address_id` 1。索引不是免费的附赠品，它是行写的倍数。
+1. **按模型先筛**：依据 `provider_models` 排除已拉过清单但明确不含该模型的上游（未拉过清单的保留），筛空则直接返回 `404 model_not_served`；若上游仍回 400/404 称无该模型，则自动删掉错误快照、清亲和并换候选重试一次。
+2. **自有优先，公共池兜底**：自己名下有可用上游时只用自己的；没有时自动落到站点公共池（响应 `norm.pool: true` 明示）。
+3. **会话亲和**：带 `thread-id` 或 `session-id` 时在候选未变期间钉在同一条上游上（保护提示词缓存）；不带时按 rendezvous 稳定摊开。
 
-### Workers Logs：一行不能假设它落在额度内
+## 安全模型与可信验证
 
-日志是这张表里唯一**没有实测值**的一项：GraphQL 的 `logExplorerIngestionAdaptiveGroups` 近 8 天
-读不到任何摄取量，我们没有可用的计量。所以这一行只能按「官方计价规则 × 每事件体积假设」推算，
-**它是模型值，不是实测值**——也正因如此，不能把它当成「反正包含在套餐里」。
+Norm 选择把**防什么、不防什么**摆在台面上：
 
-`wrangler.jsonc` 现在只有 `observability: { enabled: true }`：100% 采样、每次调用一条
-invocation log。按「1 次调用 = 1 个事件、单事件 4.84 KB」建模（4.84 KB 是 Cloudflare 自己公布的
-平均事件体积）：
+- **防什么**：拖库（D1 只有 AES-256-GCM 密文与 Token SHA-256）、会话劫持（无密码无 Cookie）、管理面重放（60 秒时间窗 + 请求自带幂等键）、暗中篡改转发目的地（`base_url` 钉死在库中，忽略任何覆盖头）、静默修改线上逻辑（构建哈希公开）。
+- **不防什么**：中转转发在运行期必然看到明文密钥与明文内容，因此拿走 `NORM_MASTER_KEY` 且拿走 D1 即可解封密钥；Cloudflare Workers 托管运行时本身也不在自证范围内；`trusted` 是精确主机名清单而非官方身份的密码学证明。
 
-| 口径 | 规则 | 纳美元 / 事件 |
-|---|---|---:|
-| 现在（至 2026-11-30） | 20M 事件/月含在 Workers Paid，超额 $0.60/百万事件 | **600** |
-| 2026-12-01 起 | 50 GB 摄取 + 10 GB-月存储内含，超额 $0.25/GB 摄取 + $0.10/GB-月存储 | **≈ 1,320** |
+**自己复算线上运行的代码字节：**
 
-1,320 是两笔：摄取 4.84 KB ≈ **1,210 纳**，7 天保留带来的存储 4.84 KB × $0.10/GB-月 × 7/30 ≈
-**113 纳**。同一天同样的量，12-01 之后比之前贵约 **2.2 倍**（1,320 ÷ 600）——12-01 起按体积计费，
-体积比条数更难糊弄。
+```bash
+git clone https://github.com/No-Trade-No-Life/norm && cd norm
+pnpm install && pnpm build && pnpm attest
+# 将输出的 source_sha256 / assets_sha256 与 https://norm.ntnl.io/api/v1/attestation 逐字对照
+```
 
-体积假设的敏感性（只算摄取）：**1 KB → 250 纳，4.84 KB → 1,210 纳，10 KB → 2,500 纳**。
-一条带完整请求元数据或堆栈的日志很容易超过 4.84 KB，那时这一行会比 D1 行写还贵。
+## 计费与定价原则
 
-**日志额度也是账号级共享的，不是 norm 一家的**：同一个 Cloudflare 账号下还有别的 Worker 开着
-`observability`，日志额度被几个产品一起吃掉，所以它可能先于请求额度见底。而在日志这两份额度里，
-**存储先见底**：10 GB-月 ≈ 43 GB 摄取 ≈ **890 万事件**，早于 50 GB 的摄取额度（≈ **1,030 万事件**）。
+- **纳美元整数记账**：单位一律是纳美元（1e-9 USD，不用浮点），避免极便宜调用被四舍五入为 0。
+- **按 Token + 固定 Gas**：`input_tokens`（含缓存命中）/ `cached_tokens` / `output_tokens` 三项分开计价（价目表写在 `src/pricing.ts`，公开在 `GET /api/v1/pricing`），外加每笔固定 **300 纳美元**（$0.0000003，即 Workers Paid 单次调用列表价）的 Gas 费。每条记录都满足 `fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos`，余额永不为负。
+- **失败收 Gas，不收 Token**：只要请求打到上游，Worker 与 D1 成本就已发生，上游 4xx/5xx 或超时照收 Gas（通过响应头 `X-Norm-Gas-Fee-Nanos` 标明），token 费为 0；未打到上游的校验失败（非 JSON、余额不足、无可用上游）不记账也不扣费。
+- **诚实算清真实成本**：300 纳 Gas 只覆盖单次 Worker 调用；一旦越过 Cloudflare Paid $5/月包含额度，加上 D1 行写与 Workers Logs，一次推理的真实边际成本约为 **6,000–6,800 纳美元**（Gas 的 20–23 倍）。
 
-两个旋钮都在 `wrangler.jsonc` 里，可以随时拧：`head_sampling_rate`（例如 `0.1` = 十取一）与
-`logs.invocation_logs: false`（只留 `console` 输出，日志成本与请求量脱钩）。具体取值随流量定，
-**现在两个都还没拧**；拧了会同步更新本节。
+> 原则上 Norm 只赚取合理的毛利率，会在技术手段上最小化用户的使用成本，但绝对不会做贴钱留用户的不可持续的事情。
 
-### 两条合计
+1. **只赚合理毛利**：定价与成本关系透明公开，价目与 Gas 写在代码里，改价即一次可审查的提交。
+2. **用工程降本，不靠涨价了事**：索引预算、去重免写库、日志采样都是定价的一部分（例如已落地 #49 去重免写库与 #50 砍掉 `requests` 4 条冗余索引）。
+3. **不贴钱留客**：额度内边际成本 ≈ 0；越过额度后通过架构降本或透明调价维持可持续，不靠烧钱换量。
 
-- **2026-11-30 前**：300 + 70–200 + 4,000 + ≈0 + 600 ≈ **5,000 纳 / 请求**（$0.0000050）
-- **2026-12-01 起**：300 + 70–200 + 4,000 + ≈0 + 1,320 ≈ **5,800 纳 / 请求**（$0.0000058）
-
-所以 Gas 卖出的是 Worker 调用那一项，不是整条链路的摊平：**过了包含额度之后，一次请求的真实
-边际成本是 Gas 的约 17–19 倍（5,000–5,800 ÷ 300）**，其中大头仍是 D1 行写（七到八成）。
-
-### 额度：额度内边际为 0，越线之后才按上表计费
-
-Workers Paid 是 $5/月，额度**账号级共享**（同一账号下所有 Worker 一起吃）：1000 万请求 /
-3000 万 CPU-ms / 5000 万 D1 行写 / 5 GB；超出部分 $0.30/百万次、$0.02/百万 CPU-ms、
-$1.00/百万行、$0.75/GB-月——正是上表那组价。日志那份额度同样账号级共享。
-
-- **额度内**：每多一次请求的边际成本 ≈ 0，Gas 摊的是那个 $5 底座（按量摊：$5 ÷ 当月请求数）。
-- **额度外**：每次推理 ≈ 5,000–5,800 纳。
-- **见底顺序**：**CPU 最先**（3000 万 CPU-ms ÷ 3.46 ms ≈ 870 万次调用），然后是日志存储
-  （≈ 43 GB 摄取 ≈ 890 万事件）、请求（1000 万次）、日志摄取（50 GB ≈ 1,030 万事件），
-  最后是 D1 行写（5000 万 ÷ 4 ≈ 1250 万次推理）。
-
-### 已经做过的两笔降本
-
-原则如果是口号，成本就会自己长回来。实际动过的是这两次：
-
-- **#49 签名鉴权不再写库。** 重放防护从一张 `nonces` 表改成「时间窗 + 请求自带幂等键落在被改的
-  那一行」，读请求的写入从 2 行降到 **0**，`nonces` 表也已删除。
-- **#50 `requests` 砍掉 4 条冗余索引。** `id` 是 UUID v7（前 48 位是毫秒时间戳，字典序即时间序），
-  `(address, id DESC)` 一条已同时承担时间序与 keyset 分页，于是每条记录 **7 行写降到 3 行**；
-  `/stats` 的全表扫描改成 `SUM(spend_nanos)` + 边缘缓存。
-
-下一步（可选）：把逐请求审计明细搬到 Workers Analytics Engine（写入 250 纳/点），D1 只留余额那
-1 行，边际成本可降到 ≈ 1,700 纳。
-
-### 定价原则
-
-> 原则上 Norm 只赚取合理的毛利率，会在技术手段上最小化用户的使用成本，但是绝对不会做贴钱留用户的不可持续的事情。
-
-落实到三条可检验的：
-
-1. **只赚合理毛利。** 定价要满足 `gas ≥ 边际资源成本 × (1 + 毛利率)`：边际成本高，gas 就跟着高，
-   差额不会藏到别的地方。现在两边的关系是摆明的——额度内边际成本 ≈ 0，300 纳是纯毛利；
-   额度外边际成本 ≈ 5,000–5,800 纳，gas 那时必须动（见第 3 条）。gas 与 token 价都写在代码里
-   （`wrangler.jsonc` 的 `GAS_FEE_NANOS`、`src/pricing.ts` 的 `MODEL_RATES`，`GET /api/v1/pricing`
-   回的就是它）：改价 = 改代码 = 一次可被审查的合并，与「公开可复现」是同一件事。
-2. **用技术手段降本，而不是涨价了事。** 上面 #49 / #50 是已经兑现的两笔：同一条链路，行写
-   7 → 3、读 2 → 0。所以「索引预算」这类工程约束是**定价的一部分**，不是实现细节——每多留
-   一条索引，就是每个请求多付一行。同一类旋钮还有日志：采样率与 invocation log 开关本身就是
-   降本手段（见上一节），它们还没拧，所以现在按 100% 采样入账。
-3. **不贴钱留客。** 额度内边际为 0 时，gas 是纯毛利；一旦越过 Cloudflare 的包含额度，边际成本
-   跳到 5,000–5,800 纳的量级——那时会**调价，或者把成本结构改掉**（比如上一条的 Analytics Engine
-   与日志采样），不会自己咽下去。靠贴钱换来的用户量不可持续，Norm 不做这件事。
+完整的 Cloudflare 列表价拆解、Workers Logs 新旧口径测算、额度见底顺序与降本记录见 [`docs/economics.md`](docs/economics.md)。
 
 ## 自己部署一份
 
+Norm 的价值来自「代码公开可复现、任何人都能另起一套」，两套部署之间没有任何信任依赖。
+
 ```bash
 pnpm install
-pnpm exec wrangler d1 create norm           # 把 database_id 填进 wrangler.jsonc
-pnpm exec wrangler d1 migrations apply norm --remote
-pnpm deploy                                 # 构建 + 上传 Worker
+pnpm exec wrangler d1 create norm               # 1. 把返回的 database_id 填进 wrangler.jsonc
+                                                # 2. 按需修改 wrangler.jsonc 中的 routes 与 POOL_ADMIN_ADDRESSES
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '=' \
+  | pnpm exec wrangler secret put NORM_MASTER_KEY --config wrangler.jsonc
+                                                # 3. 必填：32 字节 base64url 主密钥，缺失会 500
+pnpm db:migrate                                 # 4. 应用远程 D1 迁移
+pnpm deploy                                     # 5. 构建前端并上传 Worker（需要写入构建证明请用 pnpm release）
 ```
 
-Norm 的价值来自「大家都用同一份部署、都能核对字节」。所以自己部署也是**有意支持**的用法：
-两套部署互相之间没有信任依赖，任何一方都可以把另一方视为不可信的中转站。
+完整 CI 自动发布、最小权限 Cloudflare API Token 铸造、线上冒烟与清理步骤见 [`docs/deploy.md`](docs/deploy.md)。
 
-## 开发
+## 本地开发
+
+首次运行前，先准备本地 D1 迁移与主密钥（`.dev.vars` 已在 `.gitignore` 中）：
 
 ```bash
-pnpm dev            # wrangler dev，本地 Worker + 本地 D1
-pnpm preview        # 只跑前端，/api 与 /v1 代理到 127.0.0.1:8787
-pnpm check          # typecheck + vitest + build
-node scripts/e2e.mjs  # 起假上游提供商，用真身份打真 Worker，40 项断言
-pnpm attest         # 算出 source_sha256 / assets_sha256，与 /api/v1/attestation 对照
+echo "NORM_MASTER_KEY=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')" > .dev.vars
+pnpm db:migrate:local
 ```
 
-## 设计上的取舍
+常用命令：
 
-- **全连接，只有对角线不翻译。** 四条入口方言（OpenAI Chat / Responses、Anthropic Messages、
-  Google Gemini）× 五种上游提供商协议（四种方言 + `deepseek`：说 Responses，但价目按官方
-  时段分两档），20 格全通：5 格同格式直通（请求体按原始字节发出去、响应体原样回来），
-  其余 15 格过 OpenAI Chat 这座桥做转换。唯一不做的是**跨方言的工具调用**：
-  三家的 `tools` 形状不同，硬拼一个「尽力而为」的映射只会在客户端以为有 function calling 时
-  收到一段散文，所以跨方言带 `tools` 直接 400。协议转换是 Norm 自己的事——`-LB` 一族照样能接，
-  只是不再是接入的前提。
-- **不留内容。** 记账只需要模型名、token 数、状态、延迟、费用——这已经足够解释一笔账，
-  再多记一个字都是对 ZDR 的破坏。
-- **按 Token 记账，外加 Gas 费。** 输入 / 缓存命中 / 输出三种 token 分开计价（价目表在
-  `src/pricing.ts`，公开在 `GET /api/v1/pricing`），再加一笔固定 300 纳美元（$0.0000003）的
-  Gas 费——它正好是一次 Workers Paid 调用的单价，买的是「这次请求被执行」本身。
-  一次请求在 Cloudflare 侧的真实边际成本是它的十几倍（≈ 5,000–5,800 纳），拆解、额度与
-  定价原则见下文「Gas 费与定价原则」。每条记录都满足 `fee = gas_fee + token − unbilled`，
-  谁都能自己重算一遍。
-- **失败收 Gas，不收 Token。** Gas 买的是「这次被执行」，不是答案：上游 500、密钥被吊销、
-  地址根本打不通，Worker 与 D1 的成本照样发生过了，所以 Gas 照收（响应头 `X-Norm-Gas-Fee-Nanos`
-  写明扣了多少），token 那部分才是 0。没打到上游的请求（体不是 JSON、余额不足、没配上游提供商）
-  不记账也不扣——那些没有「执行」可言。
-- **诚实标注边界。** 来源核验是信号不是证明，官方订阅额度无法在协议层证明——所以在
-  `/api/v1/provenance` 里公开 `base_url` 原文与核验时间，让任何人都能自己重跑一次。
+```bash
+pnpm dev              # wrangler dev（127.0.0.1:8787），本地 Worker + 本地 D1
+pnpm preview          # Vite 前端开发服（127.0.0.1:5173），/api 与 /v1 代理到 8787
+pnpm check            # typecheck + vitest 单元测试 + vite build
+node scripts/e2e.mjs  # 起假上游（支持四种方言），用真身份打本地 Worker，300+ 项端到端断言
+pnpm attest           # 计算 source_sha256 / assets_sha256，与 /api/v1/attestation 对照
+```
+
+## 文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [`docs/spec.md`](docs/spec.md) | 产品与架构完整规格（身份、BYOK、路由、计费、ZDR、取舍） |
+| [`docs/api.md`](docs/api.md) | 全部公开、管理面（`/api/v1/*`）与转发面（`/v1/*`）接口契约 |
+| [`docs/crypto.md`](docs/crypto.md) | 密码学契约（Ed25519 拓展密钥、签名与幂等键、AES-256-GCM 封装、Token 哈希） |
+| [`docs/economics.md`](docs/economics.md) | Gas 费、Cloudflare 边际成本拆解、日志建模、降本记录与定价原则 |
+| [`docs/deploy.md`](docs/deploy.md) | 自部署、GitHub Actions 可信发布、最小权限 Token 与线上冒烟 |
+| [`docs/roadmap.md`](docs/roadmap.md) | 已完成能力与后续路线（链上结算、证据化来源核验、完整发布闭环） |

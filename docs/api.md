@@ -51,7 +51,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 |---|---|---|
 | `policy.logs` | `no-bodies` | 不留请求体、不留响应体、不留上游提供商密钥 |
 | `policy.storage` | `billing-fields-only` | D1 只存记账所需的最小字段 |
-| `policy.keys` | `sealed-at-rest` | 上游提供商密钥只在请求头经过，库里只有密文 |
+| `policy.keys` | `sealed-at-rest` | 上游提供商密钥仅在创建/更换时提交一次，服务端 AES-256-GCM 封装存库，库里只有密文 |
 
 不在表里的取值原样显示——后端新增一条策略不会让前端白屏或吞掉信息。
 
@@ -267,7 +267,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 | GET | `/v1/models` | 这个上游有哪些模型。`{object:"list", data:[{id, object:"model", created?, owned_by?}]}` |
 | GET | `/v1/models/{model}` | 单个模型；没有上游的清单里有它 → `404 model_not_served`；选中那条的清单里没有 → `404 model_not_found` |
 
-两种上游都能用，认上游的规则与转发完全一样（`X-Norm-Credential`，或账户只有一条时省略）。
+选址规则与转发完全一样（自己的上游优先、公共池兜底、会话亲和）。
 上游的清单在这里被归一成 OpenAI 形状，所以一个客户端不必知道自己接的是哪家：
 
 | `upstream_protocol` | 问的上游路径 | 上游回什么 |
