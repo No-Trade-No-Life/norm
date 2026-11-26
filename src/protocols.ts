@@ -28,6 +28,7 @@ import {
   type ModelInfo,
   type StreamEvent,
 } from './codecs';
+import type { AudioDialect, AudioKind } from './audio';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
 import { openaiHeaders } from './oauth';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
@@ -51,13 +52,15 @@ export {
   type StreamEvent,
 };
 
-export type Protocol = Dialect | 'deepseek' | 'opencode-go' | 'openai-oauth';
+export type Protocol = Dialect | 'deepseek' | 'opencode-go' | 'openai-oauth' | 'openai-audio' | 'qwen';
 
 export const PROTOCOLS: Protocol[] = [
   ...DIALECTS,
   'deepseek',
   'opencode-go',
   'openai-oauth',
+  'openai-audio',
+  'qwen',
 ];
 
 export function isProtocol(value: string): value is Protocol {
@@ -105,6 +108,11 @@ export type ProtocolSchema = {
   oauth: boolean;
   /** 上游只接受流式请求：非流式调用会被转发层挡下并说清原因。 */
   stream_only: boolean;
+  /**
+   * 这条协议能接的音频调用。空数组 = 这条上游没有音频能力，`/v1/audio/*` 不会选它。
+   * 音频入口只有一种线缆（OpenAI 的 `/v1/audio/*`），所以这里只说「能不能」，不说「说哪种方言」。
+   */
+  audio: AudioKind[];
 };
 
 /**
@@ -145,6 +153,12 @@ export type ProtocolProfile = {
    */
   stream_only?: true;
   /**
+   * 这条协议的上游音频方言：`openai-audio` 原样转发、`qwen-native` 走 Qwen 原生接口。
+   * 不写 = 这条上游没有音频能力。方言名而不是编解码函数，与 `dialect` 同一条纪律：
+   * 编解码只能活在 `audio.ts` 里。
+   */
+  audio?: AudioDialect;
+  /**
    * 上游只认 `store: false`（同一个端点：带上 `store` 为真、或干脆没写，回
    * `400 Store must be set to false`）。声明在这里，转发层发出去之前补上这一个字段——
    * 它是这条上游的请求契约，不是方言翻译。
@@ -166,6 +180,7 @@ export type ResolvedProtocol = {
   oauth?: true;
   stream_only?: true;
   store_false?: true;
+  audio?: AudioDialect;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -231,6 +246,36 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     stream_only: true,
     store_false: true,
   },
+
+  /**
+   * openai-audio：把一条**已经说 OpenAI 音频**的上游接进来（Qwen LB、OpenAI、任何兼容实现）。
+   * 零翻译复用 `openai-audio` 方言：`{base}/audio/transcriptions` 与 `{base}/audio/speech`
+   * 两个端点原样转发，基址由用户填——这正是 Qwen LB 接进 NormAI 的那种接法，只是换了入口。
+   * `dialect` 声明 `openai-chat`：同一个基址上的 `/chat/completions` 也归它（OpenAI 就是这样），
+   * 只提供音频的上游（Qwen LB）在文本调用上会回它自己的 404，原话交回去。
+   */
+  'openai-audio': {
+    dialect: 'openai-chat',
+    audio: 'openai-audio',
+  },
+
+  /**
+   * qwen：阿里云百炼。一条协议上挂着两处能力，各有各的路径：
+   *   1. 文本与视觉走 OpenAI 兼容层（`/compatible-mode/v1`），零翻译复用 `openai-chat`
+   *      方言——`image_url` / `video_url` 内容块按原始字节透传，多模态输入不需要 Norm 认识它；
+   *   2. 转写与合成走原生接口（`audio: 'qwen-native'`），因为兼容层根本没有
+   *      `/audio/transcriptions`：`qwen-audio-3.0-asr-flash` 只认原生多模态生成。
+   *
+   * 基址钉死为百炼的根，路径按能力分别给：兼容层带版本段，原生接口自带 `/api/v1`。
+   * 音频型号与价目在 `qwen.ts` 与 `pricing.ts` 里，跟着代码进构建哈希。
+   */
+  qwen: {
+    dialect: 'openai-chat',
+    base_url: 'https://dashscope.aliyuncs.com',
+    path: () => '/compatible-mode/v1/chat/completions',
+    modelsPath: () => '/compatible-mode/v1/models',
+    audio: 'qwen-native',
+  },
 };
 
 function resolveProtocol(protocol: Protocol): ResolvedProtocol {
@@ -249,6 +294,7 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     ...(profile.oauth === undefined ? {} : { oauth: profile.oauth }),
     ...(profile.stream_only === undefined ? {} : { stream_only: profile.stream_only }),
     ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
+    ...(profile.audio === undefined ? {} : { audio: profile.audio }),
   };
 }
 
@@ -260,6 +306,8 @@ const RESOLVED_PROTOCOLS: Record<Protocol, ResolvedProtocol> = {
   deepseek: resolveProtocol('deepseek'),
   'opencode-go': resolveProtocol('opencode-go'),
   'openai-oauth': resolveProtocol('openai-oauth'),
+  'openai-audio': resolveProtocol('openai-audio'),
+  qwen: resolveProtocol('qwen'),
 };
 
 /** 取一条上游协议的传输与计价契约（编解码请按 `.dialect` 调 `dialectCodecFor`）。 */
@@ -278,6 +326,7 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     fields: fixed === null ? ['base_url', 'provider_key'] : ['provider_key'],
     oauth: profile.oauth === true,
     stream_only: profile.stream_only === true,
+    audio: profile.audio === undefined ? [] : ['transcriptions', 'speech'],
   };
 }
 

@@ -178,6 +178,10 @@ export const COPY = {
     en: 'The endpoint Norm will call. Only you can change it; forwarding always reads the stored address, never a request header.',
   },
   'pr.field_protocol': { zh: 'protocol', en: 'Protocol' },
+  'pr.audio_hint': {
+    zh: '这条协议还接音频：/v1/audio/transcriptions 与 /v1/audio/speech，同一把 Token、同一本账。',
+    en: 'This protocol also serves audio: /v1/audio/transcriptions and /v1/audio/speech, on the same Token and the same ledger.',
+  },
   'pr.field_enabled': { zh: '启用这条上游提供商', en: 'Enable this provider' },
   'pr.field_enabled_hint': {
     zh: '禁用后不参与选址；密钥与历史都留着，随时可以再打开。',
@@ -315,6 +319,8 @@ export const COPY = {
   'us.voucher_note': { zh: '不可提现', en: 'not withdrawable' },
   'us.tokens_in': { zh: '输入 Token', en: 'Input tokens' },
   'us.tokens_cached': { zh: '缓存命中', en: 'Cache hits' },
+  'us.audio_ms': { zh: '音频 {value} 秒', en: 'audio {value}s' },
+  'us.audio_chars': { zh: '合成 {value} 字', en: 'speech {value} chars' },
   'us.tokens_out': { zh: '输出 Token', en: 'Output tokens' },
   'us.billed': { zh: '费用与用量构成', en: 'Usage & fee breakdown' },
   'us.billed_desc': {

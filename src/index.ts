@@ -10,6 +10,7 @@ import { providerRoutes } from './routes/providers';
 import { consumerRoutes } from './routes/consumers';
 import { modelCatalogRoutes } from './routes/model-catalog';
 import { modelRoutes } from './routes/models';
+import { audioRoutes } from './routes/audio';
 import { relayRoutes } from './routes/relay';
 
 /**
@@ -94,6 +95,8 @@ function relayOnly() {
     await next();
   });
   relay.route('/models', modelRoutes);
+  // 音频两个入口与聊天入口同属转发面：同一把 Token、同一份余额、同一本账。
+  relay.route('/', audioRoutes);
   relay.route('/', relayRoutes);
   return relay;
 }

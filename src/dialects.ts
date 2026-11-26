@@ -57,6 +57,9 @@ export type NormMeta = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
+  /** 音频用量：转写覆盖的毫秒数与合成的字符数；文本调用为 0。 */
+  audio_ms: number;
+  audio_characters: number;
   /** 余额不足时没能收上来的部分；正常为 0。 */
   unbilled_nanos: number;
   balance_nanos: number | null;
