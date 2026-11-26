@@ -120,6 +120,9 @@ export type RequestRow = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
+  /** 音频用量：转写覆盖的毫秒数、合成的字符数；文本调用为 0。 */
+  audio_ms: number;
+  audio_characters: number;
   gas_fee_nanos: number;
   gas_billed_nanos: number;
   token_nanos: number;
@@ -367,6 +370,8 @@ export type ProtocolSchema = {
   oauth: boolean;
   /** 上游只接受流式请求，非流式调用会被服务端挡住。 */
   stream_only: boolean;
+  /** 这条协议还能接的音频调用；空数组 = 它没有音频能力。 */
+  audio: Array<'transcriptions' | 'speech'>;
 };
 
 /** 管理面看到的模型：一行一个模型名，providers 是提供它的上游提供商 id。 */

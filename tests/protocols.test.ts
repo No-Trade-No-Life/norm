@@ -21,6 +21,7 @@ describe('协议契约（protocol schema）', () => {
       fields: ['provider_key'],
       oauth: false,
       stream_only: false,
+      audio: [],
     });
   });
 
@@ -41,6 +42,7 @@ describe('协议契约（protocol schema）', () => {
       fields: ['provider_key'],
       oauth: false,
       stream_only: false,
+      audio: [],
     });
   });
 
@@ -52,12 +54,48 @@ describe('协议契约（protocol schema）', () => {
       fields: ['base_url', 'provider_key'],
       oauth: true,
       stream_only: true,
+      audio: [],
     });
   });
 
-  it('钉死基址的协议只有 deepseek 与 opencode-go：哪条协议不要 base_url 是数据，不是判断', () => {
+  it('钉死基址的协议只有 deepseek、opencode-go 与 qwen：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
-    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go']);
+    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'qwen']);
+  });
+
+  it('音频能力只落在 qwen 与 openai-audio 两条协议上', () => {
+    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.audio.length > 0).map((schema) => schema.protocol)).toEqual([
+      'openai-audio',
+      'qwen',
+    ]);
+  });
+
+  it('qwen：基址是百炼的根，文本走兼容层路径，音频走原生接口', () => {
+    expect(schemaOf('qwen')).toEqual({
+      protocol: 'qwen',
+      dialect: 'openai-chat',
+      base_url: 'https://dashscope.aliyuncs.com',
+      fields: ['provider_key'],
+      oauth: false,
+      stream_only: false,
+      audio: ['transcriptions', 'speech'],
+    });
+    expect(protocolUrlFor('qwen', 'https://dashscope.aliyuncs.com/', 'qwen-max', false)).toBe(
+      'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    );
+    expect(protocolFor('qwen').modelsPath()).toBe('/compatible-mode/v1/models');
+  });
+
+  it('openai-audio：基址由用户填（Qwen LB / OpenAI / 任何兼容实现都是它），两个音频入口都认', () => {
+    expect(schemaOf('openai-audio')).toEqual({
+      protocol: 'openai-audio',
+      dialect: 'openai-chat',
+      base_url: null,
+      fields: ['base_url', 'provider_key'],
+      oauth: false,
+      stream_only: false,
+      audio: ['transcriptions', 'speech'],
+    });
   });
 
   it('「OAuth 凭据」与「只认流式」各只落在 openai-oauth 一条协议上', () => {

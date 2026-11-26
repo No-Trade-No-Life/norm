@@ -176,6 +176,9 @@ Norm 把**线缆方言（`Dialect`）**和**上游协议契约（`Protocol`）**
 | `opencode-go` | `openai-chat` | `{base}/openai/v1/chat/completions` | 零翻译复用 `openai-chat`；叠加官方推理面基址（`https://opencode.ai/inference/go`）、版本段路径与必带会话头（`x-opencode-session: ses_<sha256>`，由 `src/sessions.ts` 派生） |
 | `openai-oauth` | `openai-responses` | `{base}/responses` | 零翻译复用 `openai-responses`；叠加**凭据契约**（一对 OAuth 令牌而不是 API key：用之前拿 `refresh_token` 换新的，换完写回库——上游会轮换 `refresh_token`，不写回这条上游就只剩重连，见 `src/oauth.ts` / `src/credentials.ts`）、两个头（`chatgpt-account-id` + `originator: codex_cli_rs`）、**基址由用户填**（必须是一跳自己的转发：Worker 出站被盖 `cf-worker`，chatgpt.com 回 403；一跳同时决定出口 IP，等同 LB 的 `http_proxy_url`）与**只认流式**（缺 `stream: true` 上游直接 400，转发层提前挡住） |
 
+| `openai-audio` | `openai-chat` | `{base}/chat/completions`（同一个基址上还有音频） | 把一条**已经说 OpenAI 音频**的上游接进来（Qwen LB / OpenAI / 任何兼容实现）：`{base}/audio/transcriptions` 与 `{base}/audio/speech` 零翻译直通，基址由用户填——这正是 Qwen LB 接进 NormAI 的那种接法，只是换了个入口 |
+| `qwen` | `openai-chat` | `{base}/compatible-mode/v1/chat/completions` | 百炼：文本与视觉零翻译复用 `openai-chat`（`image_url` 内容块原样透传）；音频走 `qwen-native` 方言（原生多模态生成 / 语音合成器），因为兼容层没有转写端点 |
+
 四种方言都支持流式：同方言直通时上游 SSE 原样透传（仅 `openai-chat` 入口在流末补一条 `norm` 事件与 `data: [DONE]`）；跨方言时由 `src/codecs.ts` 拆成规范事件，再由 `src/dialects.ts` 渲染成入口方言自己的 SSE 帧。
 
 ### 6.3 三件该由用户配置的事
@@ -247,6 +250,28 @@ Worker 调用，那一笔由站点自己吃掉（SDK 常在启动时先问一次
 还有一条兜底：上游用 400 / 404 并且在原话里点了这次的模型（`isModelNotServed`），说明清单里
 那一行是错的——删掉它、忘掉这条会话的亲和，换一条候选重试一次。没有这一步，一次按错清单的
 选择会让同一条会话错满亲和表的整个 TTL（7 天）。
+
+### 6.7 音频：一种入口线缆，两种上游方言
+
+文本那层的「四方言」在音频这边只剩一种：下游只有 OpenAI 的 `/v1/audio/transcriptions` 与
+`/v1/audio/speech`。四家 SDK 里只有它把这件事件说成公共语言，Qwen LB 与 NormAI 也都对齐在
+它这一侧，所以音频入口不带方言参数——方言只在上游：
+
+| 上游音频方言 | 谁在用 | 怎么转发 |
+|---|---|---|
+| `openai-audio` | Qwen LB、OpenAI、任何兼容实现（`openai-audio` 协议） | 请求体按原始字节转发，应答原样读：转写读 `text` 与用量，合成直接把字节交回 |
+| `qwen-native` | 百炼（`qwen` 协议） | 构造原生请求、归一化应答：转写折成 `input_audio` data URI，合成按型号的调用方式走两条原生接口，音频再从上游给的地址下载一次 |
+
+音频的型号表与价目都在代码里：`qwen.ts` 说「哪个型号是转写还是合成、走哪条原生接口」，
+`pricing.ts` 说「按秒、按字符还是按 token」。音频**没有兜底价**——认不出的型号在转发之前就
+回 `400 audio_model_unpriced`，0 次上游请求、0 笔记账：按秒与按字符不是同一个单位，猜错方向
+会差几个数量级。型号表还替上游补进清单（`provider_models`），所以 `/v1/models` 与模型总表上
+看得见 `qwen3-tts-flash` 这类型号，音频调用才选得中那条上游。
+
+记账沿用同一本账：`gas_fee_nanos` 照收（这次执行真的发生过），`token_nanos` 仍是「转给上游
+提供方的价值」（调用自有上游时为 0），只是用量多了两列——`audio_ms` 与 `audio_characters`。
+音频不走重试：文本那条「换一条候选再试一次」是为了纠正清单里错的一行，而音频的型号表是代码
+里钉死的或上游自己列的，没有那种误差可纠。
 
 ## 7. ZDR 与可信发布
 

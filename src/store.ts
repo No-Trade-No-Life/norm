@@ -1,5 +1,6 @@
 import type { Env } from './env';
-import { type Modalities, type ModelInfo, type Protocol } from './protocols';
+import { audioCodecFor, type AudioAsk } from './audio';
+import { type Modalities, type ModelInfo, protocolFor, type Protocol } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
@@ -229,6 +230,9 @@ export type RequestRecord = {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
+  /** 音频用量：转写覆盖的时长（毫秒）与合成的字符数；文本调用恒为 0。 */
+  audioMs: number;
+  audioCharacters: number;
   gasFeeNanos: number;
   tokenNanos: number;
   feeNanos: number;
@@ -477,6 +481,11 @@ export type ResolveRequest = {
   pendingRequiredNanos?: number;
   /** 余额不足以支付写亲和 + 后续必经成本时：true 直接 402 中止（首次尝试），false 跳过写亲和。 */
   abortOnInsufficientBalance?: boolean;
+  /**
+   * 这一次是一次音频调用：只有「音频方言做得了它」的上游才进候选（`audio.ts` 的 `serves`）。
+   * 传的是解析后的规范请求，因为「做不做得了」既看转写还是合成，也看跑不跑得了这个型号。
+   */
+  audio?: AudioAsk;
 };
 
 export async function resolveProvider(
@@ -501,6 +510,17 @@ export async function resolveProvider(
   const excluded = new Set(request.exclude ?? []);
   let pool = results.filter((row) => !excluded.has(row.id));
   if (pool.length === 0) fail(404, 'provider_exhausted', '试过的上游都跑了、也没有别的上游可以换');
+
+  // 音频调用还有一条硬约束，比「自有优先」更硬：这条上游的音频方言得做得了这一次
+  // （转写还是合成、跑不跑得了这个型号）。跑不了的上游连一次 400 的机会都不该有。
+  const audio = request.audio;
+  if (audio !== undefined) {
+    pool = pool.filter((row) => {
+      const dialect = protocolFor(row.protocol).audio;
+      return dialect !== undefined && audioCodecFor(dialect).serves(audio);
+    });
+    if (pool.length === 0) fail(404, 'audio_not_served', `没有上游能接这次音频调用：${audio.model}`);
+  }
 
   // 模型是硬约束，自有优先是偏好：先把「跑不了这个型号」的整批去掉，再在能跑的里面
   // 让自有的赢。反过来的顺序会让「自己有一条不支持这个型号的上游」把请求卡死在它身上，
@@ -728,10 +748,10 @@ function requestInsert(env: Env, row: RequestRecord, trail: SettlementTrail) {
   return env.DB.prepare(
     `INSERT INTO requests
        (id, address, provider_id, provider_user, consumer_id, consumer_user, base_url, model, status, status_code, latency_ms,
-        input_tokens, cached_tokens, output_tokens,
+        input_tokens, cached_tokens, output_tokens, audio_ms, audio_characters,
         gas_fee_nanos, gas_billed_nanos, token_nanos, token_billed_nanos, fee_nanos, unbilled_nanos,
         spend_before_nanos, spend_after_nanos, earn_before_nanos, earn_after_nanos, first_token_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
@@ -747,6 +767,8 @@ function requestInsert(env: Env, row: RequestRecord, trail: SettlementTrail) {
     row.inputTokens,
     row.cachedTokens,
     row.outputTokens,
+    row.audioMs,
+    row.audioCharacters,
     row.gasFeeNanos,
     trail.gasBilledNanos,
     row.tokenNanos,

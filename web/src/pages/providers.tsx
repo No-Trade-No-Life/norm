@@ -408,6 +408,10 @@ function NewProviderDialog({
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
+            {/* 音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。 */}
+            {schema !== null && schema.audio.length > 0 ? (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
+            ) : null}
           </div>
 
           {protocols.isError ? <ErrorNote message={(protocols.error as Error).message} /> : null}
@@ -579,6 +583,10 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
+            {/* 音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。 */}
+            {schema !== null && schema.audio.length > 0 ? (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
+            ) : null}
           </div>
 
           {protocols.isError ? <ErrorNote message={(protocols.error as Error).message} /> : null}

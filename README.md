@@ -102,6 +102,33 @@ Norm 刻意**不做** $M \times N$ 的成对翻译矩阵，而是把「线缆方
 - **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存；`openai-oauth` 复用 `openai-responses` 方言，把一份 **ChatGPT 订阅**接成上游——凭据是一对 OAuth 令牌（`access_token` 过期前自动换新并写回库），基址填你自己的**一跳**（自建一跳：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，chatgpt.com 见到直接 403，一跳同时决定出口 IP 与绕开这条被盖戳的管线），请求头由 `src/oauth.ts` 给，且上游只认流式（非流式调用在 Norm 这一侧就被 `400 stream_required` 挡住，不去换一次注定失败的上游 400 与 Gas）。
 - **统一模型清单**：`GET /v1/models` 按方言将上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
 
+### Qwen：一条协议上的文本、视觉与音频
+
+`qwen` 协议把阿里云百炼接通成一条上游。文本与视觉走 OpenAI 兼容层——`image_url` 内容块按原始
+字节透传，Norm 一个字段都不碰，所以多模态输入不需要 Norm 认识它；转写与合成走原生接口，
+因为兼容层**没有** `/audio/transcriptions`（`qwen-audio-3.0-asr-flash` 只认原生多模态生成，
+这也是 Qwen LB 存在的理由）。那层适配按 Qwen LB 的实现落地成 Norm 的一个协议：型号、调用方式
+与价目都在代码里（`src/qwen.ts` / `src/pricing.ts`），跟着构建哈希一起被审查。
+
+```bash
+# 转写（multipart，file 必填，model / language 可选）
+curl https://norm.ntnl.io/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-norm-…" \
+  -F 'file=@sample.wav' -F 'model=qwen-audio-3.0-asr-flash' -F 'language=zh'
+
+# 合成（JSON，回 WAV 字节；账目挂在响应头上）
+curl https://norm.ntnl.io/v1/audio/speech \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"你好，世界","model":"qwen3-tts-flash","voice":"Cherry"}' --output speech.wav
+```
+
+音频的两个入口只有一种线缆形状（OpenAI 的 `/v1/audio/*`），上游可以有两种：`openai-audio`
+（把 Norm 指到一条**已经说 OpenAI 音频**的上游——Qwen LB、OpenAI、任何兼容实现，零翻译直通）
+与 `qwen-native`（Qwen 原生接口，`qwen` 协议自带）。音频按秒（转写）、按字符或按 token（合成）
+计价，**没有兜底价**：认不出的型号在打出去之前就拒——按秒与按字符不是同一个单位，猜错方向
+会差几个数量级，而账单不能靠猜。
+
 ### 服务端选址规则
 
 1. **按模型先筛**：依据 `provider_models` 排除已拉过清单但明确不含该模型的上游（未拉过清单的保留），筛空则直接返回 `404 model_not_served`；若上游仍回 400/404 称无该模型，则自动删掉错误快照、清亲和并换候选重试一次。

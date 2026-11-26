@@ -271,6 +271,40 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 `/v1/chat/completions` 的流式在最后一个 SSE 事件之前插入一条 `data: {"norm":{...}}`；
 另外三条入口的流式不插（那些 SDK 按 `type` 严格分派，插一个它们不认识的事件比丢一条记账信息更糟）。
 
+## 音频（只认 Bearer 消费者密钥）
+
+下游只有一种形状：OpenAI 的音频接口。上游怎么说不重要——`qwen` 协议在这里把 Qwen 的原生
+接口翻成这两个端点（Qwen LB 的逻辑，落在 Norm 的一个协议里），`openai-audio` 协议则把请求
+原样转给一条已经说 OpenAI 音频的上游。
+
+```bash
+# 转写：multipart，file 必填，model / language 可选（language 留空或 auto 由上游自己认）
+curl https://norm.ntnl.io/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-norm-…" \
+  -F 'file=@sample.wav' -F 'model=qwen-audio-3.0-asr-flash' -F 'language=zh'
+
+# → 200 {"text":"…","norm":{…}}   norm 就是别处那个账单结论，多两项音频用量
+#   audio_ms（这次转写覆盖的音频毫秒数）、audio_characters（合成念的字数，转写恒为 0）
+
+# 合成：JSON，input / model / voice 三个字段缺一不可，回 WAV 字节
+curl https://norm.ntnl.io/v1/audio/speech \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"你好，世界","model":"qwen3-tts-flash","voice":"Cherry"}' --output speech.wav
+```
+
+合成回的是字节，账目挂在响应头上：`X-Norm-Request-Id`、`X-Norm-Fee-Nanos`、
+`X-Norm-Token-Nanos`、`X-Norm-Gas-Billed-Nanos`。
+
+两条限制都是硬拒绝，都在打上游之前：
+
+- **一次转写最多 24 MiB 音频**（base64 之后仍在上游限制内），超了回 `413 audio_too_large`。
+- **型号必须出现在音频价目表里**，否则回 `400 audio_model_unpriced`：音频按秒、按字符或按
+  token 计价，没有兜底价可言。价目表在 `src/pricing.ts` 的 `AUDIO_RATES`，`GET /api/v1/pricing`
+  回的就是它的当前值。
+
+上游回的错原话照回（状态码与响应体都不改），那一笔只收 Gas、不收 Token 费——与推理路径同一口径。
+
 ## 模型清单（只认 Bearer 消费者密钥）
 
 | 方法 | 路径 | 说明 |

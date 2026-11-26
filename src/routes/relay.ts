@@ -28,17 +28,16 @@ import {
 import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { isModelNotServed } from '../models';
-import { quote, type PriceAnchor, type Usage } from '../pricing';
+import { quote, ZERO_AUDIO_USAGE } from '../pricing';
 import { providerCredential } from '../credentials';
+import { dropProviderModel, forgetAffinity, resolveProvider, type ProviderChoice } from '../store';
 import {
-  dropProviderModel,
-  forgetAffinity,
-  resolveProvider,
-  settle,
-  type ProviderChoice,
-  type RequestRecord,
-  type Settled,
-} from '../store';
+  failureHeaders,
+  normMeta,
+  recordFailure,
+  settleBill,
+  type Accounting,
+} from './billing';
 import { affinityHash, affinityKeyOf } from '../routing';
 import { sessionIdFor } from '../sessions';
 import { protocolFor, protocolUrlFor, rateAt } from '../protocols';
@@ -373,141 +372,20 @@ async function upstreamFailure(c: RelayContext, accounting: Accounting, failure:
 
 /* ── 记账 ─────────────────────────────────────────────────────────── */
 
-/** 一次调用在记账时需要知道的一切，与它最终成功还是失败无关。 */
-type Accounting = {
-  env: Env;
-  address: string;
-  providerId: string;
-  /** 收钱的那一方的地址：公共池时是站点的地址，不是调用方的。 */
-  providerUser: string;
-  /** 花钱的那一方的地址：消费者密钥属于谁；签名直连时为空。 */
-  consumerUser: string | null;
-  /** true = 公共池兜底，false = 自己名下的上游。 */
-  pool: boolean;
-  consumerId: string;
-  /** 打到的上游提供商地址：账本要能回答「这一笔打给哪台机器」。 */
-  baseUrl: string;
-  requestId: string;
-  startedAt: number;
-  /** 请求级动态 Gas 计量器：结算前冻结，之后只读不改。 */
-  gas: GasMeter;
-  host: string;
-  model: string;
-  /**
-   * 这一次按哪一档计价：协议自带分时价时由请求开始的时刻定下（`rateAt`），
-   * null = 用通用价目表。存下来是因为同一笔账要算两遍（账单结论 + 记账），两遍必须同价。
-   */
-  rate: PriceAnchor | null;
-  /** 首字延迟：流式里第一个文本增量到达的时刻；非流式没有这个事件，留空。 */
-  firstTokenMs?: number | null;
-};
-
 /**
- * 账单结论：Gas（付给 Norm）与 Token（转给上游提供方）分开记，外加三项 token 与差额。
- *
- * `fee_nanos` 是真正扣掉的总额，恒等于 `gas_billed_nanos + token_billed_nanos`
- * 以及 `gas_fee_nanos + token_nanos - unbilled_nanos`；分开回，谁都能自己核对。
- */
-function normMeta(accounting: Accounting, usage: Usage, tokenDue: number, billed: Settled): NormMeta {
-  return {
-    request_id: accounting.requestId,
-    fee_nanos: billed.billedNanos,
-    gas_fee_nanos: accounting.gas.finalTotal(),
-    gas_billed_nanos: billed.gasBilledNanos,
-    token_nanos: tokenDue,
-    token_billed_nanos: billed.tokenBilledNanos,
-    input_tokens: usage.input,
-    cached_tokens: usage.cached,
-    output_tokens: usage.output,
-    unbilled_nanos: billed.unbilledNanos,
-    balance_nanos: billed.balanceNanos,
-    latency_ms: Date.now() - accounting.startedAt,
-    host: accounting.host,
-    pool: accounting.pool,
-  };
-}
-
-/**
- * 把一次成功的调用折成钱、记下来，返回给客户端看的账单结论。
- *
- * Gas 与 Token 分开处理：
- *   - 调用自有上游（providerUser === address）：只收 Gas，Token 价值转移为 0（自己付给上游厂商）；
- *   - 调用他人/公共池上游（providerUser !== address）：按价目表计算 Token 费并转给上游提供方，
- *     同时在 Gas 里计入这次跨用户入账的 1 行 D1 写库成本。
+ * 文本调用的账单：用量按 token 价目折成钱，剩下的（扣 Gas、扣 Token、写请求行）
+ * 交给 `billing.ts`——音频那条路用的是同一份，两条路不该各算一次钱。
  */
 async function bill(accounting: Accounting, answer: AnswerCore, statusCode: number): Promise<NormMeta> {
-  const isExternal = accounting.providerUser !== accounting.address;
-  const tokenNanos = isExternal ? quote(accounting.model, answer.usage, accounting.rate).total_nanos : 0;
-  if (isExternal && tokenNanos > 0) {
-    accounting.gas.chargeD1Writes(D1_ROW_WRITES.token_transfer);
-  }
-  const gasFeeNanos = accounting.gas.finalizeForSettlement();
-  const settled = await settle(accounting.env, recordOf(accounting, {
-    answer,
+  const tokenNanos =
+    accounting.providerUser === accounting.address ? 0 : quote(accounting.model, answer.usage, accounting.rate).total_nanos;
+  return settleBill(accounting, {
     status: 'ok',
     statusCode,
-    gasFeeNanos,
     tokenNanos,
-  }));
-  return normMeta(accounting, answer.usage, tokenNanos, settled);
-}
-
-/**
- * 失败也收 Gas，只免 token：能被记成失败的调用都已经真的打出去了（一次 Worker 调用、
- * 几次 D1 读写），那笔成本与上游回不回得出答案无关；没有答案，就没有可计价的量。
- * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少。
- */
-async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<Settled> {
-  const gasFeeNanos = accounting.gas.finalizeForSettlement();
-  return settle(accounting.env, recordOf(accounting, {
-    status,
-    statusCode,
-    gasFeeNanos,
-    tokenNanos: 0,
-    usage: { input: 0, cached: 0, output: 0 },
-  }));
-}
-
-/** 失败响应是上游的原话，账单只能挂在头上：这一次到底扣了多少 Gas。 */
-function failureHeaders(requestId: string, settled: Settled): Record<string, string> {
-  return {
-    'X-Norm-Request-Id': requestId,
-    'X-Norm-Gas-Fee-Nanos': String(settled.gasBilledNanos),
-  };
-}
-
-function recordOf(
-  accounting: Accounting,
-  parts: { status: string; statusCode: number; gasFeeNanos: number; tokenNanos: number; answer?: AnswerCore; usage?: Usage },
-): RequestRecord {
-  // 记客户端要的那个模型名，不记上游提供商回的那个：价格跟着它算，两者必须是同一个字符串，
-  // 否则一个把自己响应改写成便宜模型的上游提供商就顺手给自己定了价。 上游提供商实际跑的版本
-  // 是它的私事，账本不需要为此多一列。
-  // 用量可能显式传（流式收尾时已经算好了），也可能藏在回答里（非流式）。
-  const usage = parts.usage ?? parts.answer?.usage ?? { input: 0, cached: 0, output: 0 };
-  return {
-    requestId: accounting.requestId,
-    address: accounting.address,
-    providerId: accounting.providerId,
-    providerUser: accounting.providerUser,
-    consumerId: accounting.consumerId,
-    consumerUser: accounting.consumerUser,
-    baseUrl: accounting.baseUrl,
-    model: accounting.model,
-    status: parts.status,
-    statusCode: parts.statusCode,
-    latencyMs: Date.now() - accounting.startedAt,
-    firstTokenMs: accounting.firstTokenMs ?? null,
-    inputTokens: usage.input,
-    cachedTokens: usage.cached,
-    outputTokens: usage.output,
-    gasFeeNanos: parts.gasFeeNanos,
-    tokenNanos: parts.tokenNanos,
-    // 由 settle 覆盖成「真正扣掉的」：成功是 Gas + token，失败只有 Gas。
-    feeNanos: 0,
-    unbilledNanos: 0,
-    at: nowSeconds(),
-  };
+    usage: answer.usage,
+    audio: ZERO_AUDIO_USAGE,
+  });
 }
 
 /* ── 流式：同格式直通 ─────────────────────────────────────────────── */
@@ -554,7 +432,11 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
     // 一个字节都没生成、上游却报了错：这不是「成功但零 token」。照失败收 Gas、不收
     // token——否则一次上游拒绝会在账本上被记成一次正常执行，而客户端只看到一片空白。
     if (upstreamError !== null && accounting.firstTokenMs === undefined) {
-      return normMeta(accounting, usage, 0, await recordFailure(accounting, 'provider_error', 200));
+      return normMeta(
+        accounting,
+        { status: 'ok', statusCode: 200, tokenNanos: 0, usage, audio: ZERO_AUDIO_USAGE },
+        await recordFailure(accounting, 'provider_error', 200),
+      );
     }
     return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
@@ -723,7 +605,11 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
     const usage = sniffer.usage();
     // 同上：空白 + 上游报错 = 一次失败，不是一次「成功但零 token」。
     if (upstreamError !== null && accounting.firstTokenMs === undefined) {
-      return normMeta(accounting, usage, 0, await recordFailure(accounting, 'provider_error', 200));
+      return normMeta(
+        accounting,
+        { status: 'ok', statusCode: 200, tokenNanos: 0, usage, audio: ZERO_AUDIO_USAGE },
+        await recordFailure(accounting, 'provider_error', 200),
+      );
     }
     return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };

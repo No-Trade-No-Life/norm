@@ -62,6 +62,8 @@ function record(
     inputTokens: 100,
     cachedTokens: 0,
     outputTokens: 50,
+    audioMs: 0,
+    audioCharacters: 0,
     gasFeeNanos: options.gasFeeNanos,
     tokenNanos,
     feeNanos: 0,

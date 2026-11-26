@@ -169,3 +169,85 @@ export function quote(model: string, usage: Usage, anchor?: PriceAnchor | null):
     total_nanos: inputNanos + cachedNanos + outputNanos,
   };
 }
+
+/* ── 音频：按秒、按字符、按 token ──────────────────────────────────────
+ *
+ * 音频没有「每百万 token」这一种单位。转写卖的是时长，多数合成卖的是字符，少数合成模型
+ * 按 token 卖——三种单位互不可比，所以音频价目单独一张表，`unit` 由表自己说。
+ *
+ * 音频**没有兜底价**：认不出的型号在转发之前就拒（`audio_model_unpriced`）。文本那一侧
+ * 的兜底价是「贵三倍的上界」，因为三种 token 是同一个单位；音频猜错方向能差几个数量级，
+ * 而一笔按秒计的价乘到字符数上，账单会变成一句谎话。
+ */
+
+/** 一次音频调用的用量事实。转写只有时长，合成只有字符或 token。 */
+export type AudioUsage = {
+  /** 上游报告的音频时长（毫秒，整数）。转写按它计费。 */
+  milliseconds: number;
+  /** 合成输入的字符数。按字符计价的型号按它计费。 */
+  characters: number;
+  /** 按 token 计价的合成型号的上游用量（转写恒为 0）。 */
+  input: number;
+  output: number;
+};
+
+/** 没有任何用量的一笔（失败的调用、文本调用都用它）。 */
+export const ZERO_AUDIO_USAGE: AudioUsage = { milliseconds: 0, characters: 0, input: 0, output: 0 };
+
+/** 音频价目的一行：一个型号前缀，一种单位，一个价。 */
+export type AudioRate =
+  | { match: string; unit: 'second'; nanos: number }
+  | { match: string; unit: 'character'; nanos: number }
+  | { match: string; unit: 'token'; input: number; output: number };
+
+/**
+ * 音频价目表。数值与 Qwen LB 的「语音计价」页同一组（人民币价目按 7.2 折成纳美元），
+ * OpenAI 的几行取官网公开价（$0.006/min 转写、$15/1M 字符合成）。
+ */
+export const AUDIO_RATES: AudioRate[] = [
+  // Qwen：转写按秒，合成按字符或按 token。
+  { match: 'qwen-audio-3.0-asr-flash', unit: 'second', nanos: 30_556 },
+  { match: 'qwen3-tts-flash', unit: 'character', nanos: 11_111 },
+  { match: 'qwen-audio-3.1-tts-flash', unit: 'token', input: 208_333_333, output: 1_666_666_667 },
+  { match: 'cosyvoice-v3.5-flash', unit: 'character', nanos: 11_111 },
+  { match: 'cosyvoice-v3.5-plus', unit: 'character', nanos: 20_833 },
+  // OpenAI：同一批型号也可能挂在 `openai-audio` 这条通用协议上。
+  { match: 'gpt-4o-mini-transcribe', unit: 'second', nanos: 50_000 },
+  { match: 'gpt-4o-transcribe', unit: 'second', nanos: 100_000 },
+  { match: 'whisper-1', unit: 'second', nanos: 100_000 },
+  { match: 'tts-1-hd', unit: 'character', nanos: 30_000 },
+  { match: 'tts-1', unit: 'character', nanos: 15_000 },
+  { match: 'gpt-4o-mini-tts', unit: 'character', nanos: 15_000 },
+];
+
+/** 一个型号的音频价；没收录就是 null（不是兜底价）。 */
+export function audioRateFor(model: string): AudioRate | null {
+  return longestMatch(AUDIO_RATES, model);
+}
+
+/** 一笔音频账：按哪条规则、哪种单位、收多少纳美元。 */
+export type AudioQuote = {
+  match: string;
+  unit: AudioRate['unit'];
+  nanos: number;
+};
+
+/**
+ * 把一次音频调用的用量折成钱。型号没有音频价目就是 null——调用方在转发之前就该拒掉，
+ * 这里再回一次 null 是让「先拒后算」这条路各自独立成立。
+ */
+export function quoteAudio(model: string, usage: AudioUsage): AudioQuote | null {
+  const rate = audioRateFor(model);
+  if (rate === null) return null;
+  if (rate.unit === 'second') {
+    return { match: rate.match, unit: rate.unit, nanos: Math.round((Math.max(usage.milliseconds, 0) * rate.nanos) / 1000) };
+  }
+  if (rate.unit === 'character') {
+    return { match: rate.match, unit: rate.unit, nanos: Math.max(usage.characters, 0) * rate.nanos };
+  }
+  return {
+    match: rate.match,
+    unit: rate.unit,
+    nanos: nanos(Math.max(usage.input, 0), rate.input) + nanos(Math.max(usage.output, 0), rate.output),
+  };
+}

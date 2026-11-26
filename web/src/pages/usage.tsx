@@ -331,6 +331,21 @@ function TokenTriple({ input, cached, output }: { input: number; cached: number;
   );
 }
 
+/**
+ * 音频那一行的用量：转写看覆盖了多久，合成看念了多少字。
+ *
+ * 按 token 计价的合成模型这两列都是 0——它的用量落在上面那三个 token 里，这里就不再多说一句。
+ */
+function AudioUsage({ ms, characters }: { ms: number; characters: number }) {
+  const { t } = useI18n();
+  if (ms === 0 && characters === 0) return null;
+  return (
+    <span className="block text-[11px] text-muted-foreground">
+      {ms > 0 ? t('us.audio_ms', { value: (ms / 1000).toFixed(1) }) : t('us.audio_chars', { value: characters })}
+    </span>
+  );
+}
+
 function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: ProviderUsage[] }) {
   const { t } = useI18n();
   const labelOf = useMemo(() => {
@@ -392,6 +407,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
               </TableCell>
               <TableCell className="hidden text-right xl:table-cell">
                 <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
+                <AudioUsage ms={row.audio_ms} characters={row.audio_characters} />
               </TableCell>
               {/* 总消费 / Token 费 / Gas 费分列展示：单笔归因一目了然（总消费 = Token 费 + Gas 费）。 */}
               <TableCell
