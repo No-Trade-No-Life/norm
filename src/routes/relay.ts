@@ -702,6 +702,12 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
   };
 
   const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      // 跨方言开场帧（Anthropic 的 message_start / content_block_start，
+      // Responses 的 response.created / output_item.added / content_part.added）：
+      // 官方 SDK 的流式状态机依赖开场事件初始化消息对象，缺了会在 delta 处报错或丢字。
+      emit(emitter.head()).forEach((bytes) => controller.enqueue(bytes));
+    },
     async pull(controller) {
       if (done) return;
       // 同 passThroughStream：持续读取直到至少产出 1 块输出或上游 EOF，

@@ -1913,7 +1913,7 @@ console.log('N+3. 分片滴流 SSE：部分行/空帧/独立 [DONE] 不得提前
     stream: true,
     messages: [{ role: 'user', content: 'hi' }],
   }));
-  check('跨方言分片流 200 且翻译出完整 text_delta', bridged.status === 200 && bridged.text.includes('碎') && bridged.text.includes('片'), bridged.text.slice(0, 300));
+  check('跨方言分片流 200 且带 message_start 与完整 text_delta', bridged.status === 200 && bridged.text.includes('message_start') && bridged.text.includes('content_block_start') && bridged.text.includes('碎') && bridged.text.includes('片'), bridged.text.slice(0, 300));
   check('跨方言分片流收尾带 message_stop', bridged.text.includes('message_stop'), bridged.text.slice(-200));
   const reqId = bridged.headers.get('x-norm-request-id');
   const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=20')).json.items ?? [];
