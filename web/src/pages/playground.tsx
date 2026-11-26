@@ -150,6 +150,7 @@ export function PlaygroundPage() {
       setRunning(false);
       void queryClient.invalidateQueries({ queryKey: ['me'] });
       void queryClient.invalidateQueries({ queryKey: ['usage'] });
+      void queryClient.invalidateQueries({ queryKey: ['earnings'] });
       void queryClient.invalidateQueries({ queryKey: ['ledger'] });
     }
   }, [identity.address, model, prompt, queryClient, stream, t]);
@@ -314,6 +315,8 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
   if (!meta) {
     return <div className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">{t('pg.meta_empty')}</div>;
   }
+  const gasPaid = meta.gas_billed_nanos ?? meta.gas_fee_nanos;
+  const tokenPaid = meta.token_billed_nanos ?? meta.token_nanos;
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
       <span className="flex items-center gap-1">
@@ -321,7 +324,12 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <code className="text-foreground">{meta.request_id}</code>
       </span>
       <span>
-        {t('pg.fee')} <code className="text-foreground">{usd(meta.fee_nanos)}</code>
+        {t('pg.gas_fee')} <code className="text-foreground">{usd(gasPaid)}</code>
+      </span>
+      <span>
+        {t('pg.token_fee')}{' '}
+        <code className={tokenPaid > 0 ? 'text-foreground' : 'text-muted-foreground'}>{usd(tokenPaid)}</code>{' '}
+        <span className="text-[10px]">({meta.pool ? t('pg.token_to_provider') : t('pg.token_own')})</span>
       </span>
       <span>
         {t('pg.balance')} <code className="text-foreground">{usd(meta.balance_nanos)}</code>
@@ -334,7 +342,7 @@ function NormMetaBar({ meta }: { meta: NormMeta | null }) {
         <ServerIcon className="size-3.5" />
         {t('pg.provider_host')} <code className="text-foreground">{meta.host}</code>
       </span>
-      {/* 池子里那条是站点付钱：账单上必须说清这一单有没有落到兜底上。 */}
+      {/* 池子里那条是他人上游：账单上说清这一单落到了兜底上且 Token 费转给了上游提供方。 */}
       {meta.pool ? <Badge variant="outline">{t('pg.pool_badge')}</Badge> : null}
     </div>
   );

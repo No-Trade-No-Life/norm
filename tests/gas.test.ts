@@ -15,6 +15,7 @@ import {
   GAS_MARGIN_BPS,
   GAS_SCHEDULE,
   GAS_SETTLE_NANOS,
+  GAS_TOKEN_TRANSFER_NANOS,
   GasMeter,
   applyGasMargin,
 } from '../src/gas';
@@ -109,14 +110,21 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(GAS_MARGIN_BPS).toBe(0);
     expect(GAS_ENTRY_BASE_NANOS).toBe(420);
     expect(GAS_SETTLE_NANOS).toBe(2_000);
+    expect(GAS_TOKEN_TRANSFER_NANOS).toBe(1_000);
+    expect(D1_ROW_WRITES.token_transfer).toBe(1);
     expect(GAS_AFFINITY_UPSERT_NANOS).toBe(1_000);
     expect(GAS_FLOOR_NANOS).toBe(2_420);
     expect(DEFAULT_MIN_BALANCE_NANOS).toBe(10_000);
 
-    // 1. 稳态同日直通、非流式、无写亲和：420 + 2,000 = 2,420
+    // 1. 稳态同日直通、非流式、自有上游（无写亲和、无跨用户转账）：420 + 2,000 = 2,420
     const steady = new GasMeter({ availableNanos: 100_000 });
     expect(steady.finalizeForSettlement()).toBe(2_420);
     expect(steady.finalTotal()).toBe(2_420);
+
+    // 1b. 稳态同日直通、非流式、公共池/他人上游（额外 1 行上游入账写库）：420 + 1,000 + 2,000 = 3,420
+    const steadyPool = new GasMeter({ availableNanos: 100_000 });
+    steadyPool.chargeD1Writes(D1_ROW_WRITES.token_transfer);
+    expect(steadyPool.finalizeForSettlement()).toBe(3_420);
 
     // 2. 同日直通 + 流式：2,420 + 60 = 2,480
     const steadyStream = new GasMeter({ availableNanos: 100_000 });
@@ -228,10 +236,11 @@ describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
 
     const address = 'gas-auth-fixture';
     const key = newConsumerKey();
-    db.prepare('INSERT INTO principals (address, created_at, voucher_nanos) VALUES (?, ?, ?)').run(
+    db.prepare('INSERT INTO principals (address, created_at, voucher_nanos, earn_nanos) VALUES (?, ?, ?, ?)').run(
       address,
       1_700_000_000,
       25_000,
+      5_000,
     );
     db.prepare(
       'INSERT INTO consumers (id, address, name, key_sha256, key_hint, created_at) VALUES (?, ?, ?, ?, ?, ?)',
@@ -242,7 +251,7 @@ describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
     expect(principal).toEqual({
       address,
       consumerId: 'con_1',
-      balanceNanos: 25_000,
+      balanceNanos: 30_000,
       consumerLastUsedAt: null,
     });
     expect(spy.counts()).toEqual({ reads: 1, writes: 0 });

@@ -123,10 +123,10 @@ pnpm install && pnpm build && pnpm attest
 ## 计费与定价原则
 
 - **纳美元整数记账**：单位一律是纳美元（1e-9 USD，不用浮点），避免极便宜调用被四舍五入为 0。
-- **按 Token + 动态 Gas**：`input_tokens`（含缓存命中）/ `cached_tokens` / `output_tokens` 三项分开计价（价目表写在 `src/pricing.ts`），外加按执行路径实时累加的**动态 Gas 费**（单价表写在 `src/gas.ts`，两者一并公开在 `GET /api/v1/pricing` 并进入 `source_sha256` 构建哈希）：
-  - 从 **300 纳美元**（Worker 调用）起步，累加本次请求实际发生的 Cloudflare 成本（异常日志摊销、基础/桥接/流式 CPU、D1 读上界与每一次真实 D1 行写）；
-  - 稳态同日直通非流式为 **2,420 纳美元**（$0.00000242），流式 +60、跨方言桥接 +100、当日首次刷新密钥活跃日 +1,000、新会话写亲和 +1,000（7 天内命中 +0）；
-  - 结算前冻结计量器，绝不事后补数；每条记录恒满足 `fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos`，余额永不为负。
+- **Gas 费与 Token 费分开结算（价值转移）**：
+  - **动态 Gas 费（付给 Norm）**：单价表写在 `src/gas.ts`，从 **300 纳美元**（Worker 调用）起步，按实际经过的 Cloudflare 成本累加（异常日志摊销、基础/桥接/流式 CPU、D1 读上界与每一次真实 D1 行写）；自有上游稳态同日直通非流式为 **2,420 纳美元**（$0.00000242），流式 +60、跨方言桥接 +100、当日首次刷新密钥活跃日 +1,000、新会话写亲和 +1,000、跨用户 Token 转账入账 +1,000；
+  - **Token 费（用户间价值转移，Norm 0 抽成）**：`input_tokens`（含缓存命中）/ `cached_tokens` / `output_tokens` 三项分开计价（价目表写在 `src/pricing.ts`，与 Gas 一起公开在 `GET /api/v1/pricing` 并进入 `source_sha256` 构建哈希）。**调用自己的上游只付 Gas 费（`token_nanos = 0`）**；**调用公共池/他人上游时，实扣的 `token_billed_nanos` 直接转入该上游提供方的 `earn_nanos`**，上游提供方可在 `GET /api/v1/account/earnings` 与「用量与账本」页逐笔核对；
+  - 结算前冻结计量器，绝不事后补数；余额不足时优先扣 Gas、余下扣 Token，每条记录恒满足 `fee_nanos = gas_billed_nanos + token_billed_nanos = gas_fee_nanos + token_nanos − unbilled_nanos`，余额永不为负，全站价值严格守恒。
 - **余额不足提前中止（零额外写库）**：入口设置安全余额阈值 **`MIN_BALANCE_NANOS = 10,000`**（$0.00001），低于该值直接返回 `402 insufficient_balance`，产生 **0 次 D1 写、0 次上游调用**；写亲和前、发往上游前与纠偏重试前同样在内存里做余额预算熔断。
 - **纯读零写库，写全体补贴读全体**：只读操作（如 `GET /v1/models` 与管理面读接口）不计费且严格避免「读导致写」（不写 `last_used_at`、不回写 `affinities`）；免费读产生的基础设施成本在原则上由计费的写/推理操作全体按实际读写比通过 `GAS_SCHEDULE.read_subsidy` 交叉补贴（冷启动期暂置 `0`）。
 - **失败收 Gas，不收 Token**：只要请求打到上游，Worker 与 D1 成本就已发生，上游 4xx/5xx 或超时照收 Gas（通过响应头 `X-Norm-Gas-Fee-Nanos` 标明），token 费为 0；未打到上游的校验失败（非 JSON、余额不足、无可用上游）不记账也不扣费。

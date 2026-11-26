@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { Env } from './env';
 import { HttpError } from './http';
 import { authenticate, authenticateConsumer, type Identity, type Principal } from './auth';
-import { availableNanos } from './store';
+import { availableNanos, totalSpendNanos, type PrincipalCounters } from './store';
 import { publicRoutes } from './routes/public';
 import { pricingRoutes } from './routes/pricing';
 import { accountRoutes } from './routes/account';
@@ -34,19 +34,22 @@ app.route('/api/v1/pricing', pricingRoutes);
  */
 app.post('/api/v1/auth/login', async (c) => {
   const principal = await authenticate(c.req.raw, c.env);
-  // 余额不落库：它就是四块累计数的一个算式，接口现算。
+  // 余额不落库：它就是六块只增累计数的一个算式，接口现算。
   const row = await c.env.DB.prepare(
-    'SELECT recharge_nanos, voucher_nanos, spend_nanos, withdraw_nanos, created_at FROM principals WHERE address = ?',
+    'SELECT recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, withdraw_nanos, created_at FROM principals WHERE address = ?',
   )
     .bind(principal.address)
-    .first<{ recharge_nanos: number; voucher_nanos: number; spend_nanos: number; withdraw_nanos: number; created_at: number }>();
+    .first<PrincipalCounters & { created_at: number }>();
   return c.json({
     address: principal.address,
     balance_nanos: row ? availableNanos(row) : 0,
-    // 四块累计数一起回：开户给的是一张券，不是充值，这一点不该等翻流水才知道。
+    // 六块只增累计数一起回：开户给的是一张券，不是充值；Gas 与 Token 分开统计。
     recharge_nanos: row?.recharge_nanos ?? 0,
     voucher_nanos: row?.voucher_nanos ?? 0,
-    spend_nanos: row?.spend_nanos ?? 0,
+    earn_nanos: row?.earn_nanos ?? 0,
+    gas_spend_nanos: row?.gas_spend_nanos ?? 0,
+    token_spend_nanos: row?.token_spend_nanos ?? 0,
+    spend_nanos: row ? totalSpendNanos(row) : 0,
     withdraw_nanos: row?.withdraw_nanos ?? 0,
     created: principal.opened,
   });
