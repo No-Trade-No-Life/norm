@@ -35,6 +35,7 @@ import { sendUpstream } from '../tunnel';
 import {
   failureHeaders,
   normMeta,
+  receiptHeaders,
   recordFailure,
   settleBill,
   type Accounting,
@@ -326,8 +327,12 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       const billed = await bill(accounting, core, reply.status);
       // 同格式：响应体一个字段都不动，只把 `norm` 作为附加字段挂上去。
       // 跨方言：整个响应由 renderInbound 说出入口方言。
-      const body = sameShape ? { ...json, norm: billed } : renderInbound(entry.dialect, core, billed);
-      return c.json(body as Record<string, unknown>);
+      // 同形直通：`cost_usd_nanos` 与 `norm` 一起挂上去，上层网关读顶层字段就能记账；
+      // 跨方言则由 `renderInbound` 说入口方言（账目仍在这四个回执头上，与音频同一套）。
+      const body = sameShape
+        ? { ...json, cost_usd_nanos: billed.fee_nanos, norm: billed }
+        : renderInbound(entry.dialect, core, billed);
+      return c.json(body as Record<string, unknown>, 200, receiptHeaders(billed));
     }
 
     // Gas 照收，token 不收：这次调用已经真的打出去了（Worker 与 D1 的成本都发生过），
