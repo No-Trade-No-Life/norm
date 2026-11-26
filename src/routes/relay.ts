@@ -452,7 +452,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
         await recordFailure(accounting, 'provider_error', 200),
       );
     }
-    return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
+    return bill(accounting, { text: '', reasoning: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -625,7 +625,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
         await recordFailure(accounting, 'provider_error', 200),
       );
     }
-    return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
+    return bill(accounting, { text: '', reasoning: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -652,6 +652,10 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
         for (const event of codec.decodeStreamEvents(data, calls.size)) {
           if (event.kind === 'text') {
             emit(emitter.delta(event.text)).forEach(push);
+            continue;
+          }
+          if (event.kind === 'reasoning') {
+            emit(emitter.reasoning(event.text)).forEach(push);
             continue;
           }
           if (event.kind === 'tool_start') {
@@ -699,6 +703,8 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
           const meta = await finish();
           const core: AnswerCore = {
             text: '',
+            // 流里的思考由 emitter 直接说了；这一份是给记账与收尾用的，思考不进账。
+            reasoning: '',
             toolCalls: [...calls.values()].map((call) => ({
               id: call.id,
               name: call.name,
