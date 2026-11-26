@@ -4,6 +4,7 @@ import { minBalanceNanos } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { needsConsumerTouch, touchConsumer } from '../consumers';
+import { dialectCodecFor } from '../codecs';
 import {
   carriesOutput,
   parseInbound,
@@ -40,18 +41,18 @@ import {
 } from '../store';
 import { affinityHash, affinityKeyOf } from '../routing';
 import { sessionIdFor } from '../sessions';
-import { adapterFor, protocolUrlFor, rateAt, type Protocol } from '../protocols';
+import { protocolFor, protocolUrlFor, rateAt } from '../protocols';
 
 type RelayContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
 
 /**
- * 转发面：四条入口方言 × 四种上游提供商协议。
+ * 转发面：四条入口方言 + 可复用的上游协议契约。
  *
- * 入口与上游提供商用的是同一套名字，所以「入口方言 === 上游提供商协议」就是字符串相等，
- * 而那 4 格**不转换**：请求体按原始字节发出去，响应体原样回来（只多一个 `norm` 字段）。
+ * 直通判定只比较线缆方言（`entry.dialect === profile.dialect`）：
+ *   - 同方言直通：请求体按原始字节发出去，响应体原样回来（只多一个 `norm` 字段）；
+ *   - 跨方言桥接：入口 → 规范中间态（`ChatBody`）→ 上游方言编解码（`src/codecs.ts`）→ 回来时渲染成入口方言。
  *
- * 其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 协议适配器 → 回来时渲染成入口方言。
- * 桥只在一侧出现，所以矩阵是 4 段入口翻译 + 4 段上游提供商适配，而不是 16 条路径。
+ * 翻译层只按 4 种方言分发（复杂度 4 + 4），上游厂商协议（`deepseek` / `opencode-go` 等）只声明复用的方言与传输/计价契约。
  *
  * 两件事只在本请求的作用域里成立，不落库：上游提供商明文密钥（BYOK）、请求与响应内容（ZDR）。
  */
@@ -176,10 +177,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     const provider = choice.provider;
     tried.push(provider.id);
 
-    const adapter = adapterFor(provider.protocol);
+    const profile = protocolFor(provider.protocol);
+    const codec = dialectCodecFor(profile.dialect);
     // 「同格式直通」比的是**线缆上的方言**，不是协议值的字面：`deepseek` 说 Responses，
     // 所以 Responses 客户端打给它一样一个字节都不动。
-    const sameShape = entry.dialect === adapter.dialect;
+    const sameShape = entry.dialect === profile.dialect;
 
     // 这一轮转发实际会产生的 CPU 成本：二次重试多一次基础 CPU，跨方言多桥接 CPU，流式多拆帧 CPU。
     const attemptCpu =
@@ -223,9 +225,9 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
      * 值由 `sessions.ts` 从这次请求派生，调用方自报的原值永远不上行——它只影响
      * 提示词缓存命中，不该成为一条能把两段对话对齐起来的明文线索。
      */
-    const sessionHeaders = adapter.session_header
+    const sessionHeaders = profile.session_header
       ? {
-          [adapter.session_header]: sessionIdFor({ address, headers: c.req.raw.headers, affinity, body: raw, model }),
+          [profile.session_header]: sessionIdFor({ address, headers: c.req.raw.headers, affinity, body: raw, model }),
         }
       : {};
 
@@ -235,14 +237,14 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
      * 同格式直通按原始字节发出去——唯一的例外是流式请求打向 openai-chat 上游时：那种上游
      * 默认不回 token 用量，而账本就靠它算钱。跨方言则整份重说一遍。
      */
-    const askForUsage = stream && adapter.dialect === 'openai-chat';
+    const askForUsage = stream && profile.dialect === 'openai-chat';
     const outbound = sameShape
       ? askForUsage
         ? withUsage(raw)
         : rawBody
       : askForUsage
-        ? withUsage(adapter.request(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
-        : JSON.stringify(adapter.request(parseInbound(entry.dialect, raw, model, stream), model));
+        ? withUsage(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
+        : JSON.stringify(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model));
 
     // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
     // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
@@ -272,7 +274,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     try {
       reply = await fetch(protocolUrlFor(provider.protocol, provider.base_url, model, stream), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...adapter.headers(providerKey), ...sessionHeaders },
+        headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey), ...sessionHeaders },
         body: outbound,
       });
     } catch (error) {
@@ -288,11 +290,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       if (stream) {
         return sameShape
           ? passThroughStream({ ...accounting, reply, dialect: entry.dialect, wantsUsage })
-          : bridgeStream({ ...accounting, reply, entry: entry.dialect, protocol: provider.protocol, wantsUsage });
+          : bridgeStream({ ...accounting, reply, entry: entry.dialect, upstream: profile.dialect, wantsUsage });
       }
 
       const json = await reply.json<Record<string, unknown>>();
-      const core = readAnswer(adapter.dialect, json);
+      const core = readAnswer(profile.dialect, json);
       const billed = await bill(accounting, core, reply.status);
       // 同格式：响应体一个字段都不动，只把 `norm` 作为附加字段挂上去。
       // 跨方言：整个响应由 renderInbound 说出入口方言。
@@ -654,35 +656,37 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 /* ── 流式：跨方言 ─────────────────────────────────────────────────── */
 
 /**
- * 跨方言流：上游提供商 SSE → OpenAI chat chunk（协议适配器负责）→ 入口方言的帧（dialects 负责）。
+ * 跨方言流：上游方言 SSE → 规范事件（`src/codecs.ts` 负责）→ 入口方言的帧（`src/dialects.ts` 负责）。
+ *
+ * 注意入参只收 `upstream: Dialect`、不收 `Protocol`：流式翻译永远只按线缆方言分发，与厂商协议无关。
  *
  * 用量同样一边嗅一边转发。这里比直通多一件事：入口若是 Gemini / Anthropic / Responses，
  * 收尾帧必须带上最终 token 数——那正是我们记账用的那一份，于是「账」与「回给客户端的
  * 用量」永远一致，不会出现「扣了钱但报 0 token」。
  */
-function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; protocol: Protocol; wantsUsage: boolean }): Response {
-  const { reply, entry, protocol, wantsUsage } = accounting;
+function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; upstream: Dialect; wantsUsage: boolean }): Response {
+  const { reply, entry, upstream, wantsUsage } = accounting;
   const source = reply.body;
   if (!source) return new Response('上游提供商没有返回流', { status: 502 });
 
-  const adapter = adapterFor(protocol);
+  const codec = dialectCodecFor(upstream);
   const emitter = streamEmitter(entry, accounting.requestId, accounting.model);
   const reader = source.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const emit = (chunks: string[]) => chunks.map((chunk) => encoder.encode(chunk));
   const toChat = entry === 'openai-chat';
-  const sniffer = usageSniffer(adapter.dialect);
+  const sniffer = usageSniffer(upstream);
   /** 上游在流里报的错：拿到它、又一个字都没生成，这一单就不是「成功」。 */
   let upstreamError: string | null = null;
   const noteFrame = (payload: string) => {
     sniffer.push(payload);
-    if (accounting.firstTokenMs === undefined && carriesOutput(adapter.dialect, payload)) {
+    if (accounting.firstTokenMs === undefined && carriesOutput(upstream, payload)) {
       accounting.firstTokenMs = Date.now() - accounting.startedAt;
     }
-    // 跨方言这条路上，认不出的帧会被适配器丢掉——错误帧也在其中。这一丢，客户端就只剩
+    // 跨方言这条路上，认不出的帧会被编解码器丢掉——错误帧也在其中。这一丢，客户端就只剩
     // 「200 + 空白」，所以这里单独认一次，收尾时把原话说回去。
-    if (upstreamError === null) upstreamError = streamError(adapter.dialect, payload);
+    if (upstreamError === null) upstreamError = streamError(upstream, payload);
   };
   /**
    * 这次回答里的工具调用，按上游给的序号攒着：参数是增量的，收尾时要用完整的那一份，
@@ -725,7 +729,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
         const data = line.slice(5).trim();
         if (data.length === 0 || data === '[DONE]') return;
         noteFrame(data);
-        for (const event of adapter.streamEvents(data, calls.size)) {
+        for (const event of codec.decodeStreamEvents(data, calls.size)) {
           if (event.kind === 'text') {
             emit(emitter.delta(event.text)).forEach(push);
             continue;

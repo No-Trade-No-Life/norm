@@ -24,7 +24,7 @@ flowchart LR
   subgraph Worker["Cloudflare Worker（单源部署）"]
     direction TB
     Admin["管理面：账户 / 上游 / Token / 模型总表"]
-    Relay["转发面：模型筛 · 自有优先/池子兜底 · 会话亲和<br/>4×6 协议桥 · 跨方言工具调用 · 纳美元记账"]
+    Relay["转发面：模型筛 · 自有优先/池子兜底 · 会话亲和<br/>四方言互通桥 · 厂商协议复用 · 跨方言工具调用 · 纳美元记账"]
   end
   Admin --> D1[("Cloudflare D1<br/>密文密钥 · 记账字段 · 模型清单")]
   Relay --> D1
@@ -81,23 +81,26 @@ curl "https://norm.ntnl.io/v1/models/gemini-2.0-flash:generateContent" \
 
 换上游不用改程序、也不用换 Token：走哪条上游由服务端按规则自动挑。
 
-## 协议矩阵与路由
+## 方言互通与路由
 
-### 4×6 全连接，对角线直通，支持跨方言工具调用
+### 两层分离：四方言互通 + 厂商协议零翻译复用
 
-四条入口方言 × 六种上游提供商协议，共 **24 格全通**：
+Norm 刻意**不做** $M \times N$ 的成对翻译矩阵，而是把「线缆方言」与「上游厂商契约」拆成两层：
 
-| 入口方言 | 常见客户端 | `openai-chat` / `opencode-go` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
+1. **线缆方言层（`Dialect`，4 种）**：`openai-chat`、`openai-responses`、`anthropic-messages`、`google-gemini`。所有跨方言转换都经由规范中间态（Hub）中转，入口侧 4 段 + 出站侧 4 段（复杂度 $4 + 4$，不是 $4 \times N$）。
+2. **上游协议层（`Protocol`，可扩展）**：只声明复用哪一种 `dialect` 并叠加厂商特有的传输/计价契约（固定 `base_url`、路径前缀、会话头、分时计价），**不包含任何翻译逻辑**——新增厂商协议时翻译代码增量为 **0**。
+
+| 入口方言 | 常见客户端 | 上游方言 `openai-chat`<br/>（含 `opencode-go`） | 上游方言 `openai-responses`<br/>（含 `deepseek`） | 上游方言 `anthropic-messages` | 上游方言 `google-gemini` |
 |---|---|---|---|---|---|
-| `POST /v1/chat/completions` | OpenAI SDK / curl | **直通** | 转换 | 转换 | 转换 |
-| `POST /v1/responses` | Codex CLI | 转换 | **直通** | 转换 | 转换 |
-| `POST /v1/messages` | Anthropic SDK / Claude Code | 转换 | 转换 | **直通** | 转换 |
-| `POST /v1/models/{model}:generateContent` | Google SDK | 转换 | 转换 | 转换 | **直通** |
+| `POST /v1/chat/completions` | OpenAI SDK / curl | **直通** | 桥接 | 桥接 | 桥接 |
+| `POST /v1/responses` | Codex CLI | 桥接 | **直通** | 桥接 | 桥接 |
+| `POST /v1/messages` | Anthropic SDK / Claude Code | 桥接 | 桥接 | **直通** | 桥接 |
+| `POST /v1/models/{model}:generateContent` | Google SDK | 桥接 | 桥接 | 桥接 | **直通** |
 
-- **6 格同方言直通**：请求体按原始字节发出、响应体原样回来，不碰扩展字段（仅对 chat 流式补 `stream_options.include_usage` 以便记账，且客户端没要时自动吃掉多余用量帧）。
-- **18 格跨方言转换**：经由规范形式桥接，**完整支持流式与跨方言 Tool Calling**（`tools` / `tool_choice` / `tool_calls` / 工具结果双向互译）。
-- **厂商协议内置契约**：`deepseek` 固定官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 固定推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存。
-- **统一模型清单**：`GET /v1/models` 将六种上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
+- **同方言直通**：判定只看线缆方言（`entry.dialect === profile.dialect`）——例如 Responses 客户端打向 `deepseek`、Chat 客户端打向 `opencode-go` 均为直通；请求体按原始字节发出、响应体原样回来，不碰扩展字段（仅对 chat 流式补 `stream_options.include_usage` 以便记账，且客户端没要时自动吃掉多余用量帧）。
+- **跨方言桥接**：经由规范中间态互译，**完整支持流式与跨方言 Tool Calling**（`tools` / `tool_choice` / `tool_calls` / 工具结果双向互译）。
+- **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存。
+- **统一模型清单**：`GET /v1/models` 按方言将上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
 
 ### 服务端选址规则
 

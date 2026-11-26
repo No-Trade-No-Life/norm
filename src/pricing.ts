@@ -39,7 +39,7 @@ export type PriceEntry = Rates & {
  * 某条协议自带的官方价目：同一批型号两档价，外加「这个时刻算哪一档」。
  *
  * 与 `PriceEntry` 的区别就是「价随时刻变」：通用表回答不了「现在多少钱」，
- * 所以只有真有分时计价的上游才需要它（见 `protocols.ts` 的 `Adapter.pricing`）。
+ * 所以只有真有分时计价的上游才需要它（见 `protocols.ts` 的 `ProtocolProfile.pricing`）。
  */
 export type Tariff = {
   /** 模型名前缀，与通用表同一套匹配规则。 */

@@ -11,10 +11,11 @@
  *
  * 它不扣费：列清单不是一次生成，没有 token，也没有人去改写它。
  */
+import { dialectCodecFor, type ModelInfo } from './codecs';
 import type { Env } from './env';
 import { nowSeconds } from './ids';
 import { ratesFor, type Rates } from './pricing';
-import { adapterFor, tariffFor, type ModelInfo, type Protocol } from './protocols';
+import { protocolFor, tariffFor, type Protocol } from './protocols';
 import { unsealProviderKey } from './seal';
 import { recordProviderModels } from './store';
 
@@ -69,15 +70,16 @@ export async function probeProviderModels({
     return { ok: false, kind: 'local', message: `上游密钥解不开：${(error as Error).message}` };
   }
 
-  const adapter = adapterFor(provider.protocol);
+  const profile = protocolFor(provider.protocol);
+  const codec = dialectCodecFor(profile.dialect);
   const baseUrl = provider.base_url.replace(/\/+$/, '');
   const startedAt = Date.now();
 
   let upstream: Response;
   try {
-    upstream = await fetch(`${baseUrl}${adapter.modelsPath()}`, {
+    upstream = await fetch(`${baseUrl}${profile.modelsPath()}`, {
       method: 'GET',
-      headers: { Accept: 'application/json', ...adapter.headers(upstreamKey) },
+      headers: { Accept: 'application/json', ...profile.headers(upstreamKey) },
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
@@ -109,7 +111,7 @@ export async function probeProviderModels({
     parsed = {};
   }
 
-  return { ok: true, items: adapter.readModels(parsed), latency_ms: Date.now() - startedAt };
+  return { ok: true, items: codec.decodeModels(parsed), latency_ms: Date.now() - startedAt };
 }
 
 /** 上游失败时压成一句话：状态码 + 上游原话的前一小段（换行压平，宁短勿长）。 */

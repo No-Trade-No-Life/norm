@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import { minBalanceNanos } from '../env';
 import { D1_ROW_WRITES, GAS_FLOOR_NANOS, GAS_MARGIN_BPS, GAS_SCHEDULE } from '../gas';
 import { DEFAULT_RATES, MODEL_RATES } from '../pricing';
-import { PROTOCOLS, adapterFor } from '../protocols';
+import { PROTOCOLS, protocolFor } from '../protocols';
 
 /**
  * 价目表公开：账单要能被用户自己核对。
@@ -25,7 +25,7 @@ pricingRoutes.get('/', (c) =>
       default: DEFAULT_RATES,
       models: MODEL_RATES.map(({ match, input, cached, output }) => ({ match, input, cached, output })),
       protocols: PROTOCOLS.flatMap((protocol) => {
-        const pricing = adapterFor(protocol).pricing;
+        const pricing = protocolFor(protocol).pricing;
         if (!pricing) return [];
         return [
           {

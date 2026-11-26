@@ -142,43 +142,46 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
   `api.openai.com.evil.tld` 与 `api.openai.com` 是两台机器。命中与否作为 `trusted` 布尔返回。
 - 因此「官方 key」退化成**前端的渲染概念**：换一份清单，同一个上游提供商就换个说法，数据层不动。
 
-### 6.2 四种协议，两侧同名：4×4
+### 6.2 两层分离：四种线缆方言 + 可复用的上游协议
 
-四种协议既是**入口**（客户端怎么说），也是**上游提供商**（上游提供商怎么存）。因为两侧同名，
-「入口方言 === 上游提供商协议」就是一句字符串相等，而那 4 格**不转换**——请求体按原始字节
-发出去，响应体原样回来。一个字段都不碰，包括我们不打算理解的 `tools`、`response_format`。
+Norm 把**线缆方言（`Dialect`）**和**上游协议契约（`Protocol`）**拆成两层：
 
-例外只有一个：流式请求打向 `openai-chat` 上游时补 `stream_options.include_usage`，
+- **线缆方言只有四种**（`openai-chat` / `openai-responses` / `anthropic-messages` / `google-gemini`），入站与出站共用同一套方言名。
+- **上游协议是「方言 + 厂商契约」**：四条通用方言协议由用户填写 `base_url`；厂商协议（如 `deepseek`、`opencode-go`）在 `src/protocols.ts` 里声明复用哪一种 `dialect` 并叠加固定基址、路径前缀、会话头或分时计价，**不包含任何翻译代码**。
+
+直通判定只比较线缆方言（`entry.dialect === profile.dialect`）：同方言时**不转换**——请求体按原始字节发出去，响应体原样回来，一个字段都不碰（包括我们不打算理解的 `tools`、`response_format`）。
+
+例外只有一个：流式请求打向 `openai-chat` 方言的上游（含 `opencode-go`）时补 `stream_options.include_usage`，
 因为那种上游默认不回用量，而账本必须知道这次花了多少 token。多出来的那条用量帧
 客户端没要就不转发。
 
-其余 12 格才经过 OpenAI Chat 这座桥。桥只在一侧出现，所以矩阵是 4 段入口翻译
-加 4 段上游提供商适配（`src/protocols.ts` 只管 ChatBody → 四种上游方言），不是 16 条路径。
+跨方言请求才经过规范中间态（Hub）桥接：入口方言 → `ChatBody`（`src/dialects.ts`）→ 上游方言编解码（`src/codecs.ts`）→ 回来时经 `AnswerCore` / `StreamEvent` 渲染成入口方言。
+桥只在规范中间态居中出现，因此翻译是 **4 段入站 + 4 段出站（复杂度 $M + N$）**，不是 $M \times N$ 矩阵：每新增一个上游厂商协议，新增翻译量为 **0**；即使未来引入第 5 种线缆方言，也只需补 1 份「方言 ↔ 规范中间态」编解码。
 
 **工具调用同样过桥**：四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果的形状各不相同，
-所以规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 `src/protocols.ts` 的
+所以规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 `src/codecs.ts` 的
 `ChatTool` / `ChatToolCall`）。入口读进来、出口说回去，`finish_reason` / `stop_reason` 也跟着
-改成「在等工具」。同格式直通不受影响，因为那一路我们根本不看请求体。
+改成「在等工具」。同方言直通不受影响，因为那一路我们根本不看请求体。
 
 这条边界是为了让「直通」有意义：如果一切都先归一化再重建，`responses → responses`
-这种本来一致的调用也会丢字段、白费 CPU，那 4 格就成了借口而不是承诺。
+这种本来一致的调用也会丢字段、白费 CPU，直通就成了借口而不是承诺。
 
-| `protocol` | 协议路径 | 关键差异 |
-|---|---|---|
-| `openai-chat` | `{base}/chat/completions` | 原样透传 |
-| `openai-responses` | `{base}/responses` | 请求用 `input`；响应用 `output[].content[].text`；usage 是 `input/output_tokens` |
-| `anthropic-messages` | `{base}/v1/messages` | `x-api-key` + `anthropic-version` 头；`system` 独立字段；content blocks |
-| `google-gemini` | `{base}/v1beta/models/{model}:generateContent` | `x-goog-api-key`；`contents/parts`；流式走 `:streamGenerateContent?alt=sse` |
-| `deepseek` | `{base}/responses` | 与 `openai-responses` 同一个方言、同一个适配器；多出来的只有**计价**：官方价按请求开始的时刻分高峰 / 低谷两档（见 `src/deepseek.ts`） |
-| `opencode-go` | `{base}/openai/v1/chat/completions` | 与 `openai-chat` 同一个方言、同一个适配器；多出来的是**基址**（官方推理面 `https://opencode.ai/inference/go`，用户不填）与**会话头**（每个请求带 `x-opencode-session: ses_<sha256>`，缺了上游直接 `400 MissingSessionID`；值由 `src/sessions.ts` 派生，调用方的原值不上行） |
+| `protocol` | 复用方言（`dialect`） | 协议路径 | 关键差异 |
+|---|---|---|---|
+| `openai-chat` | `openai-chat` | `{base}/chat/completions` | 通用方言，基址由用户填 |
+| `openai-responses` | `openai-responses` | `{base}/responses` | 请求用 `input`；响应用 `output[].content[].text`；usage 是 `input/output_tokens` |
+| `anthropic-messages` | `anthropic-messages` | `{base}/v1/messages` | `x-api-key` + `anthropic-version` 头；`system` 独立字段；content blocks |
+| `google-gemini` | `google-gemini` | `{base}/v1beta/models/{model}:generateContent` | `x-goog-api-key`；`contents/parts`；流式走 `:streamGenerateContent?alt=sse` |
+| `deepseek` | `openai-responses` | `{base}/responses` | 零翻译复用 `openai-responses`；叠加官方固定基址与高峰 / 低谷两档分时计价（见 `src/deepseek.ts`） |
+| `opencode-go` | `openai-chat` | `{base}/openai/v1/chat/completions` | 零翻译复用 `openai-chat`；叠加官方推理面基址（`https://opencode.ai/inference/go`）、版本段路径与必带会话头（`x-opencode-session: ses_<sha256>`，由 `src/sessions.ts` 派生） |
 
-四种都支持流式，全部被翻译成 OpenAI chat chunk，结尾统一补一条 `norm` 事件与 `data: [DONE]`。
+四种方言都支持流式：同方言直通时上游 SSE 原样透传（仅 `openai-chat` 入口在流末补一条 `norm` 事件与 `data: [DONE]`）；跨方言时由 `src/codecs.ts` 拆成规范事件，再由 `src/dialects.ts` 渲染成入口方言自己的 SSE 帧。
 
 ### 6.3 三件该由用户配置的事
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `protocol` | 上表四种 | 上游提供商说哪种协议 |
+| `protocol` | 上表六种（四种通用方言 + 厂商契约协议） | 上游提供商说哪种协议 |
 | `enabled` | `true` / `false` | 这条上游提供商现在用不用。禁用后不参与选址 |
 | `scope` | `private` / `pool` | `private` 只给主人用；`pool` 进公共池，全站在自己的上游不可用时兜底用它。只有站点地址（`POOL_ADMIN_ADDRESSES`）能写 `pool` |
 

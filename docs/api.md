@@ -168,17 +168,16 @@ Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
 
 ## 转发（只认 Bearer 消费者密钥）
 
-四个入口，六种上游提供商协议，构成 4×6。**比的是线缆上的方言**（`deepseek` 说 Responses、
-`opencode-go` 说 Chat，所以它们各自与同方言的入口是直通）：
+线缆方言只有**四种**（入站与出站共用同一套方言名）；上游协议在方言之上声明厂商契约（`deepseek` 复用 `openai-responses`、`opencode-go` 复用 `openai-chat`，新增厂商协议零新增翻译代码）。**直通判定只比线缆上的方言**（`entry.dialect === profile.dialect`）：
 
-| 入口 | 客户端 | 上游提供商协议 `openai-chat` / `opencode-go` | `openai-responses` / `deepseek` | `anthropic-messages` | `google-gemini` |
+| 入口 | 客户端 | 上游方言 `openai-chat`（含 `opencode-go`） | `openai-responses`（含 `deepseek`） | `anthropic-messages` | `google-gemini` |
 |---|---|---|---|---|---|
-| `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 转换 | 转换 | 转换 |
-| `POST /v1/responses` | Codex CLI | 转换 | 直通 | 转换 | 转换 |
-| `POST /v1/messages` | Anthropic SDK / Claude Code | 转换 | 转换 | 直通 | 转换 |
-| `POST /v1/models/{model}:generateContent` | Google SDK | 转换 | 转换 | 转换 | 直通 |
+| `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 桥接 | 桥接 | 桥接 |
+| `POST /v1/responses` | Codex CLI | 桥接 | 直通 | 桥接 | 桥接 |
+| `POST /v1/messages` | Anthropic SDK / Claude Code | 桥接 | 桥接 | 直通 | 桥接 |
+| `POST /v1/models/{model}:generateContent` | Google SDK | 桥接 | 桥接 | 桥接 | 直通 |
 
-**对角线不转换。** 入口方言等于上游提供商的 `protocol` 时，请求体按原始字节发给上游提供商，
+**同方言直通不转换。** 入口方言等于上游协议所声明的线缆方言（`dialect`）时，请求体按原始字节发给上游提供商，
 响应体原样返回（只多一个 `norm` 字段）。一个字段都不碰，包括 `tools`、`tool_choice`、
 `response_format` 这些我们没打算理解的字段。
 
@@ -187,8 +186,8 @@ Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
 它额外产生的那条用量帧（`choices: []`，只带 `usage`）由 Norm 吃掉：客户端没要，就不会
 突然收到一条它没预期的帧；客户端本来就要了（`include_usage: true`），就原样转发。
 
-**非对角线才过桥**：入口方言 → OpenAI Chat → 协议适配器 → 回来时渲染成入口方言。
-桥只在一侧出现，所以矩阵是 4 段入口翻译加 4 段上游提供商适配，不是 16 条路径。
+**跨方言才过规范中间态桥接**：入口方言 → 规范中间态（`src/dialects.ts`）→ 上游方言编解码（`src/codecs.ts`）→ 回来时渲染成入口方言。
+桥只按 4 种线缆方言组织（4 段入站 + 4 段出站，复杂度 $M + N$），厂商协议只复用方言，不产生新的翻译路径。
 
 **跨方言翻译工具调用。** 四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果形状各不相同，
 Norm 把它们归一成一份扁平的规范形式再各自说回去：Chat 套一层 `function`、Anthropic 用
