@@ -85,7 +85,7 @@ pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
 | 变量 | 默认 | 含义 |
 |---|---|---|
 | `GAS_FEE_NANOS` | `300` | 每一次真的打出去的调用的 Gas 费（纳美元），成功失败都收 |
-| `GRANT_NANOS` | `1000000` | 新地址的演示授信（纳美元，即 $1） |
+| `GRANT_NANOS` | `1000000000` | 新地址的演示授信（纳美元，即 $1） |
 | `SIGNATURE_WINDOW_SECONDS` | `60` | 签名时间窗：只管新鲜度（一次性由请求自带的幂等键保证，见 `docs/crypto.md` 2.1） |
 | `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |
 | `NORM_MASTER_KEY` | 无默认 | **Worker secret**，AES-256-GCM 封装上游提供商密钥用的 32 字节密钥 |
