@@ -75,6 +75,14 @@ export type ChatBody = {
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
+  /**
+   * 客户端想让模型想多久（`none` / `low` / `medium` / `high` / `xhigh` / `max`）。
+   *
+   * 只有 Chat 与 Responses 两家用「档位」说同一件事（`reasoning_effort` 与 `reasoning.effort`），
+   * 所以规范形式里也只留档位：Anthropic 与 Gemini 用**预算 token 数**表达，数字换档位是猜，
+   * 猜出来的档位会让上游真的多花或省掉一笔钱，所以那两家不进这个字段（见 `parseInbound`）。
+   */
+  reasoning_effort?: string;
   stop?: string[];
   messages?: ChatMessage[];
   tools?: ChatTool[];
@@ -92,6 +100,15 @@ export type ChatBody = {
  */
 export type StreamEvent =
   | { kind: 'text'; text: string }
+  /**
+   * 模型想出来的东西（DeepSeek 的 `reasoning_content`、Anthropic 的 thinking 块、
+   * Responses 的 reasoning summary、Gemini 的 `thought` part）。
+   *
+   * 它**不是回答**：`carriesOutput` 不认它（首字延迟按真正开口算，见 dialects.ts），
+   * 但它也不是噪声——推理档位开着的时候，客户端要的就是这段。所以它单独成一种事件，
+   * 由出口决定说成哪一家的思考帧；出口那家说不出来就丢掉，绝不混进 `text`。
+   */
+  | { kind: 'reasoning'; text: string }
   | { kind: 'tool_start'; index: number; id: string; name: string }
   | { kind: 'tool_args'; index: number; args: string };
 
@@ -407,6 +424,8 @@ const openaiChatCodec: DialectCodec = {
     ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
     ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
     ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+    // 推理档位是 Chat 自己的字段名，同方言直通时本来就在（这条只走跨方言桥）。
+    ...(body.reasoning_effort === undefined ? {} : { reasoning_effort: body.reasoning_effort }),
     ...(body.stop?.length ? { stop: body.stop } : {}),
     ...(body.tools?.length ? { tools: body.tools.map(chatWireTool) } : {}),
     // 没带工具却带 tool_choice 是自相矛盾的：上游会当作 400，这里就不发。
@@ -454,6 +473,7 @@ const openaiResponsesCodec: DialectCodec = {
       ...(body.max_tokens === undefined ? {} : { max_output_tokens: body.max_tokens }),
       ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
       ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+      ...(body.reasoning_effort === undefined ? {} : { reasoning: { effort: body.reasoning_effort } }),
       ...(body.tools?.length
         ? {
             tools: body.tools.map((tool) => ({
@@ -649,6 +669,9 @@ function chatStreamEvents(data: string): StreamEvent[] {
   const events: StreamEvent[] = [];
   for (const choice of listOf(frame.choices)) {
     const delta = recordOf(recordOf(choice).delta);
+    // 推理模型的思考先到：DeepSeek 叫 `reasoning_content`，走中转的常常叫 `reasoning`。
+    const reasoning = stringOf(delta.reasoning_content) || stringOf(delta.reasoning);
+    if (reasoning.length > 0) events.push({ kind: 'reasoning', text: reasoning });
     const text = stringOf(delta.content);
     if (text.length > 0) events.push({ kind: 'text', text });
     for (const entry of listOf(delta.tool_calls)) {
@@ -688,6 +711,10 @@ function responsesStreamEvents(data: string): StreamEvent[] {
     const text = stringOf(frame.delta) || stringOf(frame.delta_text);
     return text.length > 0 ? [{ kind: 'text', text }] : [];
   }
+  if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+    const text = stringOf(frame.delta);
+    return text.length > 0 ? [{ kind: 'reasoning', text }] : [];
+  }
   return [];
 }
 
@@ -708,6 +735,10 @@ function anthropicStreamEvents(data: string): StreamEvent[] {
       const args = stringOf(delta.partial_json);
       return args.length > 0 ? [{ kind: 'tool_args', index, args }] : [];
     }
+    if (stringOf(delta.type) === 'thinking_delta') {
+      const thinking = stringOf(delta.thinking);
+      return thinking.length > 0 ? [{ kind: 'reasoning', text: thinking }] : [];
+    }
     const text = stringOf(delta.text);
     return text.length > 0 ? [{ kind: 'text', text }] : [];
   }
@@ -723,7 +754,8 @@ function geminiStreamEvents(data: string, toolOffset = 0): StreamEvent[] {
     for (const part of listOf(recordOf(recordOf(candidate).content).parts)) {
       const piece = recordOf(part);
       const text = stringOf(piece.text);
-      if (text.length > 0) events.push({ kind: 'text', text });
+      // Gemini 的思考 part 是同一段文字加 `thought: true`：认得它，才不会被当成回答。
+      if (text.length > 0) events.push({ kind: piece.thought === true ? 'reasoning' : 'text', text });
       if (piece.functionCall) {
         const call = recordOf(piece.functionCall);
         // Gemini 不给调用 id，也没有分片：用跨帧递增的 toolOffset 编号，防止多帧并行调用互相覆盖。

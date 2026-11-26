@@ -35,6 +35,13 @@ export type { Dialect };
  */
 export type AnswerCore = {
   text: string;
+  /**
+   * 模型想过的东西，与 `text` 分开：它是思考，不是回答。
+   *
+   * 四家都说得出这件事（`reasoning_content` / reasoning summary / thinking 块 / `thought` part），
+   * 空串就是「这次上游没给思考」——不猜、不补。
+   */
+  reasoning: string;
   toolCalls: ChatToolCall[];
   model: string;
   usage: Usage;
@@ -407,10 +414,20 @@ export function parseInbound(dialect: Dialect, raw: Raw, model: string, stream: 
   const topP = dialect === 'google-gemini' ? geminiCfg.topP : raw.top_p;
   const stop = stopListOf(dialect, raw);
   const { tools, choice } = TOOLS[dialect](raw);
+  // 推理档位：只有 Chat（`reasoning_effort`）与 Responses（`reasoning.effort`）说得出「档位」。
+  // Anthropic（`thinking.budget_tokens`）与 Gemini（`thinkingConfig.thinkingBudget`）说的是预算
+  // token 数——把预算折成档位是猜，猜错了直接改变上游的思考成本，所以宁可这一版不带。
+  const reasoningEffort =
+    dialect === 'openai-chat'
+      ? raw.reasoning_effort
+      : dialect === 'openai-responses'
+        ? obj(raw.reasoning).effort
+        : undefined;
   return {
     model,
     messages: PARSE[dialect](raw, model),
     stream,
+    ...(typeof reasoningEffort === 'string' && reasoningEffort.length > 0 ? { reasoning_effort: reasoningEffort } : {}),
     ...(typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? { max_tokens: maxTokens } : {}),
     ...(typeof temperature === 'number' && Number.isFinite(temperature) ? { temperature } : {}),
     ...(typeof topP === 'number' && Number.isFinite(topP) ? { top_p: topP } : {}),
@@ -476,6 +493,7 @@ const extractChat = (json: Raw): AnswerCore => {
   const choice = (Array.isArray(json.choices) ? json.choices[0] : undefined) as { message?: Raw } | undefined;
   return {
     text: flatten(choice?.message?.content),
+    reasoning: text(choice?.message?.reasoning_content) || text(choice?.message?.reasoning),
     toolCalls: toolCallsFromChat(choice?.message),
     model: text(json.model),
     usage: chatUsage(obj(json.usage)),
@@ -487,6 +505,18 @@ const extractResponses = (json: Raw): AnswerCore => {
   const output = list(json.output);
   return {
     text: output.map((item) => flatten(obj(item).content)).filter(Boolean).join('\n'),
+    // reasoning 条目有两种写法：`summary[]`（OpenAI 的摘要）与 `content[]`（原样思考文本）。
+    reasoning: output
+      .filter((entry) => text(obj(entry).type) === 'reasoning')
+      .map((entry) => {
+        const item = obj(entry);
+        return (
+          list(item.summary).map((part) => text(obj(part).text)).join('') ||
+          list(item.content).map((part) => text(obj(part).text)).join('')
+        );
+      })
+      .filter(Boolean)
+      .join('\n'),
     toolCalls: output.flatMap((entry) => {
       const item = obj(entry);
       if (text(item.type) !== 'function_call') return [];
@@ -508,6 +538,10 @@ const extractAnthropic = (json: Raw): AnswerCore => {
   const blocks = list(json.content);
   return {
     text: blocks.map((block) => text(obj(block).text)).join(''),
+    reasoning: blocks
+      .filter((entry) => text(obj(entry).type) === 'thinking')
+      .map((entry) => text(obj(entry).thinking))
+      .join(''),
     toolCalls: blocks.flatMap((entry) => {
       const block = obj(entry);
       if (text(block.type) !== 'tool_use') return [];
@@ -522,8 +556,10 @@ const extractAnthropic = (json: Raw): AnswerCore => {
 const extractGemini = (json: Raw): AnswerCore => {
   const candidates = list(json.candidates);
   const parts = candidates.flatMap((candidate) => list(obj(obj(candidate).content).parts));
+  const thought = (part: unknown): boolean => obj(part).thought === true;
   return {
-    text: parts.map((part) => text(obj(part).text)).filter(Boolean).join('\n'),
+    text: parts.filter((part) => !thought(part)).map((part) => text(obj(part).text)).filter(Boolean).join('\n'),
+    reasoning: parts.filter(thought).map((part) => text(obj(part).text)).filter(Boolean).join('\n'),
     toolCalls: parts.flatMap((entry) => {
       const part = obj(entry);
       if (!part.functionCall) return [];
@@ -575,6 +611,7 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
             role: 'assistant',
             // 有工具调用时 content 是 null（OpenAI 自己的形状）；没有工具就是寻常的文本。
             content: answer.text.length > 0 || calls.length === 0 ? answer.text : null,
+            ...(answer.reasoning.length > 0 ? { reasoning_content: answer.reasoning } : {}),
             ...(calls.length > 0
               ? {
                   tool_calls: calls.map((call) => ({
@@ -606,6 +643,7 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       role: 'assistant',
       model: answer.model,
       content: [
+        ...(answer.reasoning.length > 0 ? [{ type: 'thinking', thinking: answer.reasoning }] : []),
         ...(answer.text.length > 0 || calls.length === 0 ? [{ type: 'text', text: answer.text }] : []),
         ...calls.map((call) => ({ type: 'tool_use', id: call.id, name: call.name, input: toolArguments(call) })),
       ],
@@ -625,6 +663,16 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       status: 'completed',
       model: answer.model,
       output: [
+        ...(answer.reasoning.length > 0
+          ? [
+              {
+                id: `rs_${norm.request_id}`,
+                type: 'reasoning',
+                status: 'completed',
+                summary: [{ type: 'summary_text', text: answer.reasoning }],
+              },
+            ]
+          : []),
         ...(answer.text.length > 0 || calls.length === 0
           ? [
               {
@@ -660,13 +708,15 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       {
         content: {
           role: 'model',
-          parts:
-            calls.length === 0
+          parts: [
+            ...(answer.reasoning.length > 0 ? [{ text: answer.reasoning, thought: true }] : []),
+            ...(calls.length === 0
               ? [{ text: answer.text }]
               : [
                   ...(answer.text.length > 0 ? [{ text: answer.text }] : []),
                   ...calls.map((call) => ({ functionCall: { name: call.name, args: toolArguments(call) } })),
-                ],
+                ]),
+          ],
         },
         finishReason: 'STOP',
         index: 0,
@@ -690,6 +740,14 @@ export type StreamEmitter = {
   head(): string[];
   /** 每个文本增量。 */
   delta(text: string): string[];
+  /**
+   * 每个思考增量。
+   *
+   * 与 `delta` 分开是因为四家各有各的说法：Chat 是 `reasoning_content`、Anthropic 是 thinking 块、
+   * Responses 是 reasoning summary 的增量事件、Gemini 是 `thought: true` 的 part。客户端那边没有
+   * 思考位置的（比如只认 `content` 的老客户端）由各家 emitter 自己丢掉。
+   */
+  reasoning(text: string): string[];
   /** 一次工具调用开始（此时只知道 id 与名字）。`index` 是上游给的序号。 */
   toolStart(index: number, call: { id: string; name: string }): string[];
   /** 参数的增量片段（JSON 原文）。 */
@@ -718,6 +776,7 @@ function chatEmitter(id: string, model: string): StreamEmitter {
   return {
     head: () => [`data: ${chunk({ role: 'assistant', content: '' })}\n\n`],
     delta: (text) => [`data: ${chunk({ content: text })}\n\n`],
+    reasoning: (text) => [`data: ${chunk({ reasoning_content: text })}\n\n`],
     toolStart: (index, call) => [
       `data: ${chunk({
         tool_calls: [{ index: slotOf(index), id: call.id, type: 'function', function: { name: call.name, arguments: '' } }],
@@ -731,21 +790,113 @@ function chatEmitter(id: string, model: string): StreamEmitter {
 }
 
 function responsesEmitter(id: string, model: string): StreamEmitter {
-  const itemId = `msg_${id}`;
   const createdAt = Math.floor(Date.now() / 1000);
+  const reasoningId = `rs_${id}`;
+  const messageId = `msg_${id}`;
+  /**
+   * Responses 的输出是一串**按序号排下去的条目**，所以序号不能写死：思考先到时它占 0，
+   * 消息就得让到 1。`nextIndex` 是下一个空位，谁先开口谁先拿号——这也是为什么骨架不在
+   * `head()` 里一次开完（那时还不知道这次会不会先想）。
+   */
+  let nextIndex = 0;
   let text = '';
-  let textOpen = true;
+  let reasoning = '';
+  let reasoningAt: number | null = null;
+  let reasoningOpen = false;
+  let messageAt: number | null = null;
+  let messageOpen = false;
   let callSeq = 0;
   const calls = new Map<number, { at: number; itemId: string; callId: string; name: string; args: string }>();
-  const message = (status: string, content: unknown[]) => ({ id: itemId, type: 'message', status, role: 'assistant', content });
-  /** 文本 item 必须先 done 才能开下一条：Responses 的输出是一条条排下去的。 */
-  const closeText = (): string[] => {
-    if (!textOpen) return [];
-    textOpen = false;
+  const message = (status: string, content: unknown[]) => ({ id: messageId, type: 'message', status, role: 'assistant', content });
+  const reasoningItem = (status: string) => ({
+    id: reasoningId,
+    type: 'reasoning',
+    status,
+    summary: reasoning.length > 0 ? [{ type: 'summary_text', text: reasoning }] : [],
+  });
+
+  /** 思考条目必须先被声明，客户端的增量事件才有地方挂（没有条目时下游按协议丢掉那些增量）。 */
+  const openReasoning = (): string[] => {
+    if (reasoningOpen || reasoningAt !== null || messageAt !== null) return [];
+    reasoningAt = nextIndex++;
+    reasoningOpen = true;
     return [
-      named('response.output_text.done', { type: 'response.output_text.done', item_id: itemId, output_index: 0, content_index: 0, text }),
-      named('response.content_part.done', { type: 'response.content_part.done', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text } }),
-      named('response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: message('completed', [{ type: 'output_text', text }]) }),
+      named('response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: reasoningAt,
+        item: { id: reasoningId, type: 'reasoning', status: 'in_progress', summary: [] },
+      }),
+      named('response.reasoning_summary_part.added', {
+        type: 'response.reasoning_summary_part.added',
+        item_id: reasoningId,
+        output_index: reasoningAt,
+        summary_index: 0,
+        part: { type: 'summary_text', text: '' },
+      }),
+    ];
+  };
+  const closeReasoning = (): string[] => {
+    if (!reasoningOpen) return [];
+    reasoningOpen = false;
+    return [
+      named('response.reasoning_summary_text.done', {
+        type: 'response.reasoning_summary_text.done',
+        item_id: reasoningId,
+        output_index: reasoningAt,
+        summary_index: 0,
+        text: reasoning,
+      }),
+      named('response.reasoning_summary_part.done', {
+        type: 'response.reasoning_summary_part.done',
+        item_id: reasoningId,
+        output_index: reasoningAt,
+        summary_index: 0,
+        part: { type: 'summary_text', text: reasoning },
+      }),
+      named('response.output_item.done', {
+        type: 'response.output_item.done',
+        output_index: reasoningAt,
+        item: reasoningItem('completed'),
+      }),
+    ];
+  };
+  /** 文本 item 必须先 done 才能开下一条：Responses 的输出是一条条排下去的。 */
+  const openMessage = (): string[] => {
+    if (messageOpen || messageAt !== null) return [];
+    messageAt = nextIndex++;
+    messageOpen = true;
+    return [
+      named('response.output_item.added', {
+        type: 'response.output_item.added',
+        output_index: messageAt,
+        item: message('in_progress', []),
+      }),
+      named('response.content_part.added', {
+        type: 'response.content_part.added',
+        item_id: messageId,
+        output_index: messageAt,
+        content_index: 0,
+        part: { type: 'output_text', text: '' },
+      }),
+    ];
+  };
+  const closeText = (): string[] => {
+    if (!messageOpen) return [];
+    messageOpen = false;
+    return [
+      named('response.output_text.done', { type: 'response.output_text.done', item_id: messageId, output_index: messageAt, content_index: 0, text }),
+      named('response.content_part.done', {
+        type: 'response.content_part.done',
+        item_id: messageId,
+        output_index: messageAt,
+        content_index: 0,
+        part: { type: 'output_text', text },
+      }),
+      named('response.output_item.done', {
+        type: 'response.output_item.done',
+        output_index: messageAt,
+        item: message('completed', [{ type: 'output_text', text }]),
+      }),
     ];
   };
   const closeCall = (call: { at: number; itemId: string; callId: string; name: string; args: string }): string[] => [
@@ -765,20 +916,38 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
   return {
     head: () => [
       named('response.created', { type: 'response.created', response: { id, object: 'response', created_at: createdAt, status: 'in_progress', model, output: [] } }),
-      named('response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: message('in_progress', []) }),
-      named('response.content_part.added', { type: 'response.content_part.added', item_id: itemId, output_index: 0, content_index: 0, part: { type: 'output_text', text: '' } }),
     ],
+    reasoning: (delta) => {
+      const chunks = openReasoning();
+      reasoning += delta;
+      chunks.push(
+        named('response.reasoning_summary_text.delta', {
+          type: 'response.reasoning_summary_text.delta',
+          item_id: reasoningId,
+          output_index: reasoningAt ?? 0,
+          summary_index: 0,
+          delta,
+        }),
+      );
+      return chunks;
+    },
     delta: (delta) => {
+      const chunks = [...closeReasoning(), ...openMessage()];
       text += delta;
-      return [named('response.output_text.delta', { type: 'response.output_text.delta', item_id: itemId, output_index: 0, content_index: 0, delta })];
+      return [
+        ...chunks,
+        named('response.output_text.delta', { type: 'response.output_text.delta', item_id: messageId, output_index: messageAt ?? 0, content_index: 0, delta }),
+      ];
     },
     toolStart: (index, call) => {
+      // 序号必须按「谁会先出现在输出里」发：先关思考、再把消息条目开出来，最后才轮到这次调用。
+      const opened = [...closeReasoning(), ...openMessage(), ...closeText()];
       callSeq += 1;
-      const at = callSeq;
-      const entry = { at, itemId: `fc_${id}_${at}`, callId: call.id, name: call.name, args: '' };
+      const at = nextIndex++;
+      const entry = { at, itemId: `fc_${id}_${callSeq}`, callId: call.id, name: call.name, args: '' };
       calls.set(index, entry);
       return [
-        ...closeText(),
+        ...opened,
         named('response.output_item.added', {
           type: 'response.output_item.added',
           output_index: at,
@@ -800,7 +969,22 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
       ];
     },
     tail: (answer) => {
-      const chunks = [...closeText()];
+      const chunks: string[] = [];
+      // 上游可能只在整段结束时才把思考给出来（非流式推理面就是这样）：收尾处补一条完整的思考条目。
+      if (reasoning.length === 0 && answer.reasoning.length > 0) {
+        chunks.push(...openReasoning());
+        reasoning = answer.reasoning;
+        chunks.push(
+          named('response.reasoning_summary_text.delta', {
+            type: 'response.reasoning_summary_text.delta',
+            item_id: reasoningId,
+            output_index: reasoningAt ?? 0,
+            summary_index: 0,
+            delta: reasoning,
+          }),
+        );
+      }
+      chunks.push(...closeReasoning(), ...openMessage(), ...closeText());
       for (const entry of calls.values()) chunks.push(...closeCall(entry));
       chunks.push(
         named('response.completed', {
@@ -812,6 +996,7 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
             status: 'completed',
             model: answer.model,
             output: [
+              ...(reasoning.length > 0 ? [reasoningItem('completed')] : []),
               ...(text.length > 0 || answer.toolCalls.length === 0
                 ? [message('completed', [{ type: 'output_text', text }])]
                 : []),
@@ -843,12 +1028,15 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
   let block = 0;
   let open: number | null = 0;
   let textBlock: number | null = 0;
+  /** 当前开着的思考块；文本或工具一开口它就关掉（思考总是先说，说完才轮到别的）。 */
+  let thinkingBlock: number | null = null;
   const blockOf = new Map<number, number>();
   const closeOpen = (): string[] => {
     if (open === null) return [];
     const index = open;
     open = null;
     if (textBlock === index) textBlock = null;
+    if (thinkingBlock === index) thinkingBlock = null;
     return [named('content_block_stop', { type: 'content_block_stop', index })];
   };
 
@@ -874,6 +1062,30 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
       }
       chunks.push(
         named('content_block_delta', { type: 'content_block_delta', index: textBlock, delta: { type: 'text_delta', text } }),
+      );
+      return chunks;
+    },
+    reasoning: (text) => {
+      const chunks: string[] = [];
+      if (thinkingBlock === null || open !== thinkingBlock) {
+        chunks.push(...closeOpen());
+        block += 1;
+        thinkingBlock = block;
+        open = block;
+        chunks.push(
+          named('content_block_start', {
+            type: 'content_block_start',
+            index: block,
+            content_block: { type: 'thinking', thinking: '' },
+          }),
+        );
+      }
+      chunks.push(
+        named('content_block_delta', {
+          type: 'content_block_delta',
+          index: thinkingBlock,
+          delta: { type: 'thinking_delta', thinking: text },
+        }),
       );
       return chunks;
     },
@@ -917,6 +1129,9 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
   return {
     head: () => [],
     delta: (text) => [bare({ candidates: [{ content: { role: 'model', parts: [{ text }] }, index: 0 }], modelVersion: model })],
+    reasoning: (text) => [
+      bare({ candidates: [{ content: { role: 'model', parts: [{ text, thought: true }] }, index: 0 }], modelVersion: model }),
+    ],
     // Gemini 的流没有增量工具帧：参数攒到收尾，与这一段文本一起给出去。
     toolStart: () => [],
     toolArgs: () => [],
