@@ -82,6 +82,10 @@ export type Provider = {
   base_url: string;
   key_hint: string;
   sealed_key: string;
+  /** 代理地址的密文；空串 = 直连。别人的那条这两列一律是空串。 */
+  sealed_proxy: string;
+  /** 展示用提示：`http://***@host:port`。空串 = 没配代理。 */
+  proxy_hint: string;
   kdf: string;
   protocol: Protocol;
   /** private = 只有我这条能用；pool = 公共池，全站在自己的上游不可用时兜底用它。「公开」就是这一列。 */

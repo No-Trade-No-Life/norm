@@ -31,6 +31,7 @@ import { isModelNotServed } from '../models';
 import { quote, ZERO_AUDIO_USAGE } from '../pricing';
 import { providerCredential } from '../credentials';
 import { dropProviderModel, forgetAffinity, resolveProvider, type ProviderChoice } from '../store';
+import { sendUpstream } from '../tunnel';
 import {
   failureHeaders,
   normMeta,
@@ -291,10 +292,18 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
     let reply: Response;
     try {
-      reply = await fetch(protocolUrlFor(provider.protocol, provider.base_url, model, stream), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey), ...sessionHeaders },
-        body: upstreamBody,
+      // 配了代理就进隧道（见 `src/proxy.ts`）：这条路绕开的不是可达性，而是目标站对
+      // 「这请求是 Cloudflare 发的」的判定。
+      reply = await sendUpstream({
+        env: c.env,
+        address: provider.address,
+        provider,
+        url: protocolUrlFor(provider.protocol, provider.base_url, model, stream),
+        init: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey), ...sessionHeaders },
+          body: upstreamBody,
+        },
       });
     } catch (error) {
       const settled = await recordFailure(accounting, 'network_error', 502);

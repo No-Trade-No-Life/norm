@@ -117,6 +117,10 @@ chatgpt.com 见到直接 403（实测直连 200、从边缘出去 403，把 `cf-
 一跳同时决定这次调用的出口 IP——就是 OpenAI-LB 里 `http_proxy_url` 在做的那件事。
 配方见 `docs/deploy.md` 末节。
 
+另一条路是给这条上游配 `proxy_url`：`base_url` 留官方地址，Worker 自己开 CONNECT 隧道出去，
+语义与 OpenAI-LB 的 `http_proxy_url` 一致（隧道内层的 TLS 在用户态完成，见 `src/tunnel.ts`）。
+两条路都行，互不依赖；「一跳」是你自己写转发器，「代理」是任何标准 HTTP 代理。
+
 ```jsonc
 // POST /api/v1/providers  → 201 { id }
 {
@@ -135,7 +139,12 @@ chatgpt.com 见到直接 403（实测直连 200、从边缘出去 403，把 `cf-
                                      //    每个请求自动带 x-opencode-session）
   "scope": "private",                // private | pool（pool = 公开：进公共池，全站兜底用它；
                                      // 只有 POOL_ADMIN_ADDRESSES 里的地址能写 pool）
-  "enabled": true                   // 禁用后不参与选址
+  "enabled": true,                  // 禁用后不参与选址
+
+  // 可选。这条上游专用的 HTTP 代理（CONNECT 隧道）：http://host:port，可带 user:pass。
+  // 填了它，这次请求就从代理出去——目标站看到的不是 Cloudflare 的边缘出口，也没有 cf-* 头。
+  // 不填 = 直连。与 base_url 正交：一个决定「打给谁」，一个决定「从哪儿出去」。
+  "proxy_url": "http://user:pass@1.2.3.4:8888"
 }
 ```
 
@@ -144,7 +153,8 @@ chatgpt.com 见到直接 403（实测直连 200、从边缘出去 403，把 `cf-
 没有任何一条路径能把明文读回来。
 
 `PATCH /api/v1/providers/:id` 的字段全部可选：`label` / `protocol` / `enabled` /
-`base_url` / `provider_key`。基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
+`base_url` / `provider_key` / `proxy_url`。`proxy_url` 有三种意思：字段不出现 = 保持原值、
+空串 = 拆掉这条代理、有值 = 换一条。基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
 从固定基址换到通用方言时要带上新的 `base_url`，否则 `400 base_url_invalid`。
 
 响应里的每条上游提供商还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的

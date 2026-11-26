@@ -170,7 +170,7 @@ export const COPY = {
   'pr.field_base_url': { zh: 'base_url', en: 'Base URL' },
   'pr.field_base_url_placeholder': { zh: '例如 https://api.openai.com/v1', en: 'e.g. https://api.openai.com/v1' },
   'pr.field_base_url_oauth_hint': {
-    zh: '填你自己的那一跳（自建一跳：内部转发到 https://chatgpt.com/backend-api/codex）。它决定这次调用的出口 IP，也绕开 Cloudflare 对 Worker 出站的拦截——直接填官方地址会在边缘被 403。',
+    zh: '两条路都行：填你自己的那一跳；或者留官方地址 https://chatgpt.com/backend-api/codex 并给这条上游配一条代理。直接填官方地址又没配代理，会在边缘被 403。',
     en: 'Point this at your own hop (it forwards to https://chatgpt.com/backend-api/codex). It decides the egress IP and steps around Cloudflare’s block on Worker egress — the official host answers 403 from the edge.',
   },
   'pr.field_base_url_hint': {
@@ -183,6 +183,14 @@ export const COPY = {
     en: 'This protocol also serves audio: /v1/audio/transcriptions and /v1/audio/speech, on the same Token and the same ledger.',
   },
   'pr.field_enabled': { zh: '启用这条上游提供商', en: 'Enable this provider' },
+  'pr.field_proxy': { zh: '代理（可选）', en: 'Proxy (optional)' },
+  'pr.field_proxy_placeholder': { zh: 'http://user:pass@1.2.3.4:8888', en: 'http://user:pass@1.2.3.4:8888' },
+  'pr.field_proxy_hint': {
+    zh: '这条上游专用的 HTTP 代理（CONNECT 隧道）。填了它，请求就从代理出去：目标站看到的不是 Cloudflare 的边缘出口，也没有 cf-* 那几枚头。留空 = 直连。只认 http://host:port，可带 user:pass。',
+    en: 'An HTTP proxy (CONNECT tunnel) for this provider only. With it set, the request leaves through the proxy: the target sees neither Cloudflare’s edge nor the cf-* headers. Leave empty for a direct call. Only http://host:port, optionally with user:pass.',
+  },
+  'pr.field_proxy_current': { zh: '当前：{{hint}}', en: 'Current: {{hint}}' },
+  'pr.field_proxy_clear': { zh: '拆掉这条代理', en: 'Remove this proxy' },
   'pr.field_enabled_hint': {
     zh: '禁用后不参与选址；密钥与历史都留着，随时可以再打开。',
     en: 'A disabled provider is skipped when Norm picks a provider. Its key and history stay — flip it back anytime.',
