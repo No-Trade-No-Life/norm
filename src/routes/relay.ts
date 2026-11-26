@@ -26,7 +26,7 @@ import {
   GasMeter,
 } from '../gas';
 import { fail } from '../http';
-import { nowSeconds, uuidv7 } from '../ids';
+import { nowSeconds, unifiedRequestId, uuidv7 } from '../ids';
 import { isModelNotServed } from '../models';
 import { quote, ZERO_AUDIO_USAGE } from '../pricing';
 import { providerCredential } from '../credentials';
@@ -137,8 +137,9 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // 亲和键只取一次：选址用它，要会话 id 的协议（OpenCode Go）也用它。
   const affinity = affinityKeyOf(c.req.raw.headers);
 
-  // UUID v7：字典序即时间序，账本按时间翻页就是按主键翻页。
-  const requestId = uuidv7();
+  // 上游网关自报了 id 就用它的（跨服务对账要同一个 id）；否则 UUID v7：字典序即时间序，
+  // 账本按时间翻页就是按主键翻页。
+  const requestId = unifiedRequestId(c.req.raw.headers) ?? uuidv7();
   const startedAt = Date.now();
   // 动态 Gas 计量器：从 300 纳（Worker 调用）起累加所有实际经过的付费点，
   // 余额快照来自鉴权阶段 consumers JOIN principals（零额外 D1 读）。
