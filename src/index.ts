@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { Env } from './env';
 import { HttpError } from './http';
 import { authenticate, authenticateConsumer, type Identity, type Principal } from './auth';
-import { nowSeconds } from './ids';
 import { availableNanos } from './store';
 import { publicRoutes } from './routes/public';
 import { pricingRoutes } from './routes/pricing';
@@ -13,7 +12,11 @@ import { modelCatalogRoutes } from './routes/model-catalog';
 import { modelRoutes } from './routes/models';
 import { relayRoutes } from './routes/relay';
 
-type Variables = { principal: Identity };
+/**
+ * 两个面各放一份身份：管理面是 `Identity`（地址 + 幂等键），转发面是 `Principal`
+ * （地址 + 哪把下游 Token）。两者刻意不相互继承——转发面没有 nonce 可言。
+ */
+type Variables = { principal: Identity | Principal };
 type App = { Bindings: Env; Variables: Variables };
 
 const app = new Hono<App>();
@@ -22,7 +25,13 @@ app.route('/api/v1', publicRoutes);
 // 价目表：账本要能被用户自己核算，所以它就是公开数据。
 app.route('/api/v1/pricing', pricingRoutes);
 
-/** 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。 */
+/**
+ * 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。
+ *
+ * 这条 POST 不需要幂等键，因为开户是行内幂等的：`principals` 的主键就是地址，
+ * 授信那一条用 `WHERE voucher_nanos = 0` 兜住。重放既不会开出第二个账户，也不会
+ * 再发一张券——`created` 只在这一**次**真的建了行时才是 true。
+ */
 app.post('/api/v1/auth/login', async (c) => {
   const principal = await authenticate(c.req.raw, c.env);
   // 余额不落库：它就是四块累计数的一个算式，接口现算。
@@ -39,7 +48,7 @@ app.post('/api/v1/auth/login', async (c) => {
     voucher_nanos: row?.voucher_nanos ?? 0,
     spend_nanos: row?.spend_nanos ?? 0,
     withdraw_nanos: row?.withdraw_nanos ?? 0,
-    created: (row?.created_at ?? 0) >= nowSeconds() - 5,
+    created: principal.opened,
   });
 });
 

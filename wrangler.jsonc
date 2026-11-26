@@ -30,8 +30,10 @@
     "GAS_FEE_NANOS": "300",
     // 新地址的演示授信。
     "GRANT_NANOS": "1000000000",
-    // 签名时间窗。
-    "SIGNATURE_WINDOW_SECONDS": "120",
+    // 签名时间窗：只管「这个签名新不新鲜」，不管「做过没有」。
+    // 一次性由请求自带的幂等键保证（落在被改的那一行上，见 src/idempotent.ts），
+    // 所以窗口可以收紧到 60 秒：读请求重放无害，状态变更重放由幂等键兜住。
+    "SIGNATURE_WINDOW_SECONDS": "60",
     // 亲和有效期：一个 thread-id / session-id 在这段时间里留在同一条上游上。
     "AFFINITY_TTL_SECONDS": "604800",
     // 可以往公共池里放上游的地址（逗号分隔，空 = 谁都不行）。

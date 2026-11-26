@@ -2,5 +2,4 @@
 DELETE FROM requests WHERE address = ?;
 DELETE FROM ledger WHERE address = ?;
 DELETE FROM providers WHERE address = ?;
-DELETE FROM nonces WHERE address = ?;
 DELETE FROM principals WHERE address = ?;

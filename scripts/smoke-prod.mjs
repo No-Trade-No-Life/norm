@@ -13,9 +13,9 @@ const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).jo
 const seed = crypto.getRandomValues(new Uint8Array(32));
 const address = base58.encode(ed25519.getPublicKey(seed));
 
-function sign(method, path, body) {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = base58.encode(crypto.getRandomValues(new Uint8Array(16)));
+function sign(method, path, body, options = {}) {
+  const timestamp = String(options.at ?? Math.floor(Date.now() / 1000));
+  const nonce = options.nonce ?? base58.encode(crypto.getRandomValues(new Uint8Array(16)));
   const message = enc.encode(`norm-v1\n${method}\n${path}\n${timestamp}\n${nonce}\n${hex(sha256(enc.encode(body ?? '')))}`);
   return {
     'X-Norm-Address': address,
@@ -48,12 +48,18 @@ console.log('1. 开户');
   check('演示授信已到账', body.balance_nanos > 0, body);
 }
 
-console.log('2. 未签名与重放');
+console.log('2. 未签名、读重放与时间窗');
 {
   check('未签名 401', (await fetch(`${BASE}/api/v1/account/me`)).status === 401);
   const headers = sign('GET', '/api/v1/account/me');
   check('首次 200', (await fetch(`${BASE}/api/v1/account/me`, { headers })).status === 200);
-  check('重放 401', (await fetch(`${BASE}/api/v1/account/me`, { headers })).status === 401);
+  // 读没有副作用：时间窗只管新鲜度，同一份签名再打一次照样 200。
+  check('读重放 200', (await fetch(`${BASE}/api/v1/account/me`, { headers })).status === 200);
+  // 一次性由请求自带的幂等键保证，超出时间窗（60s）一律 401。
+  const staleAt = Math.floor(Date.now() / 1000) - 3600;
+  const stale = await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me', undefined, { at: staleAt }) });
+  check('时间窗外 401', stale.status === 401, stale.status);
+  check('原因是 timestamp_out_of_window', (await stale.json()).error === 'timestamp_out_of_window');
 }
 
 console.log('2b. 转发面只认下游 Token：签名直连一律 401');

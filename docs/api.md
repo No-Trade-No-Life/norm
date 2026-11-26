@@ -24,6 +24,18 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 请求头：`X-Norm-Address`、`X-Norm-Timestamp`、`X-Norm-Nonce`、`X-Norm-Signature`（均为 base58）。
 
+签名格式不变，但 `X-Norm-Nonce` 的**语义**是「这次请求的幂等键」：
+
+| 请求 | 重放同一个签名会怎样 |
+|---|---|
+| 读（`GET` / `HEAD`） | 直接放行，仍然是 200 —— 时间窗只管新鲜度，读没有副作用 |
+| 创建（`POST /providers`、`POST /consumers`） | 200 + `replayed: true`；不会产生第二行（`consumers` 的明文密钥只在第一次响应里） |
+| 修改 / 删除（scope / enabled / `PATCH` / `DELETE` / 下游改名·吊销） | 200 + `replayed: true`（或 `DELETE` 的 204 → 本仓库一律 200 JSON）；不会产生第二次副作用 |
+| `POST /consumers/:id/rotate` | **409 `nonce_replayed`**，且不会再签发第二把密钥 |
+
+所以「客户端超时了再发一次」现在是安全的：同一个 nonce 就是同一个意图。换个意图请换一把 nonce。
+超过时间窗（60 秒）的签名一律 `401 timestamp_out_of_window`。
+
 ## 公开
 
 | 方法 | 路径 | 说明 |
