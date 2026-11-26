@@ -4,7 +4,7 @@ import { consumerFetch, requestJson, type ConsumerRequest } from './api';
  * 浏览器自己那把下游 Token。
  *
  * 推理接口只认 Token（`sk-norm-…`），不认签名——签名管资源，Token 管消费。
- * 所以 Playground 与模型清单这两个「在页面上打推理接口」的地方，必须先有一条
+ * 所以「工具」里的这几页与模型清单「在页面上打推理接口」的地方，必须先有一条
  * 属于自己的 Token。它由管理面（签名）现铸一把，明文只落在本机 localStorage，
  * 与身份密钥同一个待遇：从不发往任何服务端之外的地方。
  *

@@ -1,17 +1,21 @@
 import {
+  AudioLinesIcon,
   BoxesIcon,
   ChevronLeftIcon,
+  FileAudioIcon,
   FileCheck2Icon,
+  ImageIcon,
   InfoIcon,
   KeyRoundIcon,
   LanguagesIcon,
+  MessagesSquareIcon,
   PlugZapIcon,
   MenuIcon,
   MoonIcon,
   ReceiptTextIcon,
+  SearchIcon,
   ShieldCheckIcon,
   SunIcon,
-  TerminalIcon,
 } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -73,11 +77,21 @@ function NavEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
 
 function SidebarBody({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
   const { t } = useI18n();
+  // 三组：工具是「拿 Norm 干一件事」，控制台是「配好 Norm」，可信是「核一遍 Norm」。
   const nav: NavGroup[] = [
+    {
+      labelKey: 'nav.group_tools',
+      items: [
+        { to: '/', labelKey: 'nav.chat', icon: <MessagesSquareIcon /> },
+        { to: '/images', labelKey: 'nav.images', icon: <ImageIcon /> },
+        { to: '/web-search', labelKey: 'nav.web_search', icon: <SearchIcon /> },
+        { to: '/transcriptions', labelKey: 'nav.transcriptions', icon: <FileAudioIcon /> },
+        { to: '/speech', labelKey: 'nav.speech', icon: <AudioLinesIcon /> },
+      ],
+    },
     {
       labelKey: 'nav.group_main',
       items: [
-        { to: '/', labelKey: 'nav.playground', icon: <TerminalIcon /> },
         { to: '/providers', labelKey: 'nav.providers', icon: <KeyRoundIcon /> },
         { to: '/models', labelKey: 'nav.models', icon: <BoxesIcon /> },
         { to: '/consumers', labelKey: 'nav.consumers', icon: <PlugZapIcon /> },

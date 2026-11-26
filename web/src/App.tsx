@@ -13,7 +13,11 @@ import { AttestationPage } from './pages/attestation';
 import { ConsumersPage } from './pages/consumers';
 import { ModelsPage } from './pages/models';
 import { ProvidersPage } from './pages/providers';
-import { PlaygroundPage } from './pages/playground';
+import { ChatPage } from './pages/chat';
+import { ImagesPage } from './pages/images';
+import { SpeechPage } from './pages/speech';
+import { TranscriptionsPage } from './pages/transcriptions';
+import { WebSearchPage } from './pages/web-search';
 import { ProvenancePage } from './pages/provenance';
 import { UsagePage } from './pages/usage';
 
@@ -84,7 +88,11 @@ export function App() {
  * 增一条路由时不可能忘记挂边界。
  */
 const ROUTES: Array<{ path: string; element: ReactNode }> = [
-  { path: '/', element: <PlaygroundPage /> },
+  { path: '/', element: <ChatPage /> },
+  { path: '/images', element: <ImagesPage /> },
+  { path: '/web-search', element: <WebSearchPage /> },
+  { path: '/transcriptions', element: <TranscriptionsPage /> },
+  { path: '/speech', element: <SpeechPage /> },
   { path: '/providers', element: <ProvidersPage /> },
   { path: '/models', element: <ModelsPage /> },
   { path: '/consumers', element: <ConsumersPage /> },

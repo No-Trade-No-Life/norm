@@ -410,7 +410,7 @@ async function bill(accounting: Accounting, answer: AnswerCore, statusCode: numb
  * 用量在流里只出现一两次（见 dialects.ts 的 usageSniffer），所以这里一边转发一边嗅，
  * 到收尾时才计价——流式的 token 数只有末帧才知道。
  *
- * 唯一例外是 openai-chat：Norm 自己的 Playground 是这条路的客户端，它靠流末那条
+ * 唯一例外是 openai-chat：Norm 自己的「多轮对话」是这条路的客户端，它靠流末那条
  * `{"norm":…}` 显示本次调用的费用与余额。另外三条路的客户端是第三方 SDK，
  * 它们的解析器我们管不着，所以一个事件都不插——request_id 走 `X-Norm-Request-Id`。
  */
