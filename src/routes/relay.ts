@@ -722,7 +722,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
         const data = line.slice(5).trim();
         if (data.length === 0 || data === '[DONE]') return;
         noteFrame(data);
-        for (const event of adapter.streamEvents(data)) {
+        for (const event of adapter.streamEvents(data, calls.size)) {
           if (event.kind === 'text') {
             emit(emitter.delta(event.text)).forEach(push);
             continue;
@@ -770,21 +770,48 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
           if (buffer.length > 0) processLine(buffer);
 
           const meta = await finish();
+          const core: AnswerCore = {
+            text: '',
+            toolCalls: [...calls.values()].map((call) => ({
+              id: call.id,
+              name: call.name,
+              arguments: call.arguments.length > 0 ? call.arguments : '{}',
+            })),
+            model: accounting.model,
+            usage: { input: meta.input_tokens, cached: meta.cached_tokens, output: meta.output_tokens },
+            createdAt: Math.floor(Date.now() / 1000),
+          };
 
           if (toChat) {
             // 一句话都没生成时，把上游的原话交出去：空白的 200 是最难查的一种失败。
             if (upstreamError !== null && accounting.firstTokenMs === undefined) {
               push(encoder.encode(`data: ${JSON.stringify({ error: { message: upstreamError } })}\n\n`));
+            } else {
+              // 无参工具调用在 Chat 流里补 `{}`，避免严格客户端 JSON.parse("") 崩溃。
+              for (const [index, call] of calls.entries()) {
+                if (call.started && call.arguments.length === 0) {
+                  emit(emitter.toolArgs(index, '{}')).forEach(push);
+                }
+              }
+              // 补发 finish_reason（stop / tool_calls）：OpenAI SDK 与 Agent 框架靠它收尾或触发工具执行。
+              emit(emitter.tail(core)).forEach(push);
+              if (wantsUsage) {
+                const usageChunk = {
+                  object: 'chat.completion.chunk',
+                  model: accounting.model,
+                  choices: [],
+                  usage: {
+                    prompt_tokens: meta.input_tokens,
+                    completion_tokens: meta.output_tokens,
+                    total_tokens: meta.input_tokens + meta.output_tokens,
+                    prompt_tokens_details: { cached_tokens: meta.cached_tokens },
+                  },
+                };
+                push(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
+              }
             }
             push(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
           } else {
-            const core: AnswerCore = {
-              text: '',
-              toolCalls: [...calls.values()].map((call) => ({ id: call.id, name: call.name, arguments: call.arguments })),
-              model: accounting.model,
-              usage: { input: meta.input_tokens, cached: meta.cached_tokens, output: meta.output_tokens },
-              createdAt: Math.floor(Date.now() / 1000),
-            };
             emit(emitter.tail(core)).forEach(push);
           }
           controller.close();

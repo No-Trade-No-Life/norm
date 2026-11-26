@@ -117,9 +117,10 @@ function flatTool(entry: unknown): ChatTool[] {
 function chatFromChat(raw: Raw): ChatMessage[] {
   return list(raw.messages).map((entry) => {
     const message = obj(entry);
-    const role = text(message.role) || 'user';
+    const rawRole = text(message.role) || 'user';
+    const role = rawRole === 'developer' ? 'system' : rawRole;
     if (role === 'tool') {
-      return { role: 'tool', tool_call_id: text(message.tool_call_id), content: message.content };
+      return { role: 'tool', tool_call_id: text(message.tool_call_id), content: flatten(message.content) };
     }
     const calls = list(message.tool_calls).flatMap((item) => {
       const call = obj(item);
@@ -130,7 +131,7 @@ function chatFromChat(raw: Raw): ChatMessage[] {
     });
     return {
       role,
-      content: message.content,
+      content: flatten(message.content),
       ...(calls.length > 0 ? { tool_calls: calls } : {}),
     };
   });
@@ -213,8 +214,15 @@ function chatFromResponses(raw: Raw): ChatMessage[] {
       continue;
     }
     // `message` 条目与「只给 role/content」的老写法都当普通消息；reasoning 之类的跳过。
+    // `developer` / `system` 保持为 system 角色，避免降级成 user 或打到 Anthropic 报 400。
     if (type === 'message' || item.role !== undefined) {
-      turnList.push({ role: item.role === 'assistant' ? 'assistant' : 'user', content: flatten(item.content) });
+      const role =
+        item.role === 'assistant'
+          ? 'assistant'
+          : item.role === 'system' || item.role === 'developer'
+            ? 'system'
+            : 'user';
+      turnList.push({ role, content: flatten(item.content) });
     }
   }
   const instructions = textField(raw, 'instructions');
@@ -356,6 +364,20 @@ const TOOLS: Record<Dialect, (raw: Raw) => ParsedTools> = {
   'google-gemini': toolsFromGemini,
 };
 
+function stopListOf(dialect: Dialect, raw: Raw): string[] {
+  if (dialect === 'openai-chat') {
+    if (typeof raw.stop === 'string') return raw.stop.length > 0 ? [raw.stop] : [];
+    return list(raw.stop).map(text).filter((item) => item.length > 0);
+  }
+  if (dialect === 'anthropic-messages') {
+    return list(raw.stop_sequences).map(text).filter((item) => item.length > 0);
+  }
+  if (dialect === 'google-gemini') {
+    return list(obj(raw.generationConfig).stopSequences).map(text).filter((item) => item.length > 0);
+  }
+  return [];
+}
+
 /**
  * 只用在**跨方言**那 12 格上；同格式直通时这个函数不会被调用。
  *
@@ -363,14 +385,27 @@ const TOOLS: Record<Dialect, (raw: Raw) => ParsedTools> = {
  * （`:streamGenerateContent`），body 里没有这个字段，从 body 读会把它抹成 false。
  */
 export function parseInbound(dialect: Dialect, raw: Raw, model: string, stream: boolean): ChatBody {
+  const geminiCfg = obj(raw.generationConfig);
   const maxTokens =
-    dialect === 'anthropic-messages' ? raw.max_tokens : dialect === 'google-gemini' ? (raw.generationConfig as { maxOutputTokens?: unknown } | undefined)?.maxOutputTokens : raw.max_output_tokens;
+    dialect === 'openai-chat'
+      ? (raw.max_completion_tokens ?? raw.max_tokens)
+      : dialect === 'anthropic-messages'
+        ? raw.max_tokens
+        : dialect === 'google-gemini'
+          ? geminiCfg.maxOutputTokens
+          : raw.max_output_tokens;
+  const temperature = dialect === 'google-gemini' ? geminiCfg.temperature : raw.temperature;
+  const topP = dialect === 'google-gemini' ? geminiCfg.topP : raw.top_p;
+  const stop = stopListOf(dialect, raw);
   const { tools, choice } = TOOLS[dialect](raw);
   return {
     model,
     messages: PARSE[dialect](raw, model),
     stream,
-    ...(typeof maxTokens === 'number' ? { max_tokens: maxTokens } : {}),
+    ...(typeof maxTokens === 'number' && Number.isFinite(maxTokens) ? { max_tokens: maxTokens } : {}),
+    ...(typeof temperature === 'number' && Number.isFinite(temperature) ? { temperature } : {}),
+    ...(typeof topP === 'number' && Number.isFinite(topP) ? { top_p: topP } : {}),
+    ...(stop.length > 0 ? { stop } : {}),
     ...(tools.length > 0 ? { tools } : {}),
     ...(choice ? { tool_choice: choice } : {}),
   };
@@ -567,8 +602,8 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
       ],
       stop_reason: calls.length > 0 ? 'tool_use' : 'end_turn',
       stop_sequence: null,
-      // Anthropic 的 input_tokens 不含缓存读，所以这里回的是扣掉命中的那部分。
-      usage: { input_tokens: input - cached, output_tokens: output, cache_read_input_tokens: cached },
+      // Anthropic 的 input_tokens 不含缓存读，所以这里回的是扣掉命中的那部分；下界夹到 0 防止异常上游报负。
+      usage: { input_tokens: Math.max(input - cached, 0), output_tokens: output, cache_read_input_tokens: cached },
       norm,
     };
   }
@@ -795,14 +830,16 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
 }
 
 function anthropicEmitter(id: string, model: string): StreamEmitter {
-  /** 已经开到第几个内容块（0 是文本块），以及当前还开着的那一个。 */
+  /** 已经开到第几个内容块（0 是 head() 开的文本块），当前开着哪一块，以及活跃文本块序号。 */
   let block = 0;
   let open: number | null = 0;
+  let textBlock: number | null = 0;
   const blockOf = new Map<number, number>();
   const closeOpen = (): string[] => {
     if (open === null) return [];
     const index = open;
     open = null;
+    if (textBlock === index) textBlock = null;
     return [named('content_block_stop', { type: 'content_block_stop', index })];
   };
 
@@ -814,7 +851,23 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
       }),
       named('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
     ],
-    delta: (text) => [named('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } })],
+    delta: (text) => {
+      const chunks: string[] = [];
+      // 工具块关掉文本块 0 后如果模型又吐文本，不能往已关闭的 block 0 写，必须新开一个文本块。
+      if (textBlock === null || open !== textBlock) {
+        chunks.push(...closeOpen());
+        block += 1;
+        textBlock = block;
+        open = block;
+        chunks.push(
+          named('content_block_start', { type: 'content_block_start', index: block, content_block: { type: 'text', text: '' } }),
+        );
+      }
+      chunks.push(
+        named('content_block_delta', { type: 'content_block_delta', index: textBlock, delta: { type: 'text_delta', text } }),
+      );
+      return chunks;
+    },
     toolStart: (index, call) => {
       const chunks = closeOpen();
       block += 1;
@@ -842,7 +895,7 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
         delta: { stop_reason: answer.toolCalls.length > 0 ? 'tool_use' : 'end_turn', stop_sequence: null },
         usage: {
           output_tokens: answer.usage.output,
-          input_tokens: answer.usage.input - answer.usage.cached,
+          input_tokens: Math.max(answer.usage.input - answer.usage.cached, 0),
           cache_read_input_tokens: answer.usage.cached,
         },
       }),
@@ -863,10 +916,15 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
         bare({
           candidates: [
             {
-              content: {
-                role: 'model',
-                parts: answer.toolCalls.map((call) => ({ functionCall: { name: call.name, args: toolArguments(call) } })),
-              },
+              // 纯文本收尾不发空 parts: []（部分 Gemini SDK 解析器要求非空 parts）。
+              ...(answer.toolCalls.length > 0
+                ? {
+                    content: {
+                      role: 'model',
+                      parts: answer.toolCalls.map((call) => ({ functionCall: { name: call.name, args: toolArguments(call) } })),
+                    },
+                  }
+                : {}),
               finishReason: 'STOP',
               index: 0,
             },

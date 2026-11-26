@@ -777,6 +777,9 @@ for (const protocol of Object.keys(expected)) {
   const result = await chat(protocol, { stream: true });
   check(`${protocol} 流式 200`, result.status === 200, result.status);
   check(`${protocol} 流式有内容`, result.text.includes('"content":"你"') && result.text.includes('"content":"好"'), result.text.slice(0, 200));
+  if (protocol !== 'openai-chat') {
+    check(`${protocol} 跨方言流式带 finish_reason`, result.text.includes('"finish_reason":"stop"'), result.text.slice(-300));
+  }
   check(`${protocol} 结尾有 norm 事件`, result.text.includes('"norm"'), result.text.slice(-200));
   check(`${protocol} 结尾有 DONE`, result.text.trimEnd().endsWith('data: [DONE]'), result.text.slice(-40));
 }
