@@ -30,6 +30,7 @@ Norm 不再收取固定的 300 纳「入场费」，而是像 EVM 一样在请�
 | | `log_event` | Workers Logs（2026-12-01 体积口径，4.84 KB × 100% 采样） | 1,320 |
 | | `cpu_base` | 基础 CPU 保守估（≈ 5 CPU-ms × $0.02 / 1M CPU-ms） | 100 |
 | | `d1_reads` | D1 行读保守上界（$0.001 / 1M 行，10 纳覆盖 10,000 行读） | 10 |
+| | `read_subsidy` | 免费只读操作公共摊销（`R × C_read`，冷启动期先置 0，按线上实际读写比校准） | 0 |
 | **执行路径** | `consumer_touch` | `UPDATE consumers SET last_used_at`（非索引列，1 行写） | +1,000 |
 | | `affinity_write` | 首次/过期 `UPSERT affinities`（表 1 + PK 1 + 索引 1 = 3 行写；命中 +0） | +3,000 |
 | | `affinity_gc` | 顺手清理过期亲和（`LIMIT 2`，读 `batch[0].meta.changes`，每行 3 写） | +changes × 3,000 |
@@ -51,6 +52,27 @@ Norm 不再收取固定的 300 纳「入场费」，而是像 EVM 一样在请�
 | 跨方言桥接 · 流式 + 首次写亲和 | `6,890 + 3,000` | **9,890** | $0.00000989 |
 
 默认入口安全阈值 `MIN_BALANCE_NANOS = 10,000` 刚好覆盖「跨方言 + 流式 + 首次写亲和」的完整单次路径（9,890 纳）；$1.00 演示授信仍可发起约 **14.8 万次** 普通推理调用。
+
+## 只读操作零写库与读写交叉补贴原则
+
+Norm **不给任何只读操作单独计费**，原因同时落在工程与经济两面：
+
+1. **忌讳「读导致写」**：在 Cloudflare D1 上，1 行读仅 0.001 纳美元，而为读操作记一笔账（`principals` 1 行 + `requests` 3 行 = 4 行写）立刻花掉 **4,000 纳美元**——计量成本是业务成本的几万倍。同时 SQLite / D1 是单写者模型，读触发写会破坏 GET 幂等性、制造 `principals` 热点行锁竞争，并放大滥用杠杆。
+2. **全站纯读零写库落地**：
+   - 管理面读鉴权（`GET /api/v1/*`）不写去重表（#49）；
+   - 转发面模型清单（`GET /v1/models`、`GET /v1/models/:model`）走 `resolveProvider(..., { readOnly: true })` 且不更新 `consumers.last_used_at`——即便携带 `thread-id` / `session-id` 也绝不回写 `affinities`，严格 0 次 D1 写；
+   - 公开只读接口按属性加缓存（`/api/v1/stats` 60s 边缘缓存，`/api/v1/pricing` 与 `/api/v1/protocols` 300s 缓存，`/api/v1/base-urls` 60s 缓存；`/api/v1/attestation` 保持 `no-store`），把能挡在 Worker 之外的读全部挡在外面。
+3. **写全体补贴读全体**：免费读请求打进 Worker 仍会产生基础设施成本（Worker 300 + CPU ~50 + Log 1,320 ≈ **1,670 纳 / 次**；若开启日志采样可压至 ~350–480 纳）。既然不贴钱，这笔公共读成本原则上由**计费的写/推理操作全体按实际读写比交叉补贴**：
+
+```
+单次推理需分摊的 read_subsidy = R × C_read
+  其中 R = 未缓存的免费读请求数 ÷ 计费推理请求数
+```
+
+- API 自动化为主（如 `R = 0.2`）：每次推理约摊 **334 纳**（约占当前 Gas 的 5%）；
+- Web 控制台与 API 1:1（`R = 1.0`）：每次推理约摊 **1,670 纳**（约占当前 Gas 的 25%）。
+
+`src/gas.ts` 已为这项摊销预留公开槽位 `GAS_SCHEDULE.read_subsidy`（当前冷启动期置 `0`），后续依据 Cloudflare 实际总请求数与 `requests` 总行数的比值定期校准，改值 = 一次公开可审查的代码提交。
 
 ## Workers Logs 建模说明
 

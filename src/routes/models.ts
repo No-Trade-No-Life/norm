@@ -5,7 +5,6 @@ import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { randomToken } from '../ids';
 import { probeProviderModels, type ModelProbe } from '../models';
-import { touchConsumer } from '../consumers';
 import { resolveProvider } from '../store';
 import { affinityKeyOf } from '../routing';
 import { type ModelInfo } from '../protocols';
@@ -74,14 +73,14 @@ type Resolved =
  * 「为什么列不出来」更难查。
  */
 async function resolve(c: ModelsContext, model?: string): Promise<Resolved> {
-  const principal = c.get('principal');
-  const address = principal.address;
-  // 与转发面同一套判定（store.resolveProvider）：自己的上游优先、公共池兜底、
-  // thread-id / session-id 粘住。于是「GET /v1/models 列出的清单」就是
-  // 「接下来 POST 会打到的那台」的清单，两者不会各说各话。
-  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers), { model });
+  const address = c.get('principal').address;
+  // 与转发面同一套选址规则，但显式 `readOnly: true` 且不写 `consumers.last_used_at`：
+  // 列清单是纯读操作，绝不「读导致写」（不写 affinities、不写 consumers、不计费）。
+  const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers), {
+    model,
+    readOnly: true,
+  });
   const provider = choice.provider;
-  await touchConsumer(c.env, principal.consumerId);
 
   const startedAt = Date.now();
   // 探测要解封密钥，而密钥的 AAD 绑在持有者身上：池子那条归站点，不归调用方。

@@ -41,6 +41,12 @@ export const GAS_SCHEDULE = {
   d1_reads: 10,
   /** D1 行写：$1.00 / 1M 行写（表行与每一条二级索引各计 1 行）。 */
   d1_row_write: 1_000,
+  /**
+   * 免费只读操作的公共成本摊销（纳美元 / 次计费推理）：
+   * 读操作不计费、不写库（忌讳「读导致写」），其 Worker + Log 成本按全站真实读写比
+   * R × C_read 由计费推理/写操作全体交叉补贴。冷启动期先置 0，按线上实际读写比定期校准。
+   */
+  read_subsidy: 0,
 } as const;
 
 /**
@@ -77,12 +83,13 @@ export function applyGasMargin(rawNanos: number, marginBps: number = GAS_MARGIN_
   return Math.ceil((rawNanos * (10_000 + marginBps)) / 10_000);
 }
 
-/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 1,320 + 100 + 10 = 1,730 纳）。 */
+/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 1,320 + 100 + 10 + 0 = 1,730 纳）。 */
 export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.worker_invocation +
   GAS_SCHEDULE.log_event +
   GAS_SCHEDULE.cpu_base +
-  GAS_SCHEDULE.d1_reads;
+  GAS_SCHEDULE.d1_reads +
+  GAS_SCHEDULE.read_subsidy;
 
 /** 刷新消费者密钥最近使用时间的写入成本（1,000 纳）。 */
 export const GAS_CONSUMER_TOUCH_NANOS = D1_ROW_WRITES.consumer_touch * GAS_SCHEDULE.d1_row_write;
