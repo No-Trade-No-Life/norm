@@ -4,6 +4,7 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { needsConsumerTouch, touchConsumer } from '../consumers';
 import { providerCredential } from '../credentials';
+import { sendUpstream } from '../tunnel';
 import { minBalanceNanos, type Env } from '../env';
 import {
   D1_ROW_WRITES,
@@ -139,10 +140,17 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
 
   let reply: Response;
   try {
-    reply = await fetch(`${provider.base_url.replace(/\/+$/, '')}${call.path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': call.wire.contentType, ...profile.headers(providerKey) },
-      body: call.wire.body,
+    // 音频与文本走同一条出口：配了代理就进隧道（见 `src/tunnel.ts`）。
+    reply = await sendUpstream({
+      env: c.env,
+      address: provider.address,
+      provider,
+      url: `${provider.base_url.replace(/\/+$/, '')}${call.path}`,
+      init: {
+        method: 'POST',
+        headers: { 'Content-Type': call.wire.contentType, ...profile.headers(providerKey) },
+        body: call.wire.body,
+      },
     });
   } catch (error) {
     const settled = await recordFailure(accounting, 'network_error', 502);

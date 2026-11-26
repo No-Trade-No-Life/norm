@@ -18,6 +18,7 @@ import { nowSeconds } from './ids';
 import { ratesFor, type Rates } from './pricing';
 import { protocolFor, tariffFor, type Protocol } from './protocols';
 import { providerCredential } from './credentials';
+import { sendUpstream } from './tunnel';
 import { recordProviderModels } from './store';
 
 export type ModelProbe =
@@ -46,6 +47,8 @@ export type ProbeTarget = {
   base_url: string;
   protocol: Protocol;
   sealed_key: string;
+  /** 代理密文。清单请求和转发请求得走同一条路，否则配了代理的上游永远抓不到型号。 */
+  sealed_proxy: string;
 };
 
 export async function probeProviderModels({
@@ -74,10 +77,12 @@ export async function probeProviderModels({
 
   let upstream: Response;
   try {
-    upstream = await fetch(`${baseUrl}${profile.modelsPath()}`, {
-      method: 'GET',
-      headers: { Accept: 'application/json', ...profile.headers(upstreamKey) },
-      signal: AbortSignal.timeout(timeoutMs),
+    upstream = await sendUpstream({
+      env,
+      address,
+      provider,
+      url: `${baseUrl}${profile.modelsPath()}`,
+      init: { method: 'GET', headers: { Accept: 'application/json', ...profile.headers(upstreamKey) } },
     });
   } catch (error) {
     const timedOut = (error as Error).name === 'TimeoutError';

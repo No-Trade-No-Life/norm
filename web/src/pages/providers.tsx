@@ -343,6 +343,7 @@ function NewProviderDialog({
   const [baseUrl, setBaseUrl] = useState('');
   const [label, setLabel] = useState('');
   const [enabled, setEnabled] = useState(true);
+  const [proxyUrl, setProxyUrl] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const schemas = protocols.data ?? [];
@@ -354,6 +355,7 @@ function NewProviderDialog({
     setProviderKey('');
     setBaseUrl('');
     setEnabled(true);
+    setProxyUrl('');
     setError(null);
   };
 
@@ -372,6 +374,7 @@ function NewProviderDialog({
         protocol,
         enabled,
         ...(asksBaseUrl ? { base_url: baseUrl.trim() } : {}),
+        ...(proxyUrl.trim() ? { proxy_url: proxyUrl.trim() } : {}),
       });
       reset();
       onCreated();
@@ -469,6 +472,18 @@ function NewProviderDialog({
           )}
 
           <div className="flex flex-col gap-1.5">
+            <Label>{t('pr.field_proxy')}</Label>
+            <Input
+              value={proxyUrl}
+              onChange={(event) => setProxyUrl(event.target.value)}
+              placeholder={t('pr.field_proxy_placeholder')}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_proxy_hint')}</p>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_label')}</Label>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
           </div>
@@ -513,6 +528,8 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
   const [baseUrl, setBaseUrl] = useState(provider.base_url);
   const [enabled, setEnabled] = useState(provider.enabled === 1);
   const [providerKey, setProviderKey] = useState('');
+  const [proxyUrl, setProxyUrl] = useState('');
+  const [clearProxy, setClearProxy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const schemas = protocols.data ?? [];
@@ -543,6 +560,9 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
       };
       if (asksBaseUrl) body.base_url = baseUrl.trim();
       if (providerKey.trim()) body.provider_key = providerKey.trim();
+      // 代理的三态：没动就不发（服务端保持原值）、点了拆掉发空串、填了就换一条。
+      if (clearProxy) body.proxy_url = '';
+      else if (proxyUrl.trim()) body.proxy_url = proxyUrl.trim();
       await update.mutateAsync({ id: provider.id, body });
       onClose();
     } catch (caught) {
@@ -647,6 +667,30 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
           <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_label')}</Label>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>{t('pr.field_proxy')}</Label>
+            {provider.proxy_hint ? (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {t('pr.field_proxy_current', { hint: provider.proxy_hint })}
+              </p>
+            ) : null}
+            <Input
+              value={proxyUrl}
+              onChange={(event) => setProxyUrl(event.target.value)}
+              placeholder={t('pr.field_proxy_placeholder')}
+              autoComplete="off"
+              spellCheck={false}
+              disabled={clearProxy}
+            />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_proxy_hint')}</p>
+            {provider.proxy_hint ? (
+              <div className="flex items-center justify-between gap-3">
+                <Label>{t('pr.field_proxy_clear')}</Label>
+                <Switch checked={clearProxy} onCheckedChange={setClearProxy} aria-label={t('pr.field_proxy_clear')} />
+              </div>
+            ) : null}
           </div>
 
           <div className="flex items-center justify-between gap-3">

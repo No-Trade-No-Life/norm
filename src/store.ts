@@ -81,6 +81,10 @@ export type ProviderRow = {
   base_url: string;
   key_hint: string;
   sealed_key: string;
+  /** 代理地址的密文（`http://user:pass@host:port`）。空串 = 直连，不走隧道。 */
+  sealed_proxy: string;
+  /** 展示用提示：密码位置是 ***。空串 = 没配代理。 */
+  proxy_hint: string;
   kdf: string;
   // INVARIANT: 这两列只由 providers 路由写入，写入前已校验枚举；
   // 因此读出来一定是合法取值，不需要在每个调用点再判一次。
@@ -158,7 +162,7 @@ export async function listProviders(env: Env, address: string): Promise<Provider
       ...row,
       trusted: isTrusted(row.base_url, env),
       mine,
-      ...(mine ? {} : { key_hint: '', sealed_key: '' }),
+      ...(mine ? {} : { key_hint: '', sealed_key: '', sealed_proxy: '', proxy_hint: '' }),
     };
   });
 }

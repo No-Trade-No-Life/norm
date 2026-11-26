@@ -7,6 +7,7 @@ import { PROTOCOLS, isProtocol, protocolFor } from '../protocols';
 import { hostOf } from '../base-urls';
 import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
+import { parseProxyUrl, proxyHintOf } from '../proxy';
 import { findProvider, listProviders } from '../store';
 import { applyOnce, idempotentId, type ApplyOutcome } from '../idempotent';
 import {
@@ -32,6 +33,11 @@ type Body = {
   scope?: string;
   /** 可选，默认启用。禁用后不参与选址。 */
   enabled?: boolean;
+  /**
+   * 这条上游专用的 HTTP 代理：`http://host:port`，可带 `user:pass`。
+   * 不填 = 直连；更新时空串 = 拆掉原来那条。
+   */
+  proxy_url?: string | null;
 };
 
 /** 库里密文的封装方式。改这个常量意味着要迁移全部旧密文。 */
@@ -122,12 +128,19 @@ providerRoutes.post('/', async (c) => {
   const providerKey = body.provider_key.trim();
   const oauth = credentialFor(profile.oauth === true, providerKey);
   const sealedKey = await sealProviderKey({ env: c.env, address, providerId: id, providerKey });
+  // 代理地址和密钥一样进门就封装：里面通常带着 user:pass，明文不该在库里过夜。
+  const proxyUrl = (body.proxy_url ?? '').trim();
+  if (proxyUrl !== '' && parseProxyUrl(proxyUrl) === null) {
+    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http://host:port，可带 user:pass');
+  }
+  const sealedProxy =
+    proxyUrl === '' ? '' : await sealProviderKey({ env: c.env, address, providerId: id, providerKey: proxyUrl });
 
   const inserted = await c.env.DB.prepare(
     `INSERT INTO providers
        (id, address, label, base_url, key_hint, sealed_key, kdf,
-        protocol, scope, enabled, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        protocol, scope, enabled, created_at, sealed_proxy, proxy_hint)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (id) DO NOTHING`,
   )
     .bind(
@@ -142,6 +155,8 @@ providerRoutes.post('/', async (c) => {
       scope,
       enabled ? 1 : 0,
       now,
+      sealedProxy,
+      proxyHintOf(proxyUrl),
     )
     .run();
 
@@ -155,7 +170,7 @@ providerRoutes.post('/', async (c) => {
   // 但选址要按模型筛，这张表就得有。抓不到也没关系——没有清单的上游仍然可被选中。
   background(
     c,
-    syncProviderModels({ env: c.env, address, provider: { id, base_url: baseUrl, protocol, sealed_key: sealedKey } }).then(
+    syncProviderModels({ env: c.env, address, provider: { id, base_url: baseUrl, protocol, sealed_key: sealedKey, sealed_proxy: sealedProxy } }).then(
       () => undefined,
     ),
   );
@@ -254,13 +269,26 @@ providerRoutes.patch('/:id', async (c) => {
     : existing.sealed_key;
   const keyHint = nextKey ? hintOf(nextKey, oauth) : existing.key_hint;
 
+  // 代理有三种意思：字段没提 = 不动；空串 = 拆掉；有值 = 换一条。
+  const givenProxy = body.proxy_url === undefined ? undefined : (body.proxy_url ?? '').trim();
+  if (givenProxy !== undefined && givenProxy !== '' && parseProxyUrl(givenProxy) === null) {
+    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http://host:port，可带 user:pass');
+  }
+  const sealedProxy =
+    givenProxy === undefined
+      ? existing.sealed_proxy
+      : givenProxy === ''
+        ? ''
+        : await sealProviderKey({ env: c.env, address, providerId: existing.id, providerKey: givenProxy });
+  const proxyHint = givenProxy === undefined ? existing.proxy_hint : proxyHintOf(givenProxy);
+
   const outcome = await applyOnce({
     env: c.env,
     table: 'providers',
     id: existing.id,
     address,
-    set: 'label = ?, base_url = ?, protocol = ?, enabled = ?, sealed_key = ?, key_hint = ?, kdf = ?',
-    values: [label, baseUrl, protocol, enabled ? 1 : 0, sealedKey, keyHint, KDF],
+    set: 'label = ?, base_url = ?, protocol = ?, enabled = ?, sealed_key = ?, key_hint = ?, kdf = ?, sealed_proxy = ?, proxy_hint = ?',
+    values: [label, baseUrl, protocol, enabled ? 1 : 0, sealedKey, keyHint, KDF, sealedProxy, proxyHint],
     nonce: identity.nonce,
   });
   if (settle(outcome) === 'replayed') return c.json({ id: existing.id, replayed: true });
@@ -268,7 +296,7 @@ providerRoutes.patch('/:id', async (c) => {
   // 换了协议、地址或密钥，这一条能跑的型号可能全变了：重新抓一次清单。
   background(
     c,
-    syncProviderModels({ env: c.env, address, provider: { id: existing.id, base_url: baseUrl, protocol, sealed_key: sealedKey } }).then(
+    syncProviderModels({ env: c.env, address, provider: { id: existing.id, base_url: baseUrl, protocol, sealed_key: sealedKey, sealed_proxy: sealedProxy } }).then(
       () => undefined,
     ),
   );
