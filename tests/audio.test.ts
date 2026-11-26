@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { audioCodecFor, readSpeechAsk, readTranscriptionAsk } from '../src/audio';
+import { receiptHeaders } from '../src/routes/billing';
 import { audioRateFor, quoteAudio, ZERO_AUDIO_USAGE } from '../src/pricing';
 import {
   audioFormatOf,
@@ -90,6 +91,23 @@ describe('Qwen 的原生音频接口（Qwen LB 那一层适配）', () => {
       true,
     );
     expect(QWEN_AUDIO_MODELS.map((row) => row.match)).toContain('cosyvoice-v3.5-plus');
+  });
+});
+
+describe('回执头：文本与音频同一套', () => {
+  it('四个头把这次的钱与请求 ID 说全', () => {
+    const headers = receiptHeaders({
+      request_id: 'r1', fee_nanos: 80390, gas_fee_nanos: 4000, gas_billed_nanos: 4000,
+      token_nanos: 76390, token_billed_nanos: 76390, input_tokens: 0, cached_tokens: 0,
+      output_tokens: 0, audio_ms: 2500, audio_characters: 0, unbilled_nanos: 0,
+      balance_nanos: null, latency_ms: 820, host: 'h', pool: false,
+    });
+    expect(headers).toEqual({
+      'X-Norm-Request-Id': 'r1',
+      'X-Norm-Fee-Nanos': '80390',
+      'X-Norm-Gas-Billed-Nanos': '4000',
+      'X-Norm-Token-Billed-Nanos': '76390',
+    });
   });
 });
 

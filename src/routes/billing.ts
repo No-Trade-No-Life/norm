@@ -116,6 +116,21 @@ export async function recordFailure(accounting: Accounting, status: string, stat
   );
 }
 
+/**
+ * 回执头：这次调用收了多少钱、记在哪个请求 ID 上。
+ *
+ * 文本与音频、成功与失败都挂同一套头，字节响应（合成）尤其靠它——音频里塞不进账目。
+ * 名字与音频那侧原本就在用的四个保持一致，别让同一件事有两种头名。
+ */
+export function receiptHeaders(meta: NormMeta): Record<string, string> {
+  return {
+    'X-Norm-Request-Id': meta.request_id,
+    'X-Norm-Fee-Nanos': String(meta.fee_nanos),
+    'X-Norm-Gas-Billed-Nanos': String(meta.gas_billed_nanos),
+    'X-Norm-Token-Billed-Nanos': String(meta.token_billed_nanos),
+  };
+}
+
 /** 失败响应是上游的原话，账单只能挂在头上：这一次到底扣了多少 Gas。 */
 export function failureHeaders(requestId: string, settled: Settled): Record<string, string> {
   return {

@@ -19,7 +19,7 @@ import { audioRateFor, quoteAudio } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
 import { resolveProvider } from '../store';
-import { failureHeaders, recordFailure, settleBill, type Accounting } from './billing';
+import { failureHeaders, receiptHeaders, recordFailure, settleBill, type Accounting } from './billing';
 
 /**
  * 音频转发面：`POST /v1/audio/transcriptions` 与 `POST /v1/audio/speech`。
@@ -196,10 +196,7 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
     headers: {
       'Content-Type': answer.contentType,
       'Content-Length': String(answer.audio.byteLength),
-      'X-Norm-Request-Id': meta.request_id,
-      'X-Norm-Fee-Nanos': String(meta.fee_nanos),
-      'X-Norm-Token-Nanos': String(meta.token_nanos),
-      'X-Norm-Gas-Billed-Nanos': String(meta.gas_billed_nanos),
+      ...receiptHeaders(meta),
     },
   });
 }

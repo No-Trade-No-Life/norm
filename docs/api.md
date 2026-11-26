@@ -302,8 +302,11 @@ curl https://norm.ntnl.io/v1/audio/speech \
   -d '{"input":"你好，世界","model":"qwen3-tts-flash","voice":"Cherry"}' --output speech.wav
 ```
 
-合成回的是字节，钱没法塞进音频里，所以挂在响应头上：`X-Norm-Fee-Nanos`（实扣总额）、
-`X-Norm-Request-Id`、`X-Norm-Token-Nanos`、`X-Norm-Gas-Billed-Nanos`。
+合成回的是字节，钱没法塞进音频里，所以挂在响应头上。**这四个头每一条非流式响应都带**，
+文本与音频同一套：`X-Norm-Fee-Nanos`（实扣总额）、`X-Norm-Request-Id`、
+`X-Norm-Gas-Billed-Nanos`、`X-Norm-Token-Billed-Nanos`。
+
+文本的非流式应答另有顶层 `cost_usd_nanos`（与 `norm.fee_nanos` 同值），方便只读体的网关。
 
 **费用永远随响应一起回来，没有事后回捞的接口。** 一个请求一次往返：没有第二个查询端点、
 没有后台轮询、没有「先记 pending 再对账」——那套形状在 Cloudflare Worker 上要多一次调用、
