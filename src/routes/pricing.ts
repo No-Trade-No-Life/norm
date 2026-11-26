@@ -45,7 +45,7 @@ pricingRoutes.get('/', (c) =>
           ...GAS_SCHEDULE,
           d1_writes: D1_ROW_WRITES,
         },
-        note: '动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的 Cloudflare 资源付费点逐项累加，结算前冻结；当前 1.0× 成本价计费。',
+        note: 'Gas 与 Token 分开计费：Gas 从 300 纳美元（Worker 调用）起步，按实际经过的 Cloudflare 资源付费点逐项累加，付给 Norm（当前 1.0× 成本价）；Token 费是用户间价值转移——调用自有上游仅收 Gas（Token 为 0），调用公共池/他人上游时 Token 费转入上游提供方账户（额外含 1,000 纳转账写库 Gas）。',
       },
     },
     200,

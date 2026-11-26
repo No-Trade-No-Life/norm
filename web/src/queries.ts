@@ -8,6 +8,7 @@ import type {
   BaseUrlGroup,
   Consumer,
   ConsumerUsage,
+  EarningRow,
   LedgerRow,
   LoginResponse,
   Me,
@@ -110,6 +111,20 @@ export function useUsage(enabled: boolean, cursor: string | undefined) {
     queryFn: () =>
       requestJson<{ items: RequestRow[] }>({
         path: `/api/v1/account/usage?limit=${PER_PAGE}${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`,
+      }),
+    select: (data) => data.items,
+  });
+}
+
+/** 上游收入记录：他人调用本账户上游时转入的 Token 费用，同样按 request_id（UUID v7）倒序游标翻页。 */
+export function useEarnings(enabled: boolean, cursor: string | undefined) {
+  return useQuery({
+    queryKey: ['earnings', cursor ?? 'head'],
+    enabled,
+    retry: false,
+    queryFn: () =>
+      requestJson<{ items: EarningRow[] }>({
+        path: `/api/v1/account/earnings?limit=${PER_PAGE}${cursor ? `&before=${encodeURIComponent(cursor)}` : ''}`,
       }),
     select: (data) => data.items,
   });

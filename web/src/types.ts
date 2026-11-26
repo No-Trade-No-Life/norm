@@ -3,6 +3,13 @@
 export type LoginResponse = {
   address: string;
   balance_nanos: number;
+  recharge_nanos: number;
+  voucher_nanos: number;
+  earn_nanos: number;
+  gas_spend_nanos: number;
+  token_spend_nanos: number;
+  spend_nanos: number;
+  withdraw_nanos: number;
   created: boolean;
 };
 
@@ -13,26 +20,38 @@ export type TokenTotals = {
   output_tokens: number;
 };
 
-/** 钱的构成：一次服务费 + 三项 token 折出来的钱，以及没收上来的部分。 */
+/** 钱的构成：Gas 费（付给 Norm）与 Token 费（转给他人上游）分开记，外加未收部分。 */
 export type MoneyTotals = {
   gas_fee_nanos: number;
+  gas_billed_nanos: number;
   token_nanos: number;
+  token_billed_nanos: number;
   unbilled_nanos: number;
+};
+
+/** 作为上游提供方服务他人收到的 Token 价值转移汇总。 */
+export type EarnedTotals = TokenTotals & {
+  requests: number;
+  token_nanos: number;
 };
 
 export type Me = {
   address: string;
   label: string;
-  /** 算出来的可用余额 = 充值 + 抵扣券 − 消费 − 提现。 */
+  /** 算出来的可用余额 = 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现。 */
   balance_nanos: number;
   recharge_nanos: number;
   voucher_nanos: number;
+  earn_nanos: number;
+  gas_spend_nanos: number;
+  token_spend_nanos: number;
   spend_nanos: number;
   withdraw_nanos: number;
   requests: number;
   providers: number;
   usage: TokenTotals;
   billed: MoneyTotals;
+  earned: EarnedTotals;
   /** 体感：平均首字（只统计有首字的调用）与平均总耗时。 */
   latency: { avg_first_token_ms: number; avg_latency_ms: number; streamed_requests: number };
   created_at: number;
@@ -102,12 +121,37 @@ export type RequestRow = {
   cached_tokens: number;
   output_tokens: number;
   gas_fee_nanos: number;
+  gas_billed_nanos: number;
   token_nanos: number;
+  token_billed_nanos: number;
   fee_nanos: number;
   unbilled_nanos: number;
   /** 这一笔之前 / 之后的累计消费：delta 就是 fee，最后一条的 after 就是这个账户花掉的总数。 */
   spend_before_nanos: number;
   spend_after_nanos: number;
+  /** 跨用户调用时，上游提供方在本次转账前后的累计收入。 */
+  earn_before_nanos: number;
+  earn_after_nanos: number;
+  created_at: number;
+};
+
+/** 一条上游收入记录：他人调用本账户上游（公共池）时转入本账户的 Token 费用。 */
+export type EarningRow = {
+  id: string;
+  consumer_address: string;
+  provider_id: string | null;
+  provider_label: string | null;
+  base_url: string;
+  model: string;
+  status: string;
+  status_code: number | null;
+  input_tokens: number;
+  cached_tokens: number;
+  output_tokens: number;
+  token_nanos: number;
+  token_billed_nanos: number;
+  earn_before_nanos: number;
+  earn_after_nanos: number;
   created_at: number;
 };
 
@@ -154,10 +198,12 @@ export type Attestation = {
 /** 一次调用的账单结论（响应里的 `norm` 字段，流式里是末帧）。 */
 export type CallBill = {
   request_id: string;
-  /** 真正从余额里扣掉的数 = gas_fee + token − unbilled。 */
+  /** 真正从余额里扣掉的总额 = gas_billed + token_billed = gas_fee + token − unbilled。 */
   fee_nanos: number;
   gas_fee_nanos: number;
+  gas_billed_nanos?: number;
   token_nanos: number;
+  token_billed_nanos?: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
@@ -166,11 +212,11 @@ export type CallBill = {
   balance_nanos: number | null;
   latency_ms: number;
   host: string;
-  /** true = 这一单落到了公共池上（自己的上游一条都不可用）。 */
+  /** true = 这一单落到了公共池（他人上游），Token 费转给上游提供方；false = 自有上游，仅收 Gas。 */
   pool: boolean;
 };
 
-/** 按下游消费者密钥聚合的用量：哪把钥匙花了多少。 */
+/** 按下游消费者密钥聚合的用量：哪把钥匙花了多少（Gas vs Token）。 */
 export type ConsumerUsage = {
   consumer_id: string | null;
   consumer_name: string | null;
@@ -179,17 +225,22 @@ export type ConsumerUsage = {
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
+  gas_fee_nanos: number;
+  token_nanos: number;
   fee_nanos: number;
 };
 
-/** 按上游提供商聚合的用量：钱花在哪个上游提供商。 */
+/** 按上游提供商聚合的用量：钱花在哪个上游提供商（Gas vs Token）。 */
 export type ProviderUsage = {
   provider_id: string | null;
   provider_label: string | null;
+  is_own: number;
   requests: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
+  gas_fee_nanos: number;
+  token_nanos: number;
   fee_nanos: number;
 };
 

@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Env } from '../src/env';
 import { publicRoutes } from '../src/routes/public';
 
-const STATS = { principals: 3, providers: 2, requests: 7, spend_nanos: 1_234_567 };
+const STATS = {
+  principals: 3,
+  providers: 2,
+  requests: 7,
+  gas_spend_nanos: 234_567,
+  token_spend_nanos: 1_000_000,
+  earn_nanos: 1_000_000,
+  spend_nanos: 1_234_567,
+};
 
 /** 缓存语义只在边缘存在；这里用一张 Map 把「命中 / 未命中」变成可断言的事实。 */
 class FakeCache {
@@ -58,9 +66,11 @@ describe('/api/v1/stats 的缓存', () => {
     const first = await publicRoutes.request('https://norm.ntnl.io/stats', {}, env, ctx);
     expect(first.status).toBe(200);
     expect(first.headers.get('cache-control')).toBe('public, max-age=60');
-    // 累计消费读 principals，请求表只数行数——不再对 requests 求 SUM。
+    // Gas、Token 与收入均直接读 principals 累计数，请求表只数行数——不再对 requests 求 SUM。
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toContain('SUM(spend_nanos)');
+    expect(seen[0]).toContain('SUM(gas_spend_nanos)');
+    expect(seen[0]).toContain('SUM(token_spend_nanos)');
+    expect(seen[0]).toContain('SUM(earn_nanos)');
     expect(seen[0]).toContain('FROM principals');
     expect(seen[0]).not.toContain('SUM(fee_nanos)');
     const body = await first.clone().json();

@@ -63,11 +63,16 @@ export const D1_ROW_WRITES = {
   /** DELETE provider_models 每删 1 行：表 1 + PK 1 + provider_models_model 1 = 3 行。 */
   provider_model_delete: 3,
   /**
-   * 结算（settle）：UPDATE principals（spend_nanos 非索引，1 行）+
+   * 结算（settle）：UPDATE principals（消费方 gas_spend_nanos / token_spend_nanos 非索引，1 行）+
    * INSERT requests（WITHOUT ROWID 聚簇表，PRIMARY KEY (address, id)，0 二级索引，1 行）= 2 行。
    * 乐观锁冲突时未命中的 UPDATE 变更 0 行，不会放大写入。
    */
   settle: 2,
+  /**
+   * 跨用户 Token 价值转移结算：调用他人/公共池上游且产生 Token 费时，
+   * 额外 UPDATE principals（上游提供方 earn_nanos 非索引，1 行）；调用自有上游时为 0 行。
+   */
+  token_transfer: 1,
 } as const;
 
 /**
@@ -93,8 +98,11 @@ export const GAS_ENTRY_BASE_NANOS =
 /** 刷新消费者密钥最近使用时间的写入成本（1,000 纳，按 UTC 自然日节流）。 */
 export const GAS_CONSUMER_TOUCH_NANOS = D1_ROW_WRITES.consumer_touch * GAS_SCHEDULE.d1_row_write;
 
-/** 结算落库成本（2,000 纳：principals 1 行 + requests WITHOUT ROWID 1 行）。 */
+/** 结算落库成本（2,000 纳：消费方 principals 1 行 + requests WITHOUT ROWID 1 行）。 */
 export const GAS_SETTLE_NANOS = D1_ROW_WRITES.settle * GAS_SCHEDULE.d1_row_write;
+
+/** 跨用户 Token 价值转移的额外落库成本（1,000 纳：上游提供方 principals.earn_nanos 1 行）。 */
+export const GAS_TOKEN_TRANSFER_NANOS = D1_ROW_WRITES.token_transfer * GAS_SCHEDULE.d1_row_write;
 
 /** 写一次会话亲和的成本（1,000 纳：affinities WITHOUT ROWID 1 行）。 */
 export const GAS_AFFINITY_UPSERT_NANOS = D1_ROW_WRITES.affinity_upsert * GAS_SCHEDULE.d1_row_write;

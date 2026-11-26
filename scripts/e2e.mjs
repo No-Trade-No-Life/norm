@@ -521,8 +521,13 @@ console.log('1. 开户（签名即可，无注册）');
   // 演示授信是一张「抵扣券」，不是充值：它抵消费，但不可提现。
   check('授信记在抵扣券那一块', result.json.voucher_nanos === 1_000_000_000, result.json);
   check(
-    '开户时其余三块都是 0',
-    result.json.recharge_nanos === 0 && result.json.spend_nanos === 0 && result.json.withdraw_nanos === 0,
+    '开户时其余五块都是 0',
+    result.json.recharge_nanos === 0 &&
+      result.json.earn_nanos === 0 &&
+      result.json.gas_spend_nanos === 0 &&
+      result.json.token_spend_nanos === 0 &&
+      result.json.spend_nanos === 0 &&
+      result.json.withdraw_nanos === 0,
     result.json,
   );
   check('地址与本地公钥一致', result.json.address === alice.address, result.json);
@@ -748,13 +753,13 @@ for (const [protocol, want] of Object.entries(expected)) {
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
   const norm = result.json?.norm;
   check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
-  // 一次调用的钱 = 动态 Gas 费 + 三项 token 折出来的钱：
+  // 调用自有上游只付动态 Gas，不收 Token 费（Token 费只发生在跨用户/公共池价值转移）：
   // openai-chat 是这把钥匙当日首次调用（含 +1,000 consumer_touch = 3,420 纳）；
   // 后续三条同日调用免 touch，加 +100 跨方言桥接 CPU = 2,520 纳。
   const wantGas = protocol === 'openai-chat' ? 3420 : 2520;
-  check(`${protocol} 动态 Gas 费 ${wantGas} 纳美元`, norm?.gas_fee_nanos === wantGas, norm);
-  check(`${protocol} token 有价`, norm?.token_nanos > 0, norm);
-  check(`${protocol} 总价 = Gas + token`, norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
+  check(`${protocol} 动态 Gas 费 ${wantGas} 纳美元`, norm?.gas_fee_nanos === wantGas && norm?.gas_billed_nanos === wantGas, norm);
+  check(`${protocol} 自有上游不收 Token 费`, norm?.token_nanos === 0 && norm?.token_billed_nanos === 0, norm);
+  check(`${protocol} 自有上游总价 == Gas`, norm?.fee_nanos === norm?.gas_fee_nanos, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${PROVIDER_PORT}`, norm);
 }
 
@@ -791,7 +796,7 @@ for (const protocol of Object.keys(expected)) {
   const norm = normOf(streamed.text);
   check('流式也记下三项 token', norm?.input_tokens === 30 && norm?.cached_tokens === 20 && norm?.output_tokens === 6, norm);
   check('流式直通动态 Gas 费 2,480 纳美元（同日免 touch，含 +60 流式 CPU）', norm?.gas_fee_nanos === 2480, norm);
-  check('流式按 token 收钱', norm?.token_nanos > 0 && norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
+  check('自有上游流式仅收 Gas，不收 Token 费', norm?.token_nanos === 0 && norm?.fee_nanos === norm?.gas_fee_nanos, norm);
   check('客户端没要用量就不给用量帧', !streamed.text.includes('"prompt_tokens_details"'), streamed.text.slice(-300));
 
   const asked = await chat('openai-chat', { stream: true, stream_options: { include_usage: true } });
@@ -816,7 +821,7 @@ for (const protocol of Object.keys(expected)) {
     const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json.items;
     const row = rows.find((item) => item.id === requestId);
     check('同格式 responses 流记下三项 token', row?.input_tokens === 40 && row?.output_tokens === 5, row);
-    check('同格式 responses 流也收了 token 的钱', (row?.fee_nanos ?? 0) > (row?.gas_fee_nanos ?? 0), row);
+    check('自有上游同格式 responses 流仅收 Gas', row?.token_nanos === 0 && row?.fee_nanos === row?.gas_fee_nanos, row);
   }
 
   const geminiStream = seen.find((entry) => entry.path.includes(':streamGenerateContent'));
@@ -860,7 +865,7 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
   check('requests 计数与实际记录一致', me.requests === rows.length, { counted: me.requests, rows: rows.length });
   check('记录里既有成功也有失败', okCalls > 0 && failures.length > 0, { okCalls, failures: failures.length });
   check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
-  check('费用按 Gas + token 拆开', (me.billed?.gas_fee_nanos ?? 0) > 0 && (me.billed?.token_nanos ?? 0) > 0, me.billed);
+  check('自有上游调用只产生 Gas 支出，Token 支出为 0', (me.billed?.gas_billed_nanos ?? 0) > 0 && me.billed?.token_billed_nanos === 0 && me.gas_spend_nanos === me.spend_nanos && me.token_spend_nanos === 0, me.billed);
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger?limit=200')).json;
   // 消费不在账本里：一次调用花掉多少是请求自己的事，账本只记账户级的钱。
@@ -880,23 +885,36 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
     spend: me.spend_nanos,
   });
 
-  // 余额不落库：它必须永远等于「充值 + 抵扣券 − 消费 − 提现」这一句算式。
+  // 余额不落库：它必须永远等于「充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现」这一句算式。
   check(
-    '余额 == 充值 + 抵扣券 − 消费 − 提现',
-    me.balance_nanos === me.recharge_nanos + me.voucher_nanos - me.spend_nanos - me.withdraw_nanos,
+    '余额 == 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现',
+    me.balance_nanos ===
+      me.recharge_nanos + me.voucher_nanos + me.earn_nanos - me.gas_spend_nanos - me.token_spend_nanos - me.withdraw_nanos,
     {
       balance: me.balance_nanos,
       recharge: me.recharge_nanos,
       voucher: me.voucher_nanos,
-      spend: me.spend_nanos,
+      earn: me.earn_nanos,
+      gas_spend: me.gas_spend_nanos,
+      token_spend: me.token_spend_nanos,
       withdraw: me.withdraw_nanos,
     },
   );
-  // 四块累计数各自只增：这半天只发生过消费，另外三块一动没动。
+  // 其余累计数各自只增：到这一节为止只发生过自有上游调用（Gas 支出）。
   check(
-    '只有消费那一块在动',
-    me.voucher_nanos === 1_000_000_000 && me.recharge_nanos === 0 && me.withdraw_nanos === 0,
-    { voucher: me.voucher_nanos, recharge: me.recharge_nanos, withdraw: me.withdraw_nanos },
+    '只有 Gas 支出在动',
+    me.voucher_nanos === 1_000_000_000 &&
+      me.recharge_nanos === 0 &&
+      me.earn_nanos === 0 &&
+      me.token_spend_nanos === 0 &&
+      me.withdraw_nanos === 0,
+    {
+      voucher: me.voucher_nanos,
+      recharge: me.recharge_nanos,
+      earn: me.earn_nanos,
+      token_spend: me.token_spend_nanos,
+      withdraw: me.withdraw_nanos,
+    },
   );
   // 两本账各记一半：账本记进项（券 + 充值 − 提现），请求记消费，合起来才是可用余额。
   const sum = ledger.items.reduce((total, row) => total + row.amount_nanos, 0);
@@ -1270,9 +1288,40 @@ console.log('10e. 公共池：站点放进来的兜底上游，只在自有上�
     await call(poolUser, 'POST', '/api/v1/auth/login');
     const poolKey = (await createConsumer(poolUser, 'pool bot')).json.key;
 
+    // 记录调用前 alice（上游提供方）的余额与收入，验证 Token 费确实转给了 alice 而不是被 Norm 截留。
+    const aliceBefore = (await call(alice, 'GET', '/api/v1/account/me')).json;
+
     const viaPool = await relay(poolKey, 'POST', '/v1/chat/completions', payload);
     check('自己没有上游时落到公共池', viaPool.status === 200 && viaPool.json?.norm?.pool === true, viaPool.json);
-    check('池子这一单记在调用方账上', viaPool.json?.norm?.fee_nanos > 0, viaPool.json?.norm);
+    check(
+      '池子这一单同时收 Gas（含跨用户转账写库 +1,000）与 Token 费',
+      viaPool.json?.norm?.gas_fee_nanos === 4420 &&
+        viaPool.json?.norm?.token_nanos > 0 &&
+        viaPool.json?.norm?.token_billed_nanos === viaPool.json?.norm?.token_nanos &&
+        viaPool.json?.norm?.fee_nanos === viaPool.json?.norm?.gas_billed_nanos + viaPool.json?.norm?.token_billed_nanos,
+      viaPool.json?.norm,
+    );
+
+    const aliceAfter = (await call(alice, 'GET', '/api/v1/account/me')).json;
+    const tokenTransferred = viaPool.json?.norm?.token_billed_nanos ?? 0;
+    check(
+      'Token 费直接转入上游提供方（alice）的 earn_nanos 与可用余额',
+      aliceAfter.earn_nanos === aliceBefore.earn_nanos + tokenTransferred &&
+        aliceAfter.balance_nanos === aliceBefore.balance_nanos + tokenTransferred,
+      { before: aliceBefore.balance_nanos, after: aliceAfter.balance_nanos, earn: aliceAfter.earn_nanos, tokenTransferred },
+    );
+    const aliceEarnings = (await call(alice, 'GET', '/api/v1/account/earnings?limit=20')).json.items;
+    check(
+      '上游收入明细（/api/v1/account/earnings）记下了这笔转账与收入链',
+      aliceEarnings.some(
+        (item) =>
+          item.id === viaPool.json?.norm?.request_id &&
+          item.consumer_address === poolUser.address &&
+          item.token_billed_nanos === tokenTransferred &&
+          item.earn_after_nanos - item.earn_before_nanos === tokenTransferred,
+      ),
+      aliceEarnings.slice(0, 2),
+    );
 
     // 池子那条对别人只读，而且不回密钥提示。
     const seenList = (await call(poolUser, 'GET', '/api/v1/providers')).json.items

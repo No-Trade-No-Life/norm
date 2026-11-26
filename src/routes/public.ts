@@ -29,10 +29,20 @@ publicRoutes.get('/stats', async (c) => {
        (SELECT COUNT(*) FROM principals) AS principals,
        (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL AND enabled = 1) AS providers,
        (SELECT COUNT(*) FROM requests) AS requests,
-       -- 累计消费与 requests.fee_nanos 是同一笔钱：settle() 里 spend_nanos += billed
-       -- 与写入请求的 fee_nanos = billed 同时发生，所以这里不必再扫一遍请求表。
-       (SELECT COALESCE(SUM(spend_nanos), 0) FROM principals) AS spend_nanos`,
-  ).first<{ principals: number; providers: number; requests: number; spend_nanos: number }>();
+       -- Gas（付给 Norm）与 Token（用户间价值转移）分开统计，均直接读 principals 累计数，不扫请求表。
+       (SELECT COALESCE(SUM(gas_spend_nanos), 0) FROM principals) AS gas_spend_nanos,
+       (SELECT COALESCE(SUM(token_spend_nanos), 0) FROM principals) AS token_spend_nanos,
+       (SELECT COALESCE(SUM(earn_nanos), 0) FROM principals) AS earn_nanos,
+       (SELECT COALESCE(SUM(gas_spend_nanos + token_spend_nanos), 0) FROM principals) AS spend_nanos`,
+  ).first<{
+    principals: number;
+    providers: number;
+    requests: number;
+    gas_spend_nanos: number;
+    token_spend_nanos: number;
+    earn_nanos: number;
+    spend_nanos: number;
+  }>();
 
   const response = c.json({ ...row, window_hours: null }, 200, {
     'Cache-Control': `public, max-age=${STATS_TTL_SECONDS}`,

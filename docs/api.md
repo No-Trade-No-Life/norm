@@ -41,7 +41,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/health` | `{ok, service, version, now}` |
-| GET | `/api/v1/stats` | `{principals, providers, requests, spend_nanos, window_hours}`（`providers` 只计启用的） |
+| GET | `/api/v1/stats` | `{principals, providers, requests, gas_spend_nanos, token_spend_nanos, earn_nanos, spend_nanos, window_hours}`（`providers` 只计启用的） |
 | GET | `/api/v1/base-urls` | 按 base_url 聚合的上游提供商（含 `trusted` 布尔） |
 | GET | `/api/v1/attestation` | 构建证明 |
 
@@ -65,20 +65,25 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_nanos, granted_nanos, spend_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,token_nanos,unbilled_nanos}}` |
-| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
-| GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 记账流水，游标是上一页最后一行的 `cursor` |
-| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, fee_nanos}` |
-| GET | `/api/v1/account/usage/by-provider` | 按上游提供商聚合（同上，`provider_id` / `provider_label`） |
+| GET | `/api/v1/account/me` | `{address, label, balance_nanos, recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, spend_nanos, withdraw_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,gas_billed_nanos,token_nanos,token_billed_nanos,unbilled_nanos}, earned:{requests,input_tokens,cached_tokens,output_tokens,token_nanos}}` |
+| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 消费请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
+| GET | `/api/v1/account/earnings?limit=50&before=<request_id>` | 上游 Token 收入记录（他人调用本账户上游转入的 Token 明细，含 `earn_before_nanos` / `earn_after_nanos`） |
+| GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 账户级记账流水（券 / 充值 / 提现），游标是上一页最后一行的 `cursor` |
+| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, gas_fee_nanos, token_nanos, fee_nanos}` |
+| GET | `/api/v1/account/usage/by-provider` | 按上游提供商聚合（同上，`provider_id` / `provider_label` / `is_own`） |
 
 请求记录里每一行都能自己重算一遍：
 
 ```
-fee_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
+fee_nanos = gas_billed_nanos + token_billed_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 ```
 
+Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
+- 调用**自己的上游**（`provider_user === address`）：只收 Gas，`token_nanos = 0`、`token_billed_nanos = 0`；
+- 调用**他人/公共池上游**（`provider_user !== address`）：先扣 Gas，余下余额扣 `token_billed_nanos` 并等额转入 `provider_user` 的 `earn_nanos`（记录在 `earn_before_nanos` / `earn_after_nanos`）。
+
 `input_tokens` **含**缓存命中，`cached_tokens` 是其中命中上游提供商缓存的量（按便宜的价算），
-`output_tokens` 单独计价。余额不够时 `unbilled_nanos` 大于 0——那是站点承担的部分，如实记账。
+`output_tokens` 单独计价。余额不够时 `unbilled_nanos` 大于 0，上游提供方仅收到实际扣到的 `token_billed_nanos`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -246,8 +251,9 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 ```jsonc
 {
   "...": "OpenAI 响应原样",
-  "norm": { "request_id": "req_…", "fee_nanos": 2920, "gas_fee_nanos": 2420, "token_nanos": 500,
-            "unbilled_nanos": 0, "balance_nanos": 999997080, "latency_ms": 812, "host": "api.openai.com",
+  "norm": { "request_id": "req_…", "fee_nanos": 2420, "gas_fee_nanos": 2420, "gas_billed_nanos": 2420,
+            "token_nanos": 0, "token_billed_nanos": 0,
+            "unbilled_nanos": 0, "balance_nanos": 999997580, "latency_ms": 812, "host": "api.openai.com",
             "pool": false }
 }
 ```

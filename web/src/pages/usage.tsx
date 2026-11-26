@@ -7,49 +7,65 @@ import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
 import { latency, percent, safeHost, shortAddress, shortKey, signedUsd, tokens, usd, when } from '../lib/format';
-import { protocolLabel } from '../lib/labels';
 import {
   PER_PAGE,
+  useEarnings,
   useLedger,
   useMe,
   useUsage,
   useUsageByConsumer,
   useUsageByProvider,
 } from '../queries';
-import type { ConsumerUsage, LedgerRow, ProviderUsage, RequestRow } from '../types';
+import type { ConsumerUsage, EarningRow, LedgerRow, ProviderUsage, RequestRow } from '../types';
 
 /**
- * 用量与账本。这一页的顺序就是一个人核对账单的顺序：
+ * 用量与账本。这一页按核对账单的顺序组织，并把 Gas 费（付给 Norm）与 Token 费（用户间价值转移）彻底分开：
  *
- *   1. 余额与累计花费           —— 我欠多少、花了多少
- *   2. 三项 token 与费用构成     —— 钱花在什么上（输入 / 缓存命中 / 输出 / 服务费）
- *   3. 请求记录                 —— 逐条明细，每条都能回到一次调用
- *   4. 按钥匙 / 按上游提供商          —— 谁花的、花在哪
- *   5. 记账流水                 —— 余额是怎么一步步变到现在的
- *   6. 价目表                   —— 价格是公开的，谁都能自己重算一遍
+ *   1. 余额与六块只增累计数       —— 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现
+ *   2. Token 用量 / 费用构成 / 延迟 —— 区分付给 Norm 的 Gas 与转给上游提供方的 Token
+ *   3. 消费请求记录               —— 逐条明细，Gas 与 Token 分列展示（自有上游仅收 Gas）
+ *   4. 上游 Token 收入            —— 他人调用你上游时直接转入你账户的 Token 价值明细
+ *   5. 按钥匙 / 按上游提供商       —— 谁花的、花在哪（Gas / Token 分列）
+ *   6. 账户流水                   —— 券、充值、提现的账户级变动
  */
 export function UsagePage() {
   const { t } = useI18n();
   const me = useMe(true);
   const usage = useCursorPages<string>((cursor) => useUsage(true, cursor));
+  const earnings = useCursorPages<string>((cursor) => useEarnings(true, cursor));
   const ledger = useCursorPages<number>((cursor) => useLedger(true, cursor));
   const byConsumer = useUsageByConsumer(true);
   const byProvider = useUsageByProvider(true);
 
   const tokens_ = me.data?.usage;
   const billed = me.data?.billed;
+  const earned = me.data?.earned;
 
-  // 余额是算出来的，四块累计数各自只增：充值 + 抵扣券 − 消费 − 提现。
+  // 余额是算出来的，六块累计数各自只增：充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现。
   const cards = useMemo(
     () => [
-      { label: t('us.balance'), value: usd(me.data?.balance_nanos), emphasis: true },
-      { label: t('us.spend'), value: usd(me.data?.spend_nanos) },
-      { label: t('us.recharge'), value: usd(me.data?.recharge_nanos) },
-      { label: t('us.withdraw'), value: usd(me.data?.withdraw_nanos) },
-      { label: t('us.voucher'), value: usd(me.data?.voucher_nanos), note: t('us.voucher_note') },
-      { label: t('us.requests'), value: me.data ? String(me.data.requests) : '—' },
+      { label: t('us.balance'), value: usd(me.data?.balance_nanos), emphasis: true, positive: false, note: null as string | null },
+      { label: t('us.gas_spend'), value: usd(me.data?.gas_spend_nanos), emphasis: false, positive: false, note: t('us.gas_spend_note') },
+      { label: t('us.token_spend'), value: usd(me.data?.token_spend_nanos), emphasis: false, positive: false, note: t('us.token_spend_note') },
+      {
+        label: t('us.earn'),
+        value: me.data ? (me.data.earn_nanos > 0 ? signedUsd(me.data.earn_nanos) : usd(0)) : '—',
+        emphasis: false,
+        positive: (me.data?.earn_nanos ?? 0) > 0,
+        note: t('us.earn_note'),
+      },
+      { label: t('us.recharge'), value: usd(me.data?.recharge_nanos), emphasis: false, positive: false, note: null },
+      { label: t('us.voucher'), value: usd(me.data?.voucher_nanos), emphasis: false, positive: false, note: t('us.voucher_note') },
+      { label: t('us.withdraw'), value: usd(me.data?.withdraw_nanos), emphasis: false, positive: false, note: null },
+      {
+        label: t('us.requests'),
+        value: me.data ? String(me.data.requests) : '—',
+        emphasis: false,
+        positive: false,
+        note: earned && earned.requests > 0 ? t('us.served_note', { count: earned.requests }) : null,
+      },
     ],
-    [me.data, t],
+    [earned, me.data, t],
   );
 
   const tokenCards = useMemo(
@@ -68,19 +84,25 @@ export function UsagePage() {
 
   const moneyCards = useMemo(
     () => [
-      { label: t('us.billed_gas'), value: usd(billed?.gas_fee_nanos), note: t('us.gas_note') },
-      { label: t('us.billed_tokens'), value: usd(billed?.token_nanos), note: null },
+      { label: t('us.billed_gas'), value: usd(billed?.gas_billed_nanos ?? billed?.gas_fee_nanos), note: t('us.gas_note') },
+      { label: t('us.billed_tokens'), value: usd(billed?.token_billed_nanos ?? billed?.token_nanos), note: t('us.billed_tokens_note') },
       {
         label: t('us.billed_unbilled'),
         value: usd(billed?.unbilled_nanos),
-        // 正常情况这里是 0：余额不够时才会出现，而那不是一件好事，所以要能被看见。
-        note: null,
+        // 正常情况这里是 0：余额不够时才会出现，需要如实展示。
+        note: null as string | null,
       },
+    ],
+    [billed, t],
+  );
+
+  const latencyCards = useMemo(
+    () => [
       // 体感：首字是「等多久」，总耗时是「这一笔要多久」。首字只对流式有值。
       { label: t('us.avg_ttft'), value: latency(me.data?.latency?.avg_first_token_ms), note: t('us.ttft_only_stream') },
-      { label: t('us.avg_total'), value: latency(me.data?.latency?.avg_latency_ms), note: null },
+      { label: t('us.avg_total'), value: latency(me.data?.latency?.avg_latency_ms), note: null as string | null },
     ],
-    [billed, me.data, t],
+    [me.data, t],
   );
 
   return (
@@ -93,31 +115,52 @@ export function UsagePage() {
         {cards.map((card) => (
           <div key={card.label} className="rounded-xl border border-border bg-card px-3 py-2.5">
             <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
-            <p className={card.emphasis ? 'mt-1 text-lg font-semibold tabular-nums' : 'mt-1 text-base font-medium tabular-nums'}>
+            <p
+              className={
+                card.emphasis
+                  ? 'mt-1 text-lg font-semibold tabular-nums'
+                  : card.positive
+                    ? 'mt-1 text-base font-medium tabular-nums text-emerald-600 dark:text-emerald-400'
+                    : 'mt-1 text-base font-medium tabular-nums'
+              }
+            >
               {me.isPending ? '—' : card.value}
             </p>
-            {'note' in card && card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
+            {card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
           </div>
         ))}
       </div>
 
-      {/* 三项 token 与两项费用并排：一眼就能看出「贵在输出」还是「贵在没命中缓存」。 */}
-      <Section title={t('us.billed')} description={t('us.gas_note')}>
-        <div className="grid gap-3 sm:grid-cols-3">
-          {tokenCards.map((card) => (
-            <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
-              <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
-              <p className="mt-0.5 font-mono text-sm tabular-nums">{me.isPending ? '—' : card.value}</p>
-              {card.sub ? <p className="text-[11px] text-muted-foreground">{card.sub}</p> : null}
-            </div>
-          ))}
-          {moneyCards.map((card) => (
-            <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
-              <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
-              <p className="mt-0.5 font-mono text-sm tabular-nums">{me.isPending ? '—' : card.value}</p>
-              {card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
-            </div>
-          ))}
+      {/* 三项 token、两项分离费用（Gas / Token）与两项延迟分行排布，一眼看清结构。 */}
+      <Section title={t('us.billed')} description={t('us.billed_desc')}>
+        <div className="flex flex-col gap-3">
+          <div className="grid gap-3 sm:grid-cols-3">
+            {tokenCards.map((card) => (
+              <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
+                <p className="mt-0.5 font-mono text-sm tabular-nums">{me.isPending ? '—' : card.value}</p>
+                {card.sub ? <p className="text-[11px] text-muted-foreground">{card.sub}</p> : null}
+              </div>
+            ))}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-3">
+            {moneyCards.map((card) => (
+              <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
+                <p className="mt-0.5 font-mono text-sm tabular-nums">{me.isPending ? '—' : card.value}</p>
+                {card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
+              </div>
+            ))}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {latencyCards.map((card) => (
+              <div key={card.label} className="rounded-lg border border-border/60 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-[0.1em] text-muted-foreground">{card.label}</p>
+                <p className="mt-0.5 font-mono text-sm tabular-nums">{me.isPending ? '—' : card.value}</p>
+                {card.note ? <p className="text-[11px] text-muted-foreground">{card.note}</p> : null}
+              </div>
+            ))}
+          </div>
         </div>
       </Section>
 
@@ -128,7 +171,7 @@ export function UsagePage() {
         actions={<Pager page={usage.page} setPage={usage.setPage} hasNext={usage.hasNext} loading={usage.query.isFetching} />}
       >
         {usage.query.isPending ? (
-          <SkeletonRows rows={6} cols={7} />
+          <SkeletonRows rows={6} cols={9} />
         ) : usage.query.isError ? (
           <div className="p-3">
             <ErrorNote title={t('common.error')} message={(usage.query.error as Error).message} />
@@ -140,10 +183,29 @@ export function UsagePage() {
         )}
       </Section>
 
+      <Section
+        title={t('us.earnings_title')}
+        description={t('us.earnings_desc')}
+        bodyClassName="p-0"
+        actions={<Pager page={earnings.page} setPage={earnings.setPage} hasNext={earnings.hasNext} loading={earnings.query.isFetching} />}
+      >
+        {earnings.query.isPending ? (
+          <SkeletonRows rows={4} cols={6} />
+        ) : earnings.query.isError ? (
+          <div className="p-3">
+            <ErrorNote title={t('common.error')} message={(earnings.query.error as Error).message} />
+          </div>
+        ) : earnings.rows.length === 0 ? (
+          <Empty className="border-0">{t('us.earnings_empty')}</Empty>
+        ) : (
+          <EarningsTable rows={earnings.rows} />
+        )}
+      </Section>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Section title={t('us.by_consumer_title')} bodyClassName="p-0">
           {byConsumer.isPending ? (
-            <SkeletonRows rows={3} cols={4} />
+            <SkeletonRows rows={3} cols={5} />
           ) : byConsumer.isError ? (
             <div className="p-3">
               <ErrorNote title={t('common.error')} message={(byConsumer.error as Error).message} />
@@ -157,7 +219,7 @@ export function UsagePage() {
 
         <Section title={t('us.by_provider_title')} bodyClassName="p-0">
           {byProvider.isPending ? (
-            <SkeletonRows rows={3} cols={4} />
+            <SkeletonRows rows={3} cols={5} />
           ) : byProvider.isError ? (
             <div className="p-3">
               <ErrorNote title={t('common.error')} message={(byProvider.error as Error).message} />
@@ -177,7 +239,7 @@ export function UsagePage() {
         actions={<Pager page={ledger.page} setPage={ledger.setPage} hasNext={ledger.hasNext} loading={ledger.query.isFetching} />}
       >
         {ledger.query.isPending ? (
-          <SkeletonRows rows={5} cols={5} />
+          <SkeletonRows rows={5} cols={4} />
         ) : ledger.query.isError ? (
           <div className="p-3">
             <ErrorNote title={t('common.error')} message={(ledger.query.error as Error).message} />
@@ -188,7 +250,6 @@ export function UsagePage() {
           <LedgerTable rows={ledger.rows} />
         )}
       </Section>
-
     </div>
   );
 }
@@ -287,65 +348,160 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
           <TableHead className="hidden w-16 sm:table-cell">{t('us.col_status')}</TableHead>
           <TableHead className="hidden w-20 text-right sm:table-cell">{t('us.col_latency')}</TableHead>
           <TableHead className="hidden w-32 text-right xl:table-cell">{t('us.col_tokens')}</TableHead>
-          <TableHead className="w-[5.5rem] text-right">{t('us.col_fee')}</TableHead>
-          <TableHead className="hidden w-24 text-right sm:table-cell">{t('us.col_spend_after')}</TableHead>
+          <TableHead className="w-[5.25rem] text-right">{t('us.col_total_cost')}</TableHead>
+          <TableHead className="w-[5.5rem] text-right">{t('us.col_token_fee')}</TableHead>
+          <TableHead className="w-[5.25rem] text-right">{t('us.col_gas')}</TableHead>
+          <TableHead className="hidden w-24 text-right md:table-cell">{t('us.col_spend_after')}</TableHead>
           <TableHead className="hidden w-24 lg:table-cell">{t('us.col_provider_user')}</TableHead>
-          <TableHead className="hidden w-24 lg:table-cell">{t('us.col_consumer_user')}</TableHead>
-          <TableHead className="hidden min-w-56 xl:table-cell">{t('us.col_request_id')}</TableHead>
+          <TableHead className="hidden min-w-52 xl:table-cell">{t('us.col_request_id')}</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {rows.map((row) => {
+          const isOwn = row.provider_user === row.address;
+          const isPool = Boolean(row.provider_user && row.provider_user !== row.address);
+          const gasPaid = row.gas_billed_nanos ?? row.gas_fee_nanos;
+          const tokenPaid = row.token_billed_nanos ?? row.token_nanos;
+          return (
+            <TableRow key={row.id}>
+              <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
+              <TableCell className="max-w-28 truncate sm:max-w-56">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate font-mono text-xs" title={row.model}>
+                    {row.model || '—'}
+                  </span>
+                  {isPool ? (
+                    <Badge variant="outline" className="h-4 px-1 text-[10px] font-normal">
+                      {t('pg.pool_badge')}
+                    </Badge>
+                  ) : null}
+                </div>
+                {/* 第二行回答「打给哪台机器、走哪条上游提供商」——账本的一半意义在这里。 */}
+                <span className="block truncate text-[11px] text-muted-foreground" title={row.base_url}>
+                  {safeHost(row.base_url) || '—'}
+                  {row.provider_id ? ` · ${labelOf.get(row.provider_id) || shortAddress(row.provider_id)}` : ''}
+                </span>
+              </TableCell>
+              <TableCell className="hidden sm:table-cell">
+                <StatusBadge status={row.status} statusCode={row.status_code} />
+              </TableCell>
+              <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">
+                {/* 首字是体感、总耗时是账单：分开显示，才看得出慢在哪一头。 */}
+                <span className="block">{row.first_token_ms === null ? '—' : latency(row.first_token_ms)}</span>
+                <span className="block text-[11px] text-muted-foreground">{latency(row.latency_ms)}</span>
+              </TableCell>
+              <TableCell className="hidden text-right xl:table-cell">
+                <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
+              </TableCell>
+              {/* 总消费 / Token 费 / Gas 费分列展示：单笔归因一目了然（总消费 = Token 费 + Gas 费）。 */}
+              <TableCell
+                className="text-right text-xs font-medium tabular-nums"
+                title={`${t('us.col_token_fee')} ${usd(tokenPaid)} + ${t('us.col_gas')} ${usd(gasPaid)}${row.unbilled_nanos > 0 ? ` (${t('us.billed_unbilled')} ${usd(row.unbilled_nanos)})` : ''}`}
+              >
+                {usd(row.fee_nanos)}
+              </TableCell>
+              <TableCell
+                className="text-right text-xs tabular-nums"
+                title={
+                  isOwn && tokenPaid === 0
+                    ? t('us.own_upstream_no_token')
+                    : `${t('us.billed_tokens')}: ${usd(tokenPaid)}${row.token_nanos > tokenPaid ? ` / ${usd(row.token_nanos)}` : ''}`
+                }
+              >
+                {isOwn && tokenPaid === 0 ? (
+                  <span className="text-muted-foreground">
+                    $0
+                    <span className="ml-1 hidden text-[10px] sm:inline">{t('us.own_badge')}</span>
+                  </span>
+                ) : (
+                  <span className={tokenPaid === 0 ? 'text-muted-foreground' : undefined}>{usd(tokenPaid)}</span>
+                )}
+              </TableCell>
+              <TableCell
+                className="text-right text-xs tabular-nums text-muted-foreground"
+                title={`${t('us.billed_gas')}: ${usd(gasPaid)}${row.gas_fee_nanos > gasPaid ? ` / ${usd(row.gas_fee_nanos)}` : ''}`}
+              >
+                {usd(gasPaid)}
+              </TableCell>
+              <TableCell className="hidden text-right text-xs tabular-nums text-muted-foreground md:table-cell">
+                {/* 累计消费：每一行自带「到这里一共花了多少」，不必去别处加总。 */}
+                {usd(row.spend_after_nanos)}
+              </TableCell>
+              <TableCell className="hidden lg:table-cell">
+                {/* 上游持有者：自有上游标「本人」，公共池显示收 Token 费的对端公钥。 */}
+                {isOwn ? (
+                  <Badge variant="secondary" className="text-[10px] font-normal">
+                    {t('us.self_user')}
+                  </Badge>
+                ) : (
+                  <code className="text-[11px] text-muted-foreground" title={row.provider_user ?? ''}>
+                    {shortKey(row.provider_user)}
+                  </code>
+                )}
+              </TableCell>
+              <TableCell className="hidden xl:table-cell">
+                <code className="block text-[11px] text-muted-foreground" title={row.id}>
+                  {row.id}
+                </code>
+                {/* 谁花的：消费者密钥的短样子；签名直连说明这次是人手动打的。 */}
+                <span className="block text-[11px] text-muted-foreground">
+                  {row.consumer_id ? shortAddress(row.consumer_id) : t('us.direct')}
+                </span>
+              </TableCell>
+            </TableRow>
+          );
+        })}
+      </TableBody>
+    </Table>
+  );
+}
+
+function EarningsTable({ rows }: { rows: EarningRow[] }) {
+  const { t } = useI18n();
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead className="w-[8.5rem] sm:w-[9.5rem]">{t('us.col_time')}</TableHead>
+          <TableHead className="min-w-32">{t('us.col_model')}</TableHead>
+          <TableHead className="hidden w-28 sm:table-cell">{t('us.col_caller')}</TableHead>
+          <TableHead className="hidden w-32 text-right md:table-cell">{t('us.col_tokens')}</TableHead>
+          <TableHead className="w-24 text-right">{t('us.col_earned')}</TableHead>
+          <TableHead className="hidden w-24 text-right sm:table-cell">{t('us.col_earn_after')}</TableHead>
+          <TableHead className="hidden min-w-52 xl:table-cell">{t('us.col_request_id')}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
           <TableRow key={row.id}>
             <TableCell className="text-xs text-muted-foreground tabular-nums">{when(row.created_at)}</TableCell>
-            <TableCell className="max-w-28 truncate sm:max-w-56">
+            <TableCell className="max-w-32 truncate sm:max-w-56">
               <span className="block truncate font-mono text-xs" title={row.model}>
                 {row.model || '—'}
               </span>
-              {/* 第二行回答「打给哪台机器、走哪条上游提供商」——账本的一半意义在这里。 */}
               <span className="block truncate text-[11px] text-muted-foreground" title={row.base_url}>
                 {safeHost(row.base_url) || '—'}
-                {row.provider_id ? ` · ${labelOf.get(row.provider_id) || shortAddress(row.provider_id)}` : ''}
+                {row.provider_label ? ` · ${row.provider_label}` : row.provider_id ? ` · ${shortAddress(row.provider_id)}` : ''}
               </span>
             </TableCell>
             <TableCell className="hidden sm:table-cell">
-              <StatusBadge status={row.status} statusCode={row.status_code} />
+              <code className="text-[11px] text-muted-foreground" title={row.consumer_address}>
+                {shortKey(row.consumer_address)}
+              </code>
             </TableCell>
-            <TableCell className="hidden text-right text-xs tabular-nums sm:table-cell">
-              {/* 首字是体感、总耗时是账单：分开显示，才看得出慢在哪一头。 */}
-              <span className="block">{row.first_token_ms === null ? '—' : latency(row.first_token_ms)}</span>
-              <span className="block text-[11px] text-muted-foreground">{latency(row.latency_ms)}</span>
-            </TableCell>
-            <TableCell className="hidden text-right xl:table-cell">
+            <TableCell className="hidden text-right md:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums" title={`${t('us.billed_gas')} ${usd(row.gas_fee_nanos)} + ${t('us.billed_tokens')} ${usd(row.token_nanos)}`}>
-              {usd(row.fee_nanos)}
+            <TableCell className="text-right text-xs font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
+              {signedUsd(row.token_billed_nanos)}
             </TableCell>
             <TableCell className="hidden text-right text-xs tabular-nums text-muted-foreground sm:table-cell">
-              {/* 累计消费：每一行自带「到这里一共花了多少」，不必去别处加总。 */}
-              {usd(row.spend_after_nanos)}
-            </TableCell>
-            <TableCell className="hidden lg:table-cell">
-              {/* 收钱的是谁：公共池时这里是站点的地址，不是调用方自己。 */}
-              <code className="text-[11px] text-muted-foreground" title={row.provider_user ?? ''}>
-                {shortKey(row.provider_user)}
-              </code>
-            </TableCell>
-            <TableCell className="hidden lg:table-cell">
-              {/* 花钱的是谁：签名直连说明这次是人手动打的。 */}
-              <code className="text-[11px] text-muted-foreground" title={row.consumer_user ?? ''}>
-                {row.consumer_user ? shortKey(row.consumer_user) : t('us.direct')}
-              </code>
+              {usd(row.earn_after_nanos)}
             </TableCell>
             <TableCell className="hidden xl:table-cell">
-              <code className="block text-[11px] text-muted-foreground" title={row.id}>
+              <code className="text-[11px] text-muted-foreground" title={row.id}>
                 {row.id}
               </code>
-              {/* 谁花的：消费者密钥的短样子；签名直连说明这次是人手动打的。 */}
-              <span className="block text-[11px] text-muted-foreground">
-                {row.consumer_id ? shortAddress(row.consumer_id) : t('us.direct')}
-              </span>
             </TableCell>
           </TableRow>
         ))}
@@ -361,23 +517,27 @@ function ByConsumerTable({ rows }: { rows: ConsumerUsage[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>{t('us.col_consumer')}</TableHead>
-          <TableHead className="w-16 text-right">{t('us.col_calls')}</TableHead>
-          <TableHead className="w-28 text-right">{t('us.col_tokens')}</TableHead>
-          <TableHead className="w-20 text-right">{t('us.col_fee')}</TableHead>
+          <TableHead className="w-14 text-right">{t('us.col_calls')}</TableHead>
+          <TableHead className="hidden w-28 text-right sm:table-cell">{t('us.col_tokens')}</TableHead>
+          <TableHead className="w-20 text-right">{t('us.col_gas')}</TableHead>
+          <TableHead className="w-20 text-right">{t('us.col_token_fee')}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
           <TableRow key={row.consumer_id ?? 'none'}>
-            <TableCell className="max-w-40 truncate">
+            <TableCell className="max-w-36 truncate">
               <span className="text-xs">{row.consumer_name ?? t('us.direct')}</span>
               {row.key_hint ? <span className="block font-mono text-[11px] text-muted-foreground">{row.key_hint}</span> : null}
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{row.requests}</TableCell>
-            <TableCell className="text-right">
+            <TableCell className="hidden text-right sm:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_nanos)}</TableCell>
+            <TableCell className="text-right text-xs tabular-nums">{usd(row.gas_fee_nanos)}</TableCell>
+            <TableCell className={`text-right text-xs tabular-nums ${row.token_nanos === 0 ? 'text-muted-foreground' : ''}`}>
+              {usd(row.token_nanos)}
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -392,23 +552,35 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>{t('us.col_provider')}</TableHead>
-          <TableHead className="w-16 text-right">{t('us.col_calls')}</TableHead>
-          <TableHead className="w-28 text-right">{t('us.col_tokens')}</TableHead>
-          <TableHead className="w-20 text-right">{t('us.col_fee')}</TableHead>
+          <TableHead className="w-14 text-right">{t('us.col_calls')}</TableHead>
+          <TableHead className="hidden w-28 text-right sm:table-cell">{t('us.col_tokens')}</TableHead>
+          <TableHead className="w-20 text-right">{t('us.col_gas')}</TableHead>
+          <TableHead className="w-20 text-right">{t('us.col_token_fee')}</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
           <TableRow key={row.provider_id ?? 'none'}>
-            <TableCell className="max-w-40 truncate">
-              <span className="text-xs">{row.provider_label ?? shortAddress(row.provider_id ?? '')}</span>
+            <TableCell className="max-w-36 truncate">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-xs">{row.provider_label ?? shortAddress(row.provider_id ?? '')}</span>
+                <Badge variant={row.is_own ? 'secondary' : 'outline'} className="h-4 px-1 text-[10px] font-normal">
+                  {row.is_own ? t('us.own_badge') : t('pg.pool_badge')}
+                </Badge>
+              </div>
               <span className="block font-mono text-[11px] text-muted-foreground">{row.provider_id ?? '—'}</span>
             </TableCell>
             <TableCell className="text-right text-xs tabular-nums">{row.requests}</TableCell>
-            <TableCell className="text-right">
+            <TableCell className="hidden text-right sm:table-cell">
               <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
             </TableCell>
-            <TableCell className="text-right text-xs tabular-nums">{usd(row.fee_nanos)}</TableCell>
+            <TableCell className="text-right text-xs tabular-nums">{usd(row.gas_fee_nanos)}</TableCell>
+            <TableCell
+              className={`text-right text-xs tabular-nums ${row.token_nanos === 0 ? 'text-muted-foreground' : ''}`}
+              title={row.is_own && row.token_nanos === 0 ? t('us.own_upstream_no_token') : undefined}
+            >
+              {usd(row.token_nanos)}
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
@@ -416,7 +588,7 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
   );
 }
 
-/** 四种只增的变动各自的说法：券、充值、提现、消费。 */
+/** 账户级流水三种类型：券、充值、提现。 */
 const KIND_LABEL: Record<LedgerRow['kind'], (t: (key: never) => string) => string> = {
   voucher: (t) => t('us.ledger_voucher' as never),
   recharge: (t) => t('us.ledger_recharge' as never),

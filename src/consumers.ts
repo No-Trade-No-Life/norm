@@ -40,7 +40,8 @@ export function consumerKeyHint(key: string): string {
 export async function principalFromConsumerKey(env: Env, key: string): Promise<Principal> {
   const row = await env.DB.prepare(
     `SELECT c.id, c.address, c.last_used_at,
-            p.recharge_nanos, p.voucher_nanos, p.spend_nanos, p.withdraw_nanos
+            p.recharge_nanos, p.voucher_nanos, p.earn_nanos,
+            p.gas_spend_nanos, p.token_spend_nanos, p.withdraw_nanos
        FROM consumers c
        JOIN principals p ON p.address = c.address
       WHERE c.key_sha256 = ? AND c.revoked_at IS NULL`,
@@ -52,7 +53,9 @@ export async function principalFromConsumerKey(env: Env, key: string): Promise<P
       last_used_at: number | null;
       recharge_nanos: number;
       voucher_nanos: number;
-      spend_nanos: number;
+      earn_nanos: number;
+      gas_spend_nanos: number;
+      token_spend_nanos: number;
       withdraw_nanos: number;
     }>();
   if (!row) fail(401, 'consumer_key_invalid', '消费者密钥无效或已撤销');

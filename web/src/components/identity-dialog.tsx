@@ -96,8 +96,18 @@ export function IdentityDialog() {
                 <dd className="text-foreground tabular-nums">{usd(me.data?.balance_nanos)}</dd>
               </div>
               <div className="flex gap-1">
-                <dt>{t('identity.spend')}</dt>
-                <dd className="text-foreground tabular-nums">{usd(me.data?.spend_nanos)}</dd>
+                <dt>{t('identity.gas_spend')}</dt>
+                <dd className="text-foreground tabular-nums">{usd(me.data?.gas_spend_nanos)}</dd>
+              </div>
+              <div className="flex gap-1">
+                <dt>{t('identity.token_spend')}</dt>
+                <dd className="text-foreground tabular-nums">{usd(me.data?.token_spend_nanos)}</dd>
+              </div>
+              <div className="flex gap-1">
+                <dt>{t('identity.earn')}</dt>
+                <dd className={(me.data?.earn_nanos ?? 0) > 0 ? 'tabular-nums text-emerald-600 dark:text-emerald-400' : 'text-foreground tabular-nums'}>
+                  {usd(me.data?.earn_nanos)}
+                </dd>
               </div>
               <div className="flex gap-1">
                 <dt>{t('identity.requests')}</dt>

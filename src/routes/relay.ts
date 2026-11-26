@@ -21,6 +21,7 @@ import {
   GAS_CONSUMER_TOUCH_NANOS,
   GAS_SCHEDULE,
   GAS_SETTLE_NANOS,
+  GAS_TOKEN_TRANSFER_NANOS,
   GasMeter,
 } from '../gas';
 import { fail } from '../http';
@@ -188,11 +189,14 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
 
     // 闸门 B（发往上游前预算检查）：如果写亲和或高成本路径后余额已不够覆盖本次执行与结算，
     // 在首次尝试阶段直接 402 中止——省掉 consumer_touch、上游 fetch 与 settle 写库。
-    if (attempt === 0 && !gas.canAfford(attemptCpu + pendingTouch + GAS_SETTLE_NANOS)) {
+    // 调用他人/公共池上游时预留 1 行跨用户转账写库 Gas（失败时不会实际发生）。
+    const pendingTransfer = choice.via === 'pool' ? GAS_TOKEN_TRANSFER_NANOS : 0;
+    const gateBNeeded = attemptCpu + pendingTouch + pendingTransfer + GAS_SETTLE_NANOS;
+    if (attempt === 0 && !gas.canAfford(gateBNeeded)) {
       fail(
         402,
         'insufficient_balance',
-        `余额不足：本次请求预计需要 ${gas.projectedTotal(attemptCpu + pendingTouch + GAS_SETTLE_NANOS)} 纳美元 Gas，当前 ${principal.balanceNanos}`,
+        `余额不足：本次请求预计需要 ${gas.projectedTotal(gateBNeeded)} 纳美元 Gas，当前 ${principal.balanceNanos}`,
       );
     }
 
@@ -377,18 +381,19 @@ type Accounting = {
 };
 
 /**
- * 账单结论：总价、构成、三项 token、差多少没收到。
+ * 账单结论：Gas（付给 Norm）与 Token（转给上游提供方）分开记，外加三项 token 与差额。
  *
- * `fee_nanos` 是真正扣掉的那个数，恒等于 `gas_fee_nanos + token_nanos - unbilled_nanos`；
- * 三个数一起回，是因为只回一个总数就没人能自己核对了。
+ * `fee_nanos` 是真正扣掉的总额，恒等于 `gas_billed_nanos + token_billed_nanos`
+ * 以及 `gas_fee_nanos + token_nanos - unbilled_nanos`；分开回，谁都能自己核对。
  */
-function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: number; unbilledNanos: number; balanceNanos: number }): NormMeta {
-  const price = quote(accounting.model, usage, accounting.rate);
+function normMeta(accounting: Accounting, usage: Usage, tokenDue: number, billed: Settled): NormMeta {
   return {
     request_id: accounting.requestId,
     fee_nanos: billed.billedNanos,
     gas_fee_nanos: accounting.gas.finalTotal(),
-    token_nanos: price.total_nanos,
+    gas_billed_nanos: billed.gasBilledNanos,
+    token_nanos: tokenDue,
+    token_billed_nanos: billed.tokenBilledNanos,
     input_tokens: usage.input,
     cached_tokens: usage.cached,
     output_tokens: usage.output,
@@ -400,18 +405,29 @@ function normMeta(accounting: Accounting, usage: Usage, billed: { billedNanos: n
   };
 }
 
-/** 把一次成功的调用折成钱、记下来，返回给客户端看的账单结论。 */
+/**
+ * 把一次成功的调用折成钱、记下来，返回给客户端看的账单结论。
+ *
+ * Gas 与 Token 分开处理：
+ *   - 调用自有上游（providerUser === address）：只收 Gas，Token 价值转移为 0（自己付给上游厂商）；
+ *   - 调用他人/公共池上游（providerUser !== address）：按价目表计算 Token 费并转给上游提供方，
+ *     同时在 Gas 里计入这次跨用户入账的 1 行 D1 写库成本。
+ */
 async function bill(accounting: Accounting, answer: AnswerCore, statusCode: number): Promise<NormMeta> {
-  const price = quote(accounting.model, answer.usage, accounting.rate);
+  const isExternal = accounting.providerUser !== accounting.address;
+  const tokenNanos = isExternal ? quote(accounting.model, answer.usage, accounting.rate).total_nanos : 0;
+  if (isExternal && tokenNanos > 0) {
+    accounting.gas.chargeD1Writes(D1_ROW_WRITES.token_transfer);
+  }
   const gasFeeNanos = accounting.gas.finalizeForSettlement();
   const settled = await settle(accounting.env, recordOf(accounting, {
     answer,
     status: 'ok',
     statusCode,
     gasFeeNanos,
-    tokenNanos: price.total_nanos,
+    tokenNanos,
   }));
-  return normMeta(accounting, answer.usage, settled);
+  return normMeta(accounting, answer.usage, tokenNanos, settled);
 }
 
 /**
@@ -434,7 +450,7 @@ async function recordFailure(accounting: Accounting, status: string, statusCode:
 function failureHeaders(requestId: string, settled: Settled): Record<string, string> {
   return {
     'X-Norm-Request-Id': requestId,
-    'X-Norm-Gas-Fee-Nanos': String(settled.billedNanos),
+    'X-Norm-Gas-Fee-Nanos': String(settled.gasBilledNanos),
   };
 }
 
@@ -485,7 +501,7 @@ function recordOf(
  * 它们的解析器我们管不着，所以一个事件都不插——request_id 走 `X-Norm-Request-Id`。
  */
 function passThroughStream(accounting: Accounting & { reply: Response; dialect: Dialect; wantsUsage: boolean }): Response {
-  const { env, reply, dialect, wantsUsage } = accounting;
+  const { reply, dialect, wantsUsage } = accounting;
   const source = reply.body;
   if (!source) return new Response('上游提供商没有返回流', { status: 502 });
   const reader = source.getReader();
@@ -516,13 +532,9 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
     // 一个字节都没生成、上游却报了错：这不是「成功但零 token」。照失败收 Gas、不收
     // token——否则一次上游拒绝会在账本上被记成一次正常执行，而客户端只看到一片空白。
     if (upstreamError !== null && accounting.firstTokenMs === undefined) {
-      return normMeta(accounting, usage, await recordFailure(accounting, 'provider_error', 200));
+      return normMeta(accounting, usage, 0, await recordFailure(accounting, 'provider_error', 200));
     }
-    const answer: AnswerCore = { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 };
-    const price = quote(accounting.model, usage, accounting.rate);
-    const gasFeeNanos = accounting.gas.finalizeForSettlement();
-    const settled = await settle(env, recordOf(accounting, { answer, status: 'ok', statusCode: 200, gasFeeNanos, tokenNanos: price.total_nanos }));
-    return normMeta(accounting, usage, settled);
+    return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -649,7 +661,7 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
  * 用量」永远一致，不会出现「扣了钱但报 0 token」。
  */
 function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect; protocol: Protocol; wantsUsage: boolean }): Response {
-  const { env, reply, entry, protocol, wantsUsage } = accounting;
+  const { reply, entry, protocol, wantsUsage } = accounting;
   const source = reply.body;
   if (!source) return new Response('上游提供商没有返回流', { status: 502 });
 
@@ -687,18 +699,9 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
     const usage = sniffer.usage();
     // 同上：空白 + 上游报错 = 一次失败，不是一次「成功但零 token」。
     if (upstreamError !== null && accounting.firstTokenMs === undefined) {
-      return normMeta(accounting, usage, await recordFailure(accounting, 'provider_error', 200));
+      return normMeta(accounting, usage, 0, await recordFailure(accounting, 'provider_error', 200));
     }
-    const price = quote(accounting.model, usage, accounting.rate);
-    const gasFeeNanos = accounting.gas.finalizeForSettlement();
-    const settled = await settle(env, recordOf(accounting, {
-      answer: { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 },
-      status: 'ok',
-      statusCode: 200,
-      gasFeeNanos,
-      tokenNanos: price.total_nanos,
-    }));
-    return normMeta(accounting, usage, settled);
+    return bill(accounting, { text: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
 
   const stream = new ReadableStream<Uint8Array>({

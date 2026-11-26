@@ -42,12 +42,19 @@ export type AnswerCore = {
   createdAt: number;
 };
 
-/** 一次调用的账单结论：总价、构成、以及算这笔账用的三项 token。 */
+/** 一次调用的账单结论：Gas（付给 Norm）与 Token（转给上游提供方）分开记，外加三项 token。 */
 export type NormMeta = {
   request_id: string;
+  /** 真正从余额里扣掉的总额 = gas_billed_nanos + token_billed_nanos = gas_fee_nanos + token_nanos − unbilled_nanos。 */
   fee_nanos: number;
+  /** 本次应付 Gas 费（付给 Norm）。 */
   gas_fee_nanos: number;
+  /** 本次实际扣到的 Gas 费（付给 Norm）。 */
+  gas_billed_nanos: number;
+  /** 本次应付 Token 费（转给上游提供方；调用自有上游或失败时为 0）。 */
   token_nanos: number;
+  /** 本次实际转给上游提供方的 Token 费（调用自有上游或失败时为 0）。 */
+  token_billed_nanos: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
@@ -56,7 +63,7 @@ export type NormMeta = {
   balance_nanos: number | null;
   latency_ms: number;
   host: string;
-  /** true = 这一单落到了公共池上（自己的上游一条都不可用）。 */
+  /** true = 这一单落到了公共池（他人上游），Token 费转给上游提供方；false = 自有上游，仅收 Gas。 */
   pool: boolean;
 };
 

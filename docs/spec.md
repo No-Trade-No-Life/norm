@@ -90,14 +90,14 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 签名能管资源，不能花钱，所以每一笔消费都必然落在一条具体的钥匙上，账本永远答得出「这段代码是谁」。
 推理接口上带着签名头来，得到的是 `401 consumer_key_required`，而不是一次免费或匿名直连。
 
-## 5. 计费：按 Token 记，外加一笔 Gas 费
+## 5. 计费：Gas 费与 Token 费分开处理
 
-一次调用的钱由两项相加：
+一次调用涉及两笔性质完全不同的钱，必须分开结算、分开统计：
 
-| 项 | 怎么算 | 为什么 |
-|---|---|---|
-| `token_nanos` | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | 一次调用真正花掉的资源就是 token，而缓存命中与输出的价差是数量级的 |
-| `gas_fee_nanos` | 动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的付费点逐项累加，结算前冻结，见 `src/gas.ts` 与 `GET /api/v1/pricing` | 如实覆盖 Cloudflare Serverless 侧的边际资源成本（Worker 调用、D1 行写、日志、CPU）——当前 1.0× 纯成本价，与 token 无关、与成败无关 |
+| 项 | 归属 | 怎么算 | 为什么 |
+|---|---|---|---|
+| `gas_fee_nanos` / `gas_billed_nanos` | **付给 Norm**（基础设施费） | 动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的付费点逐项累加，结算前冻结，见 `src/gas.ts` 与 `GET /api/v1/pricing` | 如实覆盖 Cloudflare Serverless 侧的边际资源成本（Worker 调用、D1 行写、日志、CPU）——当前 1.0× 纯成本价，与 token 无关、与成败无关 |
+| `token_nanos` / `token_billed_nanos` | **用户间价值转移**（转给上游提供方） | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | **调用自有上游（`provider_user === address`）只付 Gas、`token_nanos = 0`**（你自己直接付给上游厂商）；**调用他人/公共池上游（`provider_user !== address`）时，实扣的 `token_billed_nanos` 直接转入上游提供方的 `earn_nanos`**，Norm 不截留任何 Token 费用 |
 
 三种 token 分开记，因为它们的价不同、含义也不同：
 
@@ -112,17 +112,17 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 
 - 价目表写在代码里而不是部署变量里：价格是「公开可复现的转发规则」的一部分，
   改价 = 改代码 = 一次可被审查的合并；没定价的模型走兜底价，不会变成免费。
-- 消费的账在请求表里：每条请求带 `spend_before_nanos` / `spend_after_nanos`，
-  两者之差就是这一笔扣掉的 `fee_nanos`；累计消费 = 最后一条请求的 `spend_after_nanos`。
+- 账户维护六块只增累计数：`recharge_nanos`（充值）、`voucher_nanos`（抵扣券，不可提现）、`earn_nanos`（作为上游提供方收到的 Token 收入）、`gas_spend_nanos`（付给 Norm 的 Gas 支出）、`token_spend_nanos`（转给他人上游的 Token 支出）、`withdraw_nanos`（提现）。
+  可用余额永远由算式得出：`recharge + voucher + earn − gas_spend − token_spend − withdraw`。
+- 消费与收入的账都在请求表里：每条请求带 `gas_billed_nanos` / `token_billed_nanos`、`spend_before_nanos` / `spend_after_nanos` 与（跨用户时的）`earn_before_nanos` / `earn_after_nanos`。
 - `ledger` 只记账户级的钱，纯追加：`voucher`（券）/ `recharge`（充值）/ `withdraw`（提现）。
-  于是：可用余额 = Σ `ledger.amount_nanos` − 累计消费。消费不再抄一遍进账本。
 - 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
   微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
   新地址自动获得 $1.00 演示授信（`GRANT_NANOS = 1000000000`）。
 - 失败收 Gas、不收 token：上游提供商报错或不可达时 `token_nanos = 0`，
-  `fee_nanos = gas_fee_nanos`。Gas 买的是「这次被执行」本身——上游回 500 不代表 Worker 没被调用过。
+  `fee_nanos = gas_billed_nanos`。Gas 买的是「这次被执行」本身——上游回 500 不代表 Worker 没被调用过。
   没打到上游的请求（体不是 JSON、余额不足）不记账也不扣，因为那没有「执行」可言。
-- 余额付不起时扣到 0，差额记在 `unbilled_nanos`（站点承担），余额永不变成负数。
+- 余额不足时**先扣 Gas、余下扣 Token**，余额扣到 0 永不为负，差额记在 `unbilled_nanos`；上游提供方只收到实际扣到的 `token_billed_nanos`，保证全站价值严格守恒（绝不凭空增发）。
 - 演示版不接入真实支付网络；链上 USDC 结算由 Midas 线路承担，见 `docs/roadmap.md`。
 
 ## 6. Provider

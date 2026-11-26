@@ -13,33 +13,52 @@ import {
 import { affinityFresh, affinityHash, narrowToOwned, narrowToServingModel, pickByRendezvous, type AffinityKey } from './routing';
 
 /**
- * 账户的四块累计数。每一块都只增不减，方向不同、含义不同：
+ * 账户的六块只增累计数，方向不同、归属不同：
  *
- *   充值   用户真的打进来的钱（可以提现）
- *   抵扣券 站点给的额度，比如演示授信（**不可提现**）
- *   消费   已经花掉的
- *   提现   已经拿走的
+ *   充值       用户真的打进来的钱（可以提现）
+ *   抵扣券     站点给的额度，比如演示授信（**不可提现**）
+ *   上游收入   他人调用自己上游时，转进来的 Token 价值（价值转移，非平台增发）
+ *   Gas 支出   付给 Norm 的执行与落库费用（无论自有/公共池、成功/失败都收）
+ *   Token 支出 转给他人上游的 Token 价值（调用自有上游时为 0）
+ *   提现       已经拿走的
  *
- * 可用余额 = 充值 + 抵扣券 − 消费 − 提现。余额不落库，就是为了让它永远等于这个算式。
+ * 可用余额 = 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现。
+ * 总消费   = Gas 支出 + Token 支出。
+ * 两者都不落库，就是为了让它们永远等于这两个算式。
  */
-export type PrincipalRow = {
-  address: string;
-  label: string;
-  created_at: number;
+export type PrincipalCounters = {
   recharge_nanos: number;
   voucher_nanos: number;
-  spend_nanos: number;
+  earn_nanos: number;
+  gas_spend_nanos: number;
+  token_spend_nanos: number;
   withdraw_nanos: number;
 };
 
-/** 可用余额：唯一的算法，出现在页面、接口与扣费判断里，都是同一句。 */
-export function availableNanos(counters: {
-  recharge_nanos: number;
-  voucher_nanos: number;
-  spend_nanos: number;
-  withdraw_nanos: number;
+export type PrincipalRow = PrincipalCounters & {
+  address: string;
+  label: string;
+  created_at: number;
+};
+
+/** 累计总消费 = Gas 支出（付给 Norm）+ Token 支出（转给上游用户）。 */
+export function totalSpendNanos(counters: {
+  gas_spend_nanos: number;
+  token_spend_nanos: number;
 }): number {
-  return counters.recharge_nanos + counters.voucher_nanos - counters.spend_nanos - counters.withdraw_nanos;
+  return counters.gas_spend_nanos + counters.token_spend_nanos;
+}
+
+/** 可用余额：唯一的算法，出现在页面、接口与扣费判断里，都是同一句。 */
+export function availableNanos(counters: PrincipalCounters): number {
+  return (
+    counters.recharge_nanos +
+    counters.voucher_nanos +
+    counters.earn_nanos -
+    counters.gas_spend_nanos -
+    counters.token_spend_nanos -
+    counters.withdraw_nanos
+  );
 }
 
 export type ProviderView = ProviderRow & {
@@ -150,22 +169,29 @@ export async function findProvider(env: Env, address: string, id: string): Promi
 }
 
 /**
- * 一次调用的全部记账：扣钱、记流水、记请求，三步只描述同一件事。
+ * 一次调用的全部记账：Gas 与 Token 分开结算，同时写入请求记录。
  *
- * 余额的扣减用一条 `UPDATE ... MIN(?, balance)` 完成：扣掉的是「该付的」与「还剩下的」
- * 里较小的那个，返回值天然与并发隔离。为什么允许扣不满：上游提供商已经执行完了，
- * 这笔钱该记下来，而账不能变成负数——差的那部分记成 `unbilled_nanos`，
- * 由站点承担，并在页面上如实显示。
+ *   1. Gas 费（gas_fee_nanos → gas_billed_nanos）：付给 Norm，覆盖执行与落库成本；
+ *      成功/失败、自有/他人上游都照收，优先从余额里扣。
+ *   2. Token 费（token_nanos → token_billed_nanos）：用户间价值转移。
+ *      - 调用自己的上游（providerUser === address 或空）：不产生跨用户价值转移，token 恒为 0；
+ *      - 调用他人/公共池上游（providerUser !== address）：余下余额扣 tokenBilled，
+ *        等额计入上游提供方的 earn_nanos（绝不凭空增发未扣到的钱）。
  *
- * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = gas_fee_nanos + token_nanos`。
+ * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = gas_billed_nanos + token_billed_nanos`。
  * 失败（上游提供商报错、网络不可达）也走这里：Gas 照收，token 那部分是 0。
  */
 
 export type Settled = {
-  /** 真正从余额里扣掉的数。 */
+  /** 真正从消费方余额里扣掉的总数（= gasBilledNanos + tokenBilledNanos）。 */
   billedNanos: number;
-  /** 扣不满、由站点承担的部分。 */
+  /** 实际扣到的 Gas 费（付给 Norm）。 */
+  gasBilledNanos: number;
+  /** 实际扣到并转给上游用户的 Token 费（调用自有上游或失败时恒为 0）。 */
+  tokenBilledNanos: number;
+  /** 扣不满、未能收上来的部分。 */
   unbilledNanos: number;
+  /** 扣费后消费方的可用余额。 */
   balanceNanos: number;
 };
 
@@ -173,7 +199,7 @@ export type RequestRecord = {
   requestId: string;
   address: string;
   providerId: string | null;
-  /** 收钱的那一方的地址（provider 的持有者）：公共池时与 address 不同。 */
+  /** 上游提供商持有者的地址：自有上游时与 address 相同，公共池时不同（收 Token 费的一方）。 */
   providerUser: string | null;
   /** 花钱的那一方的地址（consumer 密钥属于谁）：签名直连时为空。 */
   consumerUser: string | null;
@@ -198,7 +224,14 @@ export type RequestRecord = {
 
 /** 只写请求记录、不扣费：`settle` 三次都被并发改写时用它兜底，那一笔标成未收。 */
 export async function recordRequest(env: Env, row: RequestRecord, spendNanos: number): Promise<void> {
-  await requestInsert(env, row, spendNanos, spendNanos).run();
+  await requestInsert(env, row, {
+    gasBilledNanos: 0,
+    tokenBilledNanos: 0,
+    spendBeforeNanos: spendNanos,
+    spendAfterNanos: spendNanos,
+    earnBeforeNanos: 0,
+    earnAfterNanos: 0,
+  }).run();
 }
 
 /**
@@ -523,75 +556,132 @@ async function failNoCandidate(env: Env, address: string): Promise<never> {
 }
 
 /**
- * 扣费 + 流水 + 请求记录：一次调用的三件事，写在一起。
+ * 分开结算 Gas 费（付给 Norm）与 Token 费（转给上游提供方），并写请求记录：
  *
- * 扣多少：该付多少就扣多少，余额不够时把剩下的全扣掉（余额落到 0），
- * 差的那部分记成 `unbilled_nanos` 由站点承担——上游提供商已经执行完了，账要记，
- * 但余额不能变成负数。
+ *   - 扣费优先级：先扣 Gas（基础设施成本已发生），余下余额再扣 Token；余额永远不会变成负数。
+ *   - 价值守恒：只有「调用他人/公共池上游」时才产生 Token 费用；实际从消费方扣到的
+ *     `tokenBilled` 会等额加到上游提供方的 `earn_nanos` 上，绝不凭空增发未扣到的钱。
+ *   - 调用自己的上游（`providerUser === address`）不产生跨用户价值转移：`tokenDue = 0`，
+ *     只扣 Gas、不写上游提供方，稳态严格维持 2 行 D1 写。
  *
- * 为什么是「先读再带条件更新」而不是一条 `UPDATE ... RETURNING`：
- * 我们需要知道**扣掉了多少**才能写流水，而 RETURNING 只给新余额，
- * 分不清「余额刚好够」与「余额不够」这两种都落到 0 的情况。
- * 于是用读到的累计消费做乐观并发条件（`spend_nanos = ?`），被并发改掉就重读重算。
- * 同一个账户同时打多个请求时才会撞上，最多重试 3 次。
+ * 并发控制：
+ *   - 消费方用 `(gas_spend_nanos, token_spend_nanos, withdraw_nanos)` 做乐观锁（这三块是
+ *     唯三会让余额变小的累计数；收入/充值/抵扣券只增不减，不会导致扣成负数），冲突重试最多 3 次。
+ *   - 上游提供方的入账是纯加法 `SET earn_nanos = earn_nanos + ? RETURNING earn_nanos`，
+ *     在 SQLite 里天然原子、可交换、无需乐观锁，且直接返回准确的 `earn_after_nanos`。
  */
 export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
-  const due = row.gasFeeNanos + row.tokenNanos;
-  const counters = 'recharge_nanos, voucher_nanos, spend_nanos, withdraw_nanos';
-  type Counters = { recharge_nanos: number; voucher_nanos: number; spend_nanos: number; withdraw_nanos: number };
+  const isExternal = Boolean(row.providerUser && row.providerUser !== row.address);
+  const gasDue = row.gasFeeNanos;
+  // 调用自有上游只付 Gas，不产生跨用户 Token 扣费或转账。
+  const tokenDue = isExternal ? row.tokenNanos : 0;
+  const due = gasDue + tokenDue;
+  const countersSql = 'recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, withdraw_nanos';
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await env.DB.prepare(`SELECT ${counters} FROM principals WHERE address = ?`)
+    const current = await env.DB.prepare(`SELECT ${countersSql} FROM principals WHERE address = ?`)
       .bind(row.address)
-      .first<Counters>();
+      .first<PrincipalCounters>();
     if (!current) throw new Error(`账户不存在：${row.address}`);
 
-    // 能收多少收多少：余额不够时把剩下的花光，差额记成未收（站点承担）。
-    const billed = Math.min(due, Math.max(availableNanos(current), 0));
+    // 先扣 Gas（给 Norm），余额有剩再扣 Token（转给上游提供方）；差额记成 unbilled。
+    const avail = Math.max(availableNanos(current), 0);
+    const gasBilled = Math.min(gasDue, avail);
+    const tokenBilled = Math.min(tokenDue, Math.max(avail - gasBilled, 0));
+    const billed = gasBilled + tokenBilled;
 
-    // 只往「累计消费」这一块上加，其余三块不动——四块累计数各自只增，
-    // 条件更新盯住旧的 spend，被并发改过就重读重算，绝不覆盖别人的加法。
+    // 消费方只增 gas_spend / token_spend；盯住所有减项计数器防并发透支。
     const updated = await env.DB.prepare(
-      `UPDATE principals SET spend_nanos = spend_nanos + ?
-       WHERE address = ? AND spend_nanos = ?
-       RETURNING ${counters}`,
+      `UPDATE principals
+          SET gas_spend_nanos = gas_spend_nanos + ?,
+              token_spend_nanos = token_spend_nanos + ?
+        WHERE address = ?
+          AND gas_spend_nanos = ?
+          AND token_spend_nanos = ?
+          AND withdraw_nanos = ?
+        RETURNING ${countersSql}`,
     )
-      .bind(billed, row.address, current.spend_nanos)
-      .first<Counters>();
+      .bind(gasBilled, tokenBilled, row.address, current.gas_spend_nanos, current.token_spend_nanos, current.withdraw_nanos)
+      .first<PrincipalCounters>();
     if (!updated) continue;
+
+    // 跨用户 Token 价值转移：只有实际从消费方扣到的那部分才转给上游提供方，保证全站价值守恒。
+    let earnBefore = 0;
+    let earnAfter = 0;
+    if (isExternal && tokenBilled > 0 && row.providerUser) {
+      const credited = await env.DB.prepare(
+        `UPDATE principals
+            SET earn_nanos = earn_nanos + ?
+          WHERE address = ?
+          RETURNING earn_nanos`,
+      )
+        .bind(tokenBilled, row.providerUser)
+        .first<{ earn_nanos: number }>();
+      if (credited) {
+        earnAfter = credited.earn_nanos;
+        earnBefore = credited.earn_nanos - tokenBilled;
+      }
+    }
 
     const settled: Settled = {
       billedNanos: billed,
+      gasBilledNanos: gasBilled,
+      tokenBilledNanos: tokenBilled,
       unbilledNanos: due - billed,
       balanceNanos: availableNanos(updated),
     };
 
-    // 消费的账就在请求表里：这一笔之前 / 之后的累计消费 + 本笔的 fee，三者互相能验。
+    // 消费与收入的账都在请求表里：同一行既可验消费方 spend 链，也可验上游提供方 earn 链。
     await requestInsert(
       env,
-      { ...row, feeNanos: billed, unbilledNanos: settled.unbilledNanos },
-      current.spend_nanos,
-      updated.spend_nanos,
+      { ...row, tokenNanos: tokenDue, feeNanos: billed, unbilledNanos: settled.unbilledNanos },
+      {
+        gasBilledNanos: gasBilled,
+        tokenBilledNanos: tokenBilled,
+        spendBeforeNanos: totalSpendNanos(current),
+        spendAfterNanos: totalSpendNanos(updated),
+        earnBeforeNanos: earnBefore,
+        earnAfterNanos: earnAfter,
+      },
     ).run();
     return settled;
   }
 
-  // 三次都被并发改写：宁可不扣，也不猜一个数。请求照样落库，账面上标成未收。
-  const latest = await env.DB.prepare(`SELECT ${counters} FROM principals WHERE address = ?`)
+  // 三次都被并发改写：宁可不扣不转，也不猜一个数。请求照样落库，账面上标成未收。
+  const latest = await env.DB.prepare(`SELECT ${countersSql} FROM principals WHERE address = ?`)
     .bind(row.address)
-    .first<Counters>();
-  await recordRequest(env, { ...row, feeNanos: 0, unbilledNanos: due }, latest?.spend_nanos ?? 0);
-  return { billedNanos: 0, unbilledNanos: due, balanceNanos: latest ? availableNanos(latest) : 0 };
+    .first<PrincipalCounters>();
+  await recordRequest(
+    env,
+    { ...row, tokenNanos: tokenDue, feeNanos: 0, unbilledNanos: due },
+    latest ? totalSpendNanos(latest) : 0,
+  );
+  return {
+    billedNanos: 0,
+    gasBilledNanos: 0,
+    tokenBilledNanos: 0,
+    unbilledNanos: due,
+    balanceNanos: latest ? availableNanos(latest) : 0,
+  };
 }
 
-function requestInsert(env: Env, row: RequestRecord, spendBeforeNanos: number, spendAfterNanos: number) {
+type SettlementTrail = {
+  gasBilledNanos: number;
+  tokenBilledNanos: number;
+  spendBeforeNanos: number;
+  spendAfterNanos: number;
+  earnBeforeNanos: number;
+  earnAfterNanos: number;
+};
+
+function requestInsert(env: Env, row: RequestRecord, trail: SettlementTrail) {
   return env.DB.prepare(
     `INSERT INTO requests
        (id, address, provider_id, provider_user, consumer_id, consumer_user, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens,
-        gas_fee_nanos, token_nanos, fee_nanos, unbilled_nanos,
-        spend_before_nanos, spend_after_nanos, first_token_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        gas_fee_nanos, gas_billed_nanos, token_nanos, token_billed_nanos, fee_nanos, unbilled_nanos,
+        spend_before_nanos, spend_after_nanos, earn_before_nanos, earn_after_nanos, first_token_ms, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
@@ -608,11 +698,15 @@ function requestInsert(env: Env, row: RequestRecord, spendBeforeNanos: number, s
     row.cachedTokens,
     row.outputTokens,
     row.gasFeeNanos,
+    trail.gasBilledNanos,
     row.tokenNanos,
+    trail.tokenBilledNanos,
     row.feeNanos,
     row.unbilledNanos,
-    spendBeforeNanos,
-    spendAfterNanos,
+    trail.spendBeforeNanos,
+    trail.spendAfterNanos,
+    trail.earnBeforeNanos,
+    trail.earnAfterNanos,
     row.firstTokenMs,
     row.at,
   );
