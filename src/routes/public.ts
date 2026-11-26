@@ -10,15 +10,36 @@ publicRoutes.get('/health', (c) =>
   c.json({ ok: true, service: 'norm', version: '0.1.0', now: nowSeconds() }),
 );
 
+/**
+ * 公开看板的缓存窗口：`/stats` 要数一遍整张 `requests` 表，而 D1 按行计费。
+ * 整条响应在边缘缓存一个 TTL，全表扫于是每个 colo 每个窗口只发生一次，
+ * 而不是每个访客一次。60 秒是「数量级够新」与「读放大够小」之间的取舍。
+ */
+const STATS_TTL_SECONDS = 60;
+
 publicRoutes.get('/stats', async (c) => {
+  // 缓存键固定成不带查询串的规范 URL：这个端点没有参数，查询串只是噪音。
+  const cacheKey = new Request(new URL('/api/v1/stats', c.req.url).toString());
+  const cache = caches.default;
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
   const row = await c.env.DB.prepare(
     `SELECT
        (SELECT COUNT(*) FROM principals) AS principals,
        (SELECT COUNT(*) FROM providers WHERE revoked_at IS NULL AND enabled = 1) AS providers,
        (SELECT COUNT(*) FROM requests) AS requests,
-       (SELECT COALESCE(SUM(fee_nanos), 0) FROM requests) AS spend_nanos`,
+       -- 累计消费与 requests.fee_nanos 是同一笔钱：settle() 里 spend_nanos += billed
+       -- 与写入请求的 fee_nanos = billed 同时发生，所以这里不必再扫一遍请求表。
+       (SELECT COALESCE(SUM(spend_nanos), 0) FROM principals) AS spend_nanos`,
   ).first<{ principals: number; providers: number; requests: number; spend_nanos: number }>();
-  return c.json({ ...row, window_hours: null });
+
+  const response = c.json({ ...row, window_hours: null }, 200, {
+    'Cache-Control': `public, max-age=${STATS_TTL_SECONDS}`,
+  });
+  // 落缓存不占这次响应的延迟：访客先拿到这一版，写入交给 waitUntil。
+  c.executionCtx.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
 });
 
 /**
