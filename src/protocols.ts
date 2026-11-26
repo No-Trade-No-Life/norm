@@ -229,11 +229,11 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    *   2. 凭据是一对 OAuth 令牌（`oauth: true`）：转发前先换新，换完写回库；
    *   3. 上游只认流式（`stream_only: true`）：非流式调用在 Norm 这一侧就被挡住。
    *
-   * 基址**不钉死**，由用户填——它必须是一跳自己的转发（`https://<你的跳板>`，内部转到
-   * `https://chatgpt.com/backend-api/codex`）。两个理由都来自同一个事实：Worker 的 `fetch`
-   * 会在出站请求上盖 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接回 403 一页 HTML
-   * （实测：直连 200，从边缘出去 403；把 `cf-worker` 置空也依旧 403）。一跳既是**选出口 IP**
-   * 的办法（等同 LB 的 `http_proxy_url`），也是**离开那条被盖戳的管线**的办法。
+   * 基址钉死为官方那一个：没有第二个合法的 ChatGPT 订阅地址，让人填只是把「该不该有出口」
+   * 这个决定混进地址里。出站问题由另一维解决——`proxy_url`（`src/tunnel.ts`）：Worker 的
+   * `fetch` 会在出站请求上盖 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接回 403
+   * 一页 HTML（实测：直连 200、从边缘出去 403、换成真实 IP 也一样），隧道里的字节由代理
+   * 重新发出，这些头不存在。所以「打给谁」是协议的常量，「从哪儿出去」是这条上游的配置。
    *
    * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
    * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
@@ -241,6 +241,7 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    */
   'openai-oauth': {
     dialect: 'openai-responses',
+    base_url: 'https://chatgpt.com/backend-api/codex',
     headers: openaiHeaders,
     oauth: true,
     stream_only: true,

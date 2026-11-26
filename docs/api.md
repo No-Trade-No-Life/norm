@@ -107,19 +107,16 @@ Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
 | DELETE | `/api/v1/providers/:id` | 撤销 |
 
 基址从哪来由**协议**决定（见 `GET /api/v1/protocols` 的 `base_url` / `fields`）：四条通用方言
-要 `base_url` + `provider_key`；`deepseek` 的基址固定为 DeepSeek 官方地址，只填密钥。
+要 `base_url` + `provider_key`；`deepseek` / `qwen` / `openai-oauth` 的基址由协议钉死，只填凭据。
 给固定基址的协议另填一个不同的 `base_url` 会被拒（`400 base_url_fixed`）——那不是在配置，
 是在以为它能选。
 
-`openai-oauth` 的基址**必须填你自己的一跳**（`https://<你的跳板>`，内部转发到
-`https://chatgpt.com/backend-api/codex`）：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，
-chatgpt.com 见到直接 403（实测直连 200、从边缘出去 403，把 `cf-worker` 置空也依旧 403）。
-一跳同时决定这次调用的出口 IP——就是 OpenAI-LB 里 `http_proxy_url` 在做的那件事。
+`openai-oauth` **只填凭据**：基址钉死为官方地址 `https://chatgpt.com/backend-api/codex`，
+`fields` 里没有 `base_url`。但这条上游还要一条 `proxy_url`：Worker 的 `fetch` 会在出站请求上盖
+`cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接 403（实测：直连 200、从边缘出去 403、
+换成真实 IP 也一样）；隧道里的字节由代理重新发出，这些头不存在。语义与 OpenAI-LB 的
+`http_proxy_url` 完全一致——「打给谁」是协议的常量，「从哪儿出去」是这条上游的配置。
 配方见 `docs/deploy.md` 末节。
-
-另一条路是给这条上游配 `proxy_url`：`base_url` 留官方地址，Worker 自己开 CONNECT 隧道出去，
-语义与 OpenAI-LB 的 `http_proxy_url` 一致（隧道内层的 TLS 在用户态完成，见 `src/tunnel.ts`）。
-两条路都行，互不依赖；「一跳」是你自己写转发器，「代理」是任何标准 HTTP 代理。
 
 ```jsonc
 // POST /api/v1/providers  → 201 { id }
