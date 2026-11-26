@@ -346,6 +346,11 @@ export type ResolveRequest = {
   model?: string;
   /** 这一次请求已经试过的上游：重试时排掉，保证「换」真的发生了。 */
   exclude?: readonly string[];
+  /**
+   * 纯读模式（如 GET /v1/models）：命中已有亲和就沿用，未命中只按 rendezvous 返回候选，
+   * 绝不回写 `affinities` 表——彻底杜绝「读导致写」。
+   */
+  readOnly?: boolean;
   /** 传入动态 Gas 计量器时：写亲和前先做余额闸门检查，写完立刻按真实行写累加。 */
   gas?: GasMeter;
   /** 写亲和之后必然还会发生的原始成本（如 consumer_touch + settle），用于预算检查。 */
@@ -409,6 +414,10 @@ export async function resolveProvider(
   }
 
   const chosen = pickByRendezvous(candidates, hash);
+  // 纯读请求（如 GET /v1/models）绝不触发写库，避免「读导致写」放大 D1 写入与锁竞争。
+  if (request.readOnly) {
+    return { provider: chosen, via: via(chosen), sticky: false };
+  }
   const gas = request.gas;
   if (gas) {
     const needed = GAS_AFFINITY_UPSERT_NANOS + (request.pendingRequiredNanos ?? 0);

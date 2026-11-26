@@ -49,7 +49,13 @@ publicRoutes.get('/stats', async (c) => {
  * （主机名是否在 `TRUSTED_BASE_URLS` 清单里）。「官方 key」是前端按这个布尔
  * 渲染出来的标签，属于 UI 概念，换个清单说法就变，数据层不动。
  */
-publicRoutes.get('/base-urls', async (c) => c.json({ items: await groupByBaseUrl(c.env) }));
+publicRoutes.get('/base-urls', async (c) =>
+  c.json({ items: await groupByBaseUrl(c.env) }, 200, {
+    // 浏览器与代理侧短缓存 60 秒（与 /stats 同口径），减少重复读打进 Worker；
+    // 刻意不写 Worker 内 caches.default，保持新增/启停上游后直连接口的读后写一致性。
+    'Cache-Control': 'public, max-age=60',
+  }),
+);
 
 /**
  * 协议清单：每条协议的上游契约——说什么方言、基址由谁给、配置时要填哪些字段。
@@ -57,7 +63,12 @@ publicRoutes.get('/base-urls', async (c) => c.json({ items: await groupByBaseUrl
  * 前端的表单「先选协议、再按协议渲染字段」读的就是这张表，服务端创建时也按同一份判定；
  * 没有秘密，所以公开。加一条协议 = 这里多一行，前后端都不用改。
  */
-publicRoutes.get('/protocols', (c) => c.json({ items: PROTOCOL_SCHEMAS }));
+publicRoutes.get('/protocols', (c) =>
+  c.json({ items: PROTOCOL_SCHEMAS }, 200, {
+    // 编译期常量表，随部署更新，允许浏览器/代理缓存 5 分钟压缩免费读流量。
+    'Cache-Control': 'public, max-age=300',
+  }),
+);
 
 /**
  * 可信发布证明：把「线上跑的到底是哪份代码」变成可核对的数字。

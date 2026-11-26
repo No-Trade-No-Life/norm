@@ -274,5 +274,35 @@ describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
 
     // 对应 Gas 增量检查
     expect(GAS_AFFINITY_UPSERT_NANOS).toBe(3_000);
+    expect(GAS_SCHEDULE.read_subsidy).toBe(0);
+  });
+
+  it('纯读模式（readOnly: true）绝不「读导致写」：命中亲和沿用，未命中不写 affinities', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    const spy = spyD1(db);
+    const env = { DB: spy.DB, AFFINITY_TTL_SECONDS: '3600' } as unknown as Env;
+
+    const address = 'pure-read-fixture';
+    db.prepare('INSERT INTO principals (address, created_at, voucher_nanos) VALUES (?, ?, ?)').run(
+      address,
+      1_700_000_000,
+      100_000,
+    );
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run('prv_ro', address, 'p1', 'https://api.openai.com/v1', 'sk-a…z', 'sealed', 'aes-256-gcm', 'openai-chat', 1_700_000_000);
+
+    spy.resetCounts();
+    const choice = await resolveProvider(env, address, { source: 'thread-id', value: 'thread-readonly' }, {
+      readOnly: true,
+    });
+    expect(choice.provider.id).toBe('prv_ro');
+    expect(choice.sticky).toBe(false);
+    // 严格 0 次写库：GET /v1/models 即使带了 thread-id 也绝不写 affinities
+    expect(spy.counts().writes).toBe(0);
+    const rows = (db.prepare('SELECT COUNT(*) AS n FROM affinities').get() as { n: number }).n;
+    expect(rows).toBe(0);
   });
 });

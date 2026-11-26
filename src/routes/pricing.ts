@@ -19,32 +19,39 @@ import { PROTOCOLS, adapterFor } from '../protocols';
 export const pricingRoutes = new Hono<{ Bindings: Env }>();
 
 pricingRoutes.get('/', (c) =>
-  c.json({
-    unit: 'nanos per 1M tokens',
-    default: DEFAULT_RATES,
-    models: MODEL_RATES.map(({ match, input, cached, output }) => ({ match, input, cached, output })),
-    protocols: PROTOCOLS.flatMap((protocol) => {
-      const pricing = adapterFor(protocol).pricing;
-      if (!pricing) return [];
-      return [
-        {
-          protocol,
-          ...pricing.mode,
-          models: pricing.tariffs.map(({ match, peak, off_peak }) => ({ match, peak, off_peak })),
+  c.json(
+    {
+      unit: 'nanos per 1M tokens',
+      default: DEFAULT_RATES,
+      models: MODEL_RATES.map(({ match, input, cached, output }) => ({ match, input, cached, output })),
+      protocols: PROTOCOLS.flatMap((protocol) => {
+        const pricing = adapterFor(protocol).pricing;
+        if (!pricing) return [];
+        return [
+          {
+            protocol,
+            ...pricing.mode,
+            models: pricing.tariffs.map(({ match, peak, off_peak }) => ({ match, peak, off_peak })),
+          },
+        ];
+      }),
+      gas_fee: {
+        nanos: GAS_FLOOR_NANOS,
+        base_nanos: GAS_SCHEDULE.worker_invocation,
+        floor_nanos: GAS_FLOOR_NANOS,
+        min_balance_nanos: minBalanceNanos(c.env),
+        margin_bps: GAS_MARGIN_BPS,
+        schedule: {
+          ...GAS_SCHEDULE,
+          d1_writes: D1_ROW_WRITES,
         },
-      ];
-    }),
-    gas_fee: {
-      nanos: GAS_FLOOR_NANOS,
-      base_nanos: GAS_SCHEDULE.worker_invocation,
-      floor_nanos: GAS_FLOOR_NANOS,
-      min_balance_nanos: minBalanceNanos(c.env),
-      margin_bps: GAS_MARGIN_BPS,
-      schedule: {
-        ...GAS_SCHEDULE,
-        d1_writes: D1_ROW_WRITES,
+        note: '动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的 Cloudflare 资源付费点逐项累加，结算前冻结；当前 1.0× 成本价计费。',
       },
-      note: '动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的 Cloudflare 资源付费点逐项累加，结算前冻结；当前 1.0× 成本价计费。',
     },
-  }),
+    200,
+    {
+      // 价目表与 Gas 操作码表写在代码里，仅随新部署变动，允许缓存 5 分钟压低免费读成本。
+      'Cache-Control': 'public, max-age=300',
+    },
+  ),
 );

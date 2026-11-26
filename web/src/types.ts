@@ -232,6 +232,7 @@ export type Pricing = {
       cpu_stream: number;
       d1_reads: number;
       d1_row_write: number;
+      read_subsidy: number;
       d1_writes: Record<string, number>;
     };
     note: string;
