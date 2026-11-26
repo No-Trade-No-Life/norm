@@ -115,8 +115,6 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce +
 - 账户维护六块只增累计数：`recharge_nanos`（充值）、`voucher_nanos`（抵扣券，不可提现）、`earn_nanos`（作为上游提供方收到的 Token 收入）、`gas_spend_nanos`（付给 Norm 的 Gas 支出）、`token_spend_nanos`（转给他人上游的 Token 支出）、`withdraw_nanos`（提现）。
   可用余额永远由算式得出：`recharge + voucher + earn − gas_spend − token_spend − withdraw`。
 - 消费与收入的账都在请求表里：每条请求带 `gas_billed_nanos` / `token_billed_nanos`、`spend_before_nanos` / `spend_after_nanos` 与（跨用户时的）`earn_before_nanos` / `earn_after_nanos`。
-- 请求 ID 可以用 `x-normai-request-id` 自报（合法 UUID 才采用）：上层网关先转出去、后结算，
-  靠的就是这个 id 回头查每一笔的实收金额（`GET /v1/requests/{id}`、`POST /v1/requests/query`）。
 - `ledger` 只记账户级的钱，纯追加：`voucher`（券）/ `recharge`（充值）/ `withdraw`（提现）。
 - 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
   微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
@@ -272,6 +270,10 @@ Worker 调用，那一笔由站点自己吃掉（SDK 常在启动时先问一次
 
 记账沿用同一本账：`gas_fee_nanos` 照收（这次执行真的发生过），`token_nanos` 仍是「转给上游
 提供方的价值」（调用自有上游时为 0），只是用量多了两列——`audio_ms` 与 `audio_characters`。
+音频的账单也随响应回去：转写把 `cost_usd_nanos` 写进响应体，合成挂在 `X-Norm-Fee-Nanos`
+头上。**没有事后回捞的接口**——上层网关拿到的就是实扣金额，一次往返结清；异步对账那套在
+Worker 上要多一次调用与一次 D1 读，换的还是同一个数。
+
 音频不走重试：文本那条「换一条候选再试一次」是为了纠正清单里错的一行，而音频的型号表是代码
 里钉死的或上游自己列的，没有那种误差可纠。
 

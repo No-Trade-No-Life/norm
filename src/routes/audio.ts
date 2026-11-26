@@ -14,7 +14,7 @@ import {
   GasMeter,
 } from '../gas';
 import { fail } from '../http';
-import { unifiedRequestId, uuidv7 } from '../ids';
+import { uuidv7 } from '../ids';
 import { audioRateFor, quoteAudio } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
@@ -63,7 +63,7 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
   }
 
   const affinity = affinityKeyOf(c.req.raw.headers);
-  const requestId = unifiedRequestId(c.req.raw.headers) ?? uuidv7();
+  const requestId = uuidv7();
   const startedAt = Date.now();
   const gas = new GasMeter({
     availableNanos: principal.balanceNanos,
@@ -184,7 +184,11 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
     audio: answer.usage,
   });
 
-  if (answer.kind === 'transcriptions') return c.json({ text: answer.text, norm: meta });
+  if (answer.kind === 'transcriptions') {
+    // 钱就写在这次响应里：上层网关（NormAI）结算读的是 `cost_usd_nanos`，而它和
+    // `norm.fee_nanos` 是同一个数——一个请求一次往返，没有「先转出去、后回捞」。
+    return c.json({ text: answer.text, cost_usd_nanos: meta.fee_nanos, norm: meta });
+  }
 
   // 合成回的是音频字节，账目没法塞进响应体，只能挂在头上。
   return new Response(answer.audio, {

@@ -293,7 +293,9 @@ curl https://norm.ntnl.io/v1/audio/transcriptions \
   -H "Authorization: Bearer sk-norm-…" \
   -F 'file=@sample.wav' -F 'model=qwen-audio-3.0-asr-flash' -F 'language=zh'
 
-# → 200 {"text":"…","norm":{…}}   norm 就是别处那个账单结论，多两项音频用量
+# → 200 {"text":"…","cost_usd_nanos":76390,"norm":{…}}
+#   cost_usd_nanos 是这次**实扣**的总额，就写在响应里：上层网关按它记账，不必第二次回来问。
+#   norm 是别处那个账单结论（同一个数在 norm.fee_nanos），多两项音频用量：
 #   audio_ms（这次转写覆盖的音频毫秒数）、audio_characters（合成念的字数，转写恒为 0）
 
 # 合成：JSON，input / model / voice 三个字段缺一不可，回 WAV 字节
@@ -303,8 +305,12 @@ curl https://norm.ntnl.io/v1/audio/speech \
   -d '{"input":"你好，世界","model":"qwen3-tts-flash","voice":"Cherry"}' --output speech.wav
 ```
 
-合成回的是字节，账目挂在响应头上：`X-Norm-Request-Id`、`X-Norm-Fee-Nanos`、
-`X-Norm-Token-Nanos`、`X-Norm-Gas-Billed-Nanos`。
+合成回的是字节，钱没法塞进音频里，所以挂在响应头上：`X-Norm-Fee-Nanos`（实扣总额）、
+`X-Norm-Request-Id`、`X-Norm-Token-Nanos`、`X-Norm-Gas-Billed-Nanos`。
+
+**费用永远随响应一起回来，没有事后回捞的接口。** 一个请求一次往返：没有第二个查询端点、
+没有后台轮询、没有「先记 pending 再对账」——那套形状在 Cloudflare Worker 上要多一次调用、
+多一次 D1 读，换来的还是同一个数。
 
 两条限制都是硬拒绝，都在打上游之前：
 
@@ -314,35 +320,6 @@ curl https://norm.ntnl.io/v1/audio/speech \
   回的就是它的当前值。
 
 上游回的错原话照回（状态码与响应体都不改），那一笔只收 Gas、不收 Token 费——与推理路径同一口径。
-
-## 请求费用查询（只认 Bearer 消费者密钥）
-
-上层网关通常**先**把调用转出去、**后**结算，所以它记下请求 ID，等账落定再回头补齐金额。
-Norm 说同一套契约（Qwen LB / DeepSeek LB / OpenAI LB 一族共用的那一条）：
-
-```bash
-curl https://norm.ntnl.io/v1/requests/<REQUEST_ID> -H "Authorization: Bearer sk-norm-…"
-
-curl https://norm.ntnl.io/v1/requests/query \
-  -H "Authorization: Bearer sk-norm-…" -H 'Content-Type: application/json' \
-  -d '{"ids":["<REQUEST_ID>","<ANOTHER_REQUEST_ID>"]}'
-```
-
-```json
-{"requests":[{"request_id":"…","model":"…","status":"ok","status_code":200,
-  "cost_usd_nanos":80390,"gas_billed_nanos":4000,"token_billed_nanos":76390,
-  "input_tokens":0,"cached_tokens":0,"output_tokens":0,
-  "audio_ms":2500,"audio_characters":0,"latency_ms":820,"first_token_ms":null,
-  "host":"dashscope.aliyuncs.com","created_at":1796000000}],
- "missing":["<一个不存在的 id>"]}
-```
-
-- `cost_usd_nanos` 是这一笔**实扣**的总额，恒等于 `gas_billed_nanos + token_billed_nanos`。
-- 一把 Token 只能看见它自己付过的账；查不到与不是它的，回答完全一样（都进 `missing`）——
-  否则「这个 id 存在但属于别人」这件事本身就泄露了。
-- 一次最多 100 条。只回答记账字段：没有请求体、没有响应体、没有上游密钥。
-- 请求 ID 可以自报：带 `x-normai-request-id`（合法 UUID）时 Norm 采用它，响应里也回同一个，
-  两边因此不必各自维护一张对照表。
 
 ## 模型清单（只认 Bearer 消费者密钥）
 
