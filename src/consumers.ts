@@ -3,6 +3,7 @@ import type { Principal } from './auth';
 import { fail } from './http';
 import { base58 } from './ids';
 import { sha256Hex, utf8 } from './crypto';
+import { availableNanos } from './store';
 
 /**
  * 下游消费者密钥：`sk-norm-` + base58(32 字节随机)。
@@ -30,23 +31,44 @@ export function consumerKeyHint(key: string): string {
 }
 
 /**
- * Bearer 凭据 → 账户。
+ * Bearer 凭据 → 账户与余额快照（零写入、单次 JOIN 读）。
  *
- * 密钥只回答「谁的代码在用」。走哪条上游是转发时的决定，不写在身份里：
- * 自己的上游优先，公共池兜底（见 store.resolveProvider）。
- *
- * 「用过」这个事实在鉴权时就近记下：调用方不必多一个写操作分支，
- * 而页面能诚实回答「这把钥匙还在被用吗」。
+ * 刻意不在这里写 `last_used_at`：如果后面的请求体不合法、余额低于安全阈值或没有可用上游，
+ * 提前拒绝的请求应当产生 0 次 D1 写入。真正确认执行时再调 `touchConsumer` 并计入 Gas。
+ * 同时顺手 JOIN `principals` 读出余额，省掉转发路径上原本多出来的那一次 `findPrincipal` 读。
  */
 export async function principalFromConsumerKey(env: Env, key: string): Promise<Principal> {
-  const row = await env.DB.prepare('SELECT id, address FROM consumers WHERE key_sha256 = ? AND revoked_at IS NULL')
+  const row = await env.DB.prepare(
+    `SELECT c.id, c.address,
+            p.recharge_nanos, p.voucher_nanos, p.spend_nanos, p.withdraw_nanos
+       FROM consumers c
+       JOIN principals p ON p.address = c.address
+      WHERE c.key_sha256 = ? AND c.revoked_at IS NULL`,
+  )
     .bind(consumerKeyHash(key))
-    .first<{ id: string; address: string }>();
+    .first<{
+      id: string;
+      address: string;
+      recharge_nanos: number;
+      voucher_nanos: number;
+      spend_nanos: number;
+      withdraw_nanos: number;
+    }>();
   if (!row) fail(401, 'consumer_key_invalid', '消费者密钥无效或已撤销');
 
+  return {
+    address: row.address,
+    consumerId: row.id,
+    balanceNanos: availableNanos(row),
+  };
+}
+
+/**
+ * 记录下游密钥最近使用时间（1 行 D1 写，last_used_at 非索引列）。
+ * 仅在确认要执行请求时调用，并由调用方计入 GasMeter。
+ */
+export async function touchConsumer(env: Env, consumerId: string): Promise<void> {
   await env.DB.prepare('UPDATE consumers SET last_used_at = ? WHERE id = ?')
-    .bind(Math.floor(Date.now() / 1000), row.id)
+    .bind(Math.floor(Date.now() / 1000), consumerId)
     .run();
-  // 顺手把 consumer id 交出去：账本要能回答「这条钱是哪把钥匙花的」。
-  return { address: row.address, consumerId: row.id };
 }

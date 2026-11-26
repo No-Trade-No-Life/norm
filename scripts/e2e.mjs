@@ -721,8 +721,9 @@ for (const [protocol, want] of Object.entries(expected)) {
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
   const norm = result.json?.norm;
   check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
-  // 一次调用的钱 = Gas 费 + 三项 token 折出来的钱；两个数都能自己核。
-  check(`${protocol} Gas 费 300 纳美元`, norm?.gas_fee_nanos === 300, norm);
+  // 一次调用的钱 = 动态 Gas 费 + 三项 token 折出来的钱：直通 6,730 纳、跨方言桥接 +100 = 6,830 纳。
+  const wantGas = protocol === 'openai-chat' ? 6730 : 6830;
+  check(`${protocol} 动态 Gas 费 ${wantGas} 纳美元`, norm?.gas_fee_nanos === wantGas, norm);
   check(`${protocol} token 有价`, norm?.token_nanos > 0, norm);
   check(`${protocol} 总价 = Gas + token`, norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${PROVIDER_PORT}`, norm);
@@ -760,6 +761,7 @@ for (const protocol of Object.keys(expected)) {
   const streamed = await chat('openai-chat', { stream: true });
   const norm = normOf(streamed.text);
   check('流式也记下三项 token', norm?.input_tokens === 30 && norm?.cached_tokens === 20 && norm?.output_tokens === 6, norm);
+  check('流式直通动态 Gas 费 6,790 纳美元（含 +60 流式 CPU）', norm?.gas_fee_nanos === 6790, norm);
   check('流式按 token 收钱', norm?.token_nanos > 0 && norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
   check('客户端没要用量就不给用量帧', !streamed.text.includes('"prompt_tokens_details"'), streamed.text.slice(-300));
 
@@ -806,7 +808,7 @@ console.log('6. 上游提供商失败只收 Gas，token 不计，仍留一条诚
   const result = await relay(aliceKey, 'POST', '/v1/chat/completions', payload);
   check('上游提供商不可达 → 502', result.status === 502, result.status);
   check('失败原因说得清', result.json.error === 'provider_unreachable', result.json);
-  check('失败也扣 300 纳美元 Gas（响应头）', result.headers.get('x-norm-gas-fee-nanos') === '300', result.headers.get('x-norm-gas-fee-nanos'));
+  check('失败也扣 6,730 纳美元动态 Gas（响应头）', result.headers.get('x-norm-gas-fee-nanos') === '6730', result.headers.get('x-norm-gas-fee-nanos'));
   check('失败也回带 request_id', (result.headers.get('x-norm-request-id') ?? '').length > 0, result.headers.get('x-norm-request-id'));
   await call(alice, 'DELETE', `/api/v1/providers/${wrong.json.id}`);
 }
@@ -904,7 +906,7 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
   check('用钥匙的行，下游用户就是账户地址', rows.filter((row) => row.consumer_id).every((row) => row.consumer_user === alice.address), rows.filter((row) => row.consumer_id).slice(0, 2));
   const meLatency = me.latency;
   check('账户级延迟统计可读', typeof meLatency?.avg_latency_ms === 'number' && (meLatency?.streamed_requests ?? 0) > 0, meLatency);
-  check('失败那条只扣 Gas、token 为 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 300 && row.gas_fee_nanos === 300 && row.token_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
+  check('失败那条只扣 Gas、token 为 0', usage.items.some((row) => row.status !== 'ok' && row.fee_nanos === 6730 && row.gas_fee_nanos === 6730 && row.token_nanos === 0 && row.input_tokens === 0), usage.items.find((row) => row.status !== 'ok'));
 
   // 按 id 翻页：第一页最后一条之后接着往下取，不会与第一页重叠。
   const firstPage = (await call(alice, 'GET', '/api/v1/account/usage?limit=2')).json.items;
@@ -919,7 +921,14 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
 
   const pricing = (await (await fetch(`${BASE}/api/v1/pricing`)).json());
   check('价目表公开可读', typeof pricing.default?.input === 'number' && Array.isArray(pricing.models), pricing);
-  check('价目表带 Gas 费', pricing.gas_fee?.nanos === 300, pricing.gas_fee);
+  check(
+    '价目表带动态 Gas 费与安全阈值',
+    pricing.gas_fee?.base_nanos === 300 &&
+      pricing.gas_fee?.floor_nanos === 6730 &&
+      pricing.gas_fee?.min_balance_nanos === 10000 &&
+      pricing.gas_fee?.margin_bps === 0,
+    pricing.gas_fee,
+  );
 }
 
 console.log('9. 上游提供商按 base_url 聚合；「可信」只是一份清单');

@@ -5,6 +5,11 @@ import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
 import { fail } from './http';
 import { nowSeconds, randomToken } from './ids';
+import {
+  D1_ROW_WRITES,
+  GAS_AFFINITY_UPSERT_NANOS,
+  type GasMeter,
+} from './gas';
 import { affinityFresh, affinityHash, narrowToOwned, narrowToServingModel, pickByRendezvous, type AffinityKey } from './routing';
 
 /**
@@ -309,17 +314,21 @@ export async function recordProviderModels(
   await env.DB.batch(statements);
 }
 
-/** 上游自己说没有这个型号：把那一行划掉，下一次选址就不会再选到它。 */
-export async function dropProviderModel(env: Env, providerId: string, model: string): Promise<void> {
-  if (model.length === 0) return;
-  await env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ? AND model = ?')
+/** 上游自己说没有这个型号：把那一行划掉，下一次选址就不会再选到它。返回实际删掉的行数（0 或 1）。 */
+export async function dropProviderModel(env: Env, providerId: string, model: string): Promise<number> {
+  if (model.length === 0) return 0;
+  const result = await env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ? AND model = ?')
     .bind(providerId, model)
     .run();
+  return result.meta?.changes ?? 0;
 }
 
-/** 忘掉一条会话的粘性：这条路选错了，下一次重挑。 */
-export async function forgetAffinity(env: Env, address: string, hash: string): Promise<void> {
-  await env.DB.prepare('DELETE FROM affinities WHERE affinity_hash = ? AND address = ?').bind(hash, address).run();
+/** 忘掉一条会话的粘性：这条路选错了，下一次重挑。返回实际删掉的行数（0 或 1）。 */
+export async function forgetAffinity(env: Env, address: string, hash: string): Promise<number> {
+  const result = await env.DB.prepare('DELETE FROM affinities WHERE affinity_hash = ? AND address = ?')
+    .bind(hash, address)
+    .run();
+  return result.meta?.changes ?? 0;
 }
 
 /** 一条同方言的上游都没有：带工具的请求在这里说清楚，而不是打出去再被拒。 */
@@ -337,6 +346,12 @@ export type ResolveRequest = {
   model?: string;
   /** 这一次请求已经试过的上游：重试时排掉，保证「换」真的发生了。 */
   exclude?: readonly string[];
+  /** 传入动态 Gas 计量器时：写亲和前先做余额闸门检查，写完立刻按真实行写累加。 */
+  gas?: GasMeter;
+  /** 写亲和之后必然还会发生的原始成本（如 consumer_touch + settle），用于预算检查。 */
+  pendingRequiredNanos?: number;
+  /** 余额不足以支付写亲和 + 后续必经成本时：true 直接 402 中止（首次尝试），false 跳过写亲和。 */
+  abortOnInsufficientBalance?: boolean;
 };
 
 export async function resolveProvider(
@@ -394,24 +409,53 @@ export async function resolveProvider(
   }
 
   const chosen = pickByRendezvous(candidates, hash);
-  await rememberAffinity(env, address, hash, chosen.id, now);
+  const gas = request.gas;
+  if (gas) {
+    const needed = GAS_AFFINITY_UPSERT_NANOS + (request.pendingRequiredNanos ?? 0);
+    if (!gas.canAfford(needed)) {
+      if (request.abortOnInsufficientBalance) {
+        fail(
+          402,
+          'insufficient_balance',
+          `余额不足：本次请求预计至少需要 ${gas.projectedTotal(needed)} 纳美元 Gas，当前 ${gas.availableNanos}`,
+        );
+      }
+      // 二次重试时余额紧到不够写亲和，就跳过写亲和省下这 3 行写，继续走本次选出的上游。
+      return { provider: chosen, via: via(chosen), sticky: false };
+    }
+  }
+  const deletedExpired = await rememberAffinity(env, address, hash, chosen.id, now);
+  if (gas) {
+    gas.chargeD1Writes(D1_ROW_WRITES.affinity_upsert + deletedExpired * D1_ROW_WRITES.affinity_delete);
+  }
   return { provider: chosen, via: via(chosen), sticky: false };
 }
 
+/** 单次写亲和顺手清理过期行的上限：避免沉寂很久的账户让某一次请求背上几十行清理费。 */
+const AFFINITY_GC_LIMIT = 2;
+
 /**
  * 写回亲和。只在「没记住 / 记住的不是这条 / 那条已过期」时才写：稳态下每个请求
- * 只多一次读，不额外写 D1。顺手清掉本账户的过期行，表因此不会无限长。
+ * 只多一次读，不额外写 D1。顺手清掉本账户最多 2 条过期行，并返回实际删掉的行数供
+ * GasMeter 如实入账（直接读 batch 返回的 meta.changes，零额外查询）。
  */
-async function rememberAffinity(
+export async function rememberAffinity(
   env: Env,
   address: string,
   hash: string,
   providerId: string,
   now: number,
-): Promise<void> {
+): Promise<number> {
   const ttl = affinityTtlSeconds(env);
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM affinities WHERE address = ? AND expires_at <= ?').bind(address, now),
+  const [deleted] = await env.DB.batch([
+    env.DB.prepare(
+      `DELETE FROM affinities
+        WHERE affinity_hash IN (
+          SELECT affinity_hash FROM affinities
+           WHERE address = ? AND expires_at <= ?
+           LIMIT ${AFFINITY_GC_LIMIT}
+        )`,
+    ).bind(address, now),
     env.DB.prepare(
       `INSERT INTO affinities (affinity_hash, address, provider_id, expires_at, updated_at)
        VALUES (?, ?, ?, ?, ?)
@@ -421,6 +465,7 @@ async function rememberAffinity(
          updated_at = excluded.updated_at`,
     ).bind(hash, address, providerId, now + ttl, now),
   ]);
+  return deleted?.meta?.changes ?? 0;
 }
 
 /**

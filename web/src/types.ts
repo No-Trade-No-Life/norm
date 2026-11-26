@@ -218,7 +218,24 @@ export type Pricing = {
   models: Array<{ match: string } & PricingRates>;
   /** 老版本后端没有这段：读的时候当空表。 */
   protocols?: ProtocolPricing[];
-  gas_fee: { nanos: number; note: string };
+  gas_fee: {
+    nanos: number;
+    base_nanos: number;
+    floor_nanos: number;
+    min_balance_nanos: number;
+    margin_bps: number;
+    schedule: {
+      worker_invocation: number;
+      log_event: number;
+      cpu_base: number;
+      cpu_bridge: number;
+      cpu_stream: number;
+      d1_reads: number;
+      d1_row_write: number;
+      d1_writes: Record<string, number>;
+    };
+    note: string;
+  };
 };
 
 /** `/v1/models` 的一个条目：四种上游的清单在服务端被归一成这一个形状。 */
