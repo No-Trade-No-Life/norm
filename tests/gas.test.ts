@@ -18,9 +18,21 @@ import {
   GasMeter,
   applyGasMargin,
 } from '../src/gas';
-import { consumerKeyHash, newConsumerKey, principalFromConsumerKey, touchConsumer } from '../src/consumers';
+import {
+  consumerKeyHash,
+  needsConsumerTouch,
+  newConsumerKey,
+  principalFromConsumerKey,
+  touchConsumer,
+} from '../src/consumers';
 import { HttpError } from '../src/http';
-import { dropProviderModel, forgetAffinity, rememberAffinity, resolveProvider } from '../src/store';
+import {
+  dropProviderModel,
+  forgetAffinity,
+  recordProviderModels,
+  rememberAffinity,
+  resolveProvider,
+} from '../src/store';
 
 const MIGRATIONS = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -90,45 +102,46 @@ function spyD1(db: DatabaseSync) {
 }
 
 describe('GasMeter 动态累加与四条硬约束', () => {
-  it('起步价与稳态/跨方言/流式/写亲和各路径金额精确匹配列表价', () => {
+  it('起步价与稳态/当日首次/跨方言/流式/写亲和各路径金额精确匹配列表价', () => {
     expect(GAS_SCHEDULE.worker_invocation).toBe(300);
+    expect(GAS_SCHEDULE.log_event).toBe(10);
+    expect(GAS_SCHEDULE.read_subsidy).toBe(0);
     expect(GAS_MARGIN_BPS).toBe(0);
-    expect(GAS_ENTRY_BASE_NANOS).toBe(1_730);
-    expect(GAS_FLOOR_NANOS).toBe(6_730);
+    expect(GAS_ENTRY_BASE_NANOS).toBe(420);
+    expect(GAS_SETTLE_NANOS).toBe(2_000);
+    expect(GAS_AFFINITY_UPSERT_NANOS).toBe(1_000);
+    expect(GAS_FLOOR_NANOS).toBe(2_420);
     expect(DEFAULT_MIN_BALANCE_NANOS).toBe(10_000);
 
-    // 1. 普通同方言直通、非流式、无写亲和：1,730 + 1,000 + 4,000 = 6,730
-    const passthrough = new GasMeter({ availableNanos: 100_000 });
-    passthrough.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(passthrough.finalizeForSettlement()).toBe(6_730);
-    expect(passthrough.finalTotal()).toBe(6_730);
+    // 1. 稳态同日直通、非流式、无写亲和：420 + 2,000 = 2,420
+    const steady = new GasMeter({ availableNanos: 100_000 });
+    expect(steady.finalizeForSettlement()).toBe(2_420);
+    expect(steady.finalTotal()).toBe(2_420);
 
-    // 2. 同方言直通 + 流式：6,730 + 60 = 6,790
-    const passthroughStream = new GasMeter({ availableNanos: 100_000 });
-    passthroughStream.charge(GAS_SCHEDULE.cpu_stream);
-    passthroughStream.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(passthroughStream.finalizeForSettlement()).toBe(6_790);
+    // 2. 同日直通 + 流式：2,420 + 60 = 2,480
+    const steadyStream = new GasMeter({ availableNanos: 100_000 });
+    steadyStream.charge(GAS_SCHEDULE.cpu_stream);
+    expect(steadyStream.finalizeForSettlement()).toBe(2_480);
 
-    // 3. 跨方言桥接 + 非流式：6,730 + 100 = 6,830
+    // 3. 同日跨方言桥接 + 非流式：2,420 + 100 = 2,520
     const bridge = new GasMeter({ availableNanos: 100_000 });
     bridge.charge(GAS_SCHEDULE.cpu_bridge);
-    bridge.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(bridge.finalizeForSettlement()).toBe(6_830);
+    expect(bridge.finalizeForSettlement()).toBe(2_520);
 
-    // 4. 跨方言桥接 + 流式 + 首次写亲和（3 行写）：6,890 + 3,000 = 9,890（刚好 <= 10,000）
-    const bridgeStreamAffinity = new GasMeter({ availableNanos: 10_000 });
-    expect(bridgeStreamAffinity.canStart()).toBe(true);
-    bridgeStreamAffinity.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
-    bridgeStreamAffinity.charge(GAS_SCHEDULE.cpu_bridge + GAS_SCHEDULE.cpu_stream);
-    bridgeStreamAffinity.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(bridgeStreamAffinity.finalizeForSettlement()).toBe(9_890);
+    // 4. 跨方言桥接 + 流式 + 当日首次 touch（1 行）+ 首次写亲和（WITHOUT ROWID 1 行）：
+    //    420 + 1,000 + 100 + 60 + 1,000 + 2,000 = 4,580
+    const fullFirst = new GasMeter({ availableNanos: 10_000 });
+    expect(fullFirst.canStart()).toBe(true);
+    fullFirst.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
+    fullFirst.charge(GAS_SCHEDULE.cpu_bridge + GAS_SCHEDULE.cpu_stream);
+    fullFirst.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
+    expect(fullFirst.finalizeForSettlement()).toBe(4_580);
   });
 
   it('约束 1：结算冻结后禁止再追加计费或重复结算，未冻结前禁止读最终值', () => {
     const gas = new GasMeter({ availableNanos: 50_000 });
     expect(() => gas.finalTotal()).toThrow();
 
-    gas.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
     const total = gas.finalizeForSettlement();
     expect(total).toBe(GAS_FLOOR_NANOS);
     expect(gas.isFinalized).toBe(true);
@@ -139,15 +152,14 @@ describe('GasMeter 动态累加与四条硬约束', () => {
   });
 
   it('约束 2：毛利倍数向上取整，绝不向下截断少收', () => {
-    expect(applyGasMargin(6_730, 0)).toBe(6_730);
-    // +10%（1,000 bps）：6,730 × 1.1 = 7,403
-    expect(applyGasMargin(6_730, 1_000)).toBe(7_403);
+    expect(applyGasMargin(2_420, 0)).toBe(2_420);
+    // +10%（1,000 bps）：2,420 × 1.1 = 2,662
+    expect(applyGasMargin(2_420, 1_000)).toBe(2_662);
     // 出现小数时向上取整：1 × 1.0001 = 1.0001 → 2
     expect(applyGasMargin(1, 1)).toBe(2);
   });
 
   it('约束 3：入口安全阈值（闸门 A）与预算检查（闸门 B/C）提前拒绝省费', () => {
-    // 余额 9,999 < 10,000 → 闸门 A 直接拒绝
     const low = new GasMeter({ availableNanos: 9_999 });
     expect(low.canStart()).toBe(false);
 
@@ -156,22 +168,59 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(minBalanceNanos({ MIN_BALANCE_NANOS: '15000' } as Env)).toBe(15_000);
     expect(minBalanceNanos({} as Env)).toBe(DEFAULT_MIN_BALANCE_NANOS);
 
-    // 闸门 C：第 1 次执行后余钱不够覆盖「删模型 + 删亲和 + 二次 CPU + 结算」则拒绝重试
-    const tight = new GasMeter({ availableNanos: 10_000 });
-    tight.chargeD1Writes(D1_ROW_WRITES.consumer_touch); // 1,730 + 1,000 = 2,730
+    // 闸门 C：余额不够覆盖「删模型(3行) + 删亲和(1行) + 二次 CPU + 结算(2行)」时放弃重试
+    const tight = new GasMeter({ availableNanos: 6_000 });
+    tight.chargeD1Writes(D1_ROW_WRITES.consumer_touch); // 420 + 1,000 = 1,420
     const retryEstimate =
       (D1_ROW_WRITES.provider_model_delete + D1_ROW_WRITES.affinity_delete) * GAS_SCHEDULE.d1_row_write +
       GAS_SCHEDULE.cpu_base +
       GAS_SETTLE_NANOS;
-    // 2,730 + 6,000 + 100 + 4,000 = 12,830 > 10,000 → 放弃重试
+    // 1,420 + 4,000 + 100 + 2,000 = 7,520 > 6,000 → 放弃重试
     expect(tight.canAfford(retryEstimate)).toBe(false);
-    // 但结算本次第 1 次失败（2,730 + 4,000 = 6,730 <= 10,000）完全付得起
+    // 结算本次第 1 次失败（1,420 + 2,000 = 3,420 <= 6,000）完全付得起
     expect(tight.canAfford(GAS_SETTLE_NANOS)).toBe(true);
+  });
+
+  it('consumers.last_used_at 按 UTC 自然日节流：从未用过或跨日才写', () => {
+    const dayStart = 20_000 * 86_400; // 某个 UTC 00:00:00
+    expect(needsConsumerTouch(null, dayStart)).toBe(true);
+    expect(needsConsumerTouch(dayStart, dayStart + 1)).toBe(false);
+    expect(needsConsumerTouch(dayStart, dayStart + 86_399)).toBe(false);
+    expect(needsConsumerTouch(dayStart, dayStart + 86_400)).toBe(true);
   });
 });
 
-describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
-  it('鉴权单次 JOIN 读余额且 0 D1 写；确认执行时 touchConsumer 才写 1 行', async () => {
+describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
+  it('迁移 0022：requests 与 affinities 均为 WITHOUT ROWID 且 0 二级索引，查询直走聚簇主键', () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+
+    const tables = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name IN ('requests', 'affinities')")
+      .all() as Array<{ name: string; sql: string }>;
+    expect(tables).toHaveLength(2);
+    for (const table of tables) {
+      expect(table.sql.toUpperCase()).toContain('WITHOUT ROWID');
+    }
+
+    // 显式二级索引必须为 0（sqlite_autoindex_ 不会在 WITHOUT ROWID 上产生额外二级索引）
+    const indexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('requests', 'affinities')")
+      .all() as Array<{ name: string }>;
+    expect(indexes).toEqual([]);
+
+    const reqPlan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT * FROM requests WHERE address = ? AND id < ? ORDER BY id DESC LIMIT 50')
+      .all('addr', '019') as Array<{ detail: string }>;
+    expect(reqPlan.some((row) => row.detail.includes('USING PRIMARY KEY'))).toBe(true);
+
+    const affPlan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT provider_id, expires_at FROM affinities WHERE address = ? AND affinity_hash = ?')
+      .all('addr', 'hash') as Array<{ detail: string }>;
+    expect(affPlan.some((row) => row.detail.includes('USING PRIMARY KEY'))).toBe(true);
+  });
+
+  it('鉴权单次 JOIN 读余额与 last_used_at 且 0 D1 写；确认执行时 touchConsumer 才写 1 行', async () => {
     const db = new DatabaseSync(':memory:');
     migrate(db);
     const spy = spyD1(db);
@@ -190,20 +239,18 @@ describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
 
     spy.resetCounts();
     const principal = await principalFromConsumerKey(env, key);
-    expect(principal).toEqual({ address, consumerId: 'con_1', balanceNanos: 25_000 });
-    // 1 次 JOIN 读、0 次写：被拒请求不再白写 last_used_at
+    expect(principal).toEqual({
+      address,
+      consumerId: 'con_1',
+      balanceNanos: 25_000,
+      consumerLastUsedAt: null,
+    });
     expect(spy.counts()).toEqual({ reads: 1, writes: 0 });
-    const untouched = db.prepare('SELECT last_used_at FROM consumers WHERE id = ?').get('con_1') as {
-      last_used_at: number | null;
-    };
-    expect(untouched.last_used_at).toBeNull();
 
     await touchConsumer(env, 'con_1');
     expect(spy.counts()).toEqual({ reads: 1, writes: 1 });
-    const touched = db.prepare('SELECT last_used_at FROM consumers WHERE id = ?').get('con_1') as {
-      last_used_at: number | null;
-    };
-    expect(typeof touched.last_used_at).toBe('number');
+    const after = await principalFromConsumerKey(env, key);
+    expect(typeof after.consumerLastUsedAt).toBe('number');
   });
 
   it('闸门 B：余额不够写亲和 + 后续必经成本时直接 402 中止且 0 行写入 affinities', async () => {
@@ -216,15 +263,15 @@ describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
     db.prepare('INSERT INTO principals (address, created_at, voucher_nanos) VALUES (?, ?, ?)').run(
       address,
       1_700_000_000,
-      8_000,
+      3_000,
     );
     db.prepare(
       `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
     ).run('prv_1', address, 'p1', 'https://api.openai.com/v1', 'sk-a…z', 'sealed', 'aes-256-gcm', 'openai-chat', 1_700_000_000);
 
-    // 余额 8,000：虽大于最低 Gas 6,730，但写亲和后需要 1,730 + 3,000 + 1,000 + 4,000 = 9,730 > 8,000
-    const gas = new GasMeter({ availableNanos: 8_000, minBalanceNanos: GAS_FLOOR_NANOS });
+    // 余额 3,000：虽大于稳态最低 Gas 2,420，但写亲和(1,000) + touch(1,000) + settle(2,000) = 4,420 > 3,000
+    const gas = new GasMeter({ availableNanos: 3_000, minBalanceNanos: GAS_FLOOR_NANOS });
     spy.resetCounts();
     let caught: unknown;
     try {
@@ -239,42 +286,72 @@ describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
     expect(caught).toBeInstanceOf(HttpError);
     expect((caught as HttpError).status).toBe(402);
     expect((caught as HttpError).code).toBe('insufficient_balance');
-    // 提前中止：0 次写入，affinities 表仍为空
     expect(spy.counts().writes).toBe(0);
     const count = (db.prepare('SELECT COUNT(*) AS n FROM affinities').get() as { n: number }).n;
     expect(count).toBe(0);
   });
 
-  it('rememberAffinity 单次最多清理 2 条过期行并准确返回删除行数供 GasMeter 入账', async () => {
+  it('rememberAffinity 单次 1 行写（不顺手删过期行），forgetAffinity 与 dropProviderModel 准确返回 changes', async () => {
     const db = new DatabaseSync(':memory:');
     migrate(db);
     const spy = spyD1(db);
     const env = { DB: spy.DB, AFFINITY_TTL_SECONDS: '3600' } as unknown as Env;
 
-    const address = 'gas-affinity-gc';
+    const address = 'gas-affinity-without-rowid';
     const now = 1_700_010_000;
-    for (let i = 0; i < 5; i += 1) {
-      db.prepare(
-        'INSERT INTO affinities (affinity_hash, address, provider_id, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
-      ).run(`expired_${i}`, address, 'prv_1', now - 100, now - 200);
-    }
+    db.prepare(
+      'INSERT INTO affinities (address, affinity_hash, provider_id, expires_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).run(address, 'expired_0', 'prv_1', now - 100, now - 200);
 
-    const deleted = await rememberAffinity(env, address, 'fresh_hash', 'prv_1', now);
-    expect(deleted).toBe(2);
-    // 原本 5 条过期，删 2 条 + 新增 1 条 = 4 条
-    const remaining = (db.prepare('SELECT COUNT(*) AS n FROM affinities WHERE address = ?').get(address) as { n: number }).n;
-    expect(remaining).toBe(4);
+    spy.resetCounts();
+    await rememberAffinity(env, address, 'fresh_hash', 'prv_1', now);
+    // 严格 1 条写入语句，不顺手扫删旧过期行
+    expect(spy.counts()).toEqual({ reads: 0, writes: 1 });
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM affinities WHERE address = ?').get(address) as { n: number }).n;
+    expect(count).toBe(2);
 
-    // 验证 dropProviderModel 与 forgetAffinity 准确回传 changes（有删 1、无删 0）
     db.prepare('INSERT INTO provider_models (provider_id, model, fetched_at) VALUES (?, ?, ?)').run('prv_1', 'gpt-test', now);
     expect(await dropProviderModel(env, 'prv_1', 'gpt-test')).toBe(1);
     expect(await dropProviderModel(env, 'prv_1', 'gpt-test')).toBe(0);
     expect(await forgetAffinity(env, address, 'fresh_hash')).toBe(1);
     expect(await forgetAffinity(env, address, 'fresh_hash')).toBe(0);
+  });
 
-    // 对应 Gas 增量检查
-    expect(GAS_AFFINITY_UPSERT_NANOS).toBe(3_000);
-    expect(GAS_SCHEDULE.read_subsidy).toBe(0);
+  it('recordProviderModels 按集合 diff 更新：清单未变时 0 次 D1 写，仅变更增删行', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    const spy = spyD1(db);
+    const env = { DB: spy.DB } as unknown as Env;
+
+    const address = 'model-diff-fixture';
+    db.prepare('INSERT INTO principals (address, created_at) VALUES (?, ?)').run(address, 1_700_000_000);
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run('prv_m', address, 'p', 'https://api.openai.com/v1', 'sk-a…z', 'sealed', 'aes-256-gcm', 'openai-chat', 1_700_000_000);
+
+    // 首次同步：3 个模型全部写入
+    spy.resetCounts();
+    const first = await recordProviderModels(env, 'prv_m', ['m-a', 'm-b', 'm-c'], 1_700_000_100);
+    expect(first).toEqual({ added: 3, removed: 0 });
+    expect(spy.counts().writes).toBe(2); // 1 batch INSERT + 1 UPDATE models_fetched_at
+
+    // 清单未变再次同步：严格 0 次 D1 写
+    spy.resetCounts();
+    const same = await recordProviderModels(env, 'prv_m', ['m-c', 'm-a', 'm-b'], 1_700_000_200);
+    expect(same).toEqual({ added: 0, removed: 0 });
+    expect(spy.counts().writes).toBe(0);
+
+    // 下线 m-b、新增 m-d：只删 1、只插 1
+    spy.resetCounts();
+    const changed = await recordProviderModels(env, 'prv_m', ['m-a', 'm-c', 'm-d'], 1_700_000_300);
+    expect(changed).toEqual({ added: 1, removed: 1 });
+    const stored = (
+      db.prepare('SELECT model FROM provider_models WHERE provider_id = ? ORDER BY model').all('prv_m') as Array<{
+        model: string;
+      }>
+    ).map((r) => r.model);
+    expect(stored).toEqual(['m-a', 'm-c', 'm-d']);
   });
 
   it('纯读模式（readOnly: true）绝不「读导致写」：命中亲和沿用，未命中不写 affinities', async () => {
@@ -300,7 +377,6 @@ describe('D1 零额外 Overhead 与写亲和/重试真实行写计量', () => {
     });
     expect(choice.provider.id).toBe('prv_ro');
     expect(choice.sticky).toBe(false);
-    // 严格 0 次写库：GET /v1/models 即使带了 thread-id 也绝不写 affinities
     expect(spy.counts().writes).toBe(0);
     const rows = (db.prepare('SELECT COUNT(*) AS n FROM affinities').get() as { n: number }).n;
     expect(rows).toBe(0);

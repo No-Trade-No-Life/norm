@@ -19,11 +19,10 @@ export const GAS_SCHEDULE = {
   /** Workers Paid：$0.30 / 1M 次调用。 */
   worker_invocation: 300,
   /**
-   * Workers Logs（2026-12-01 体积口径，按 Cloudflare 公布的 4.84 KB 平均事件 × 100% 采样）：
-   * 摄取 4.84 KB × $0.25/GB ≈ 1,210 纳 + 7 天存储 ≈ 113 纳 → 1,320 纳。
-   * 调整 wrangler.jsonc 采样率或关闭 invocation_logs 时，随同一次提交同步更新此常量。
+   * Workers Logs：wrangler.jsonc 已设 `invocation_logs: false`，正常请求不产生 invocation log，
+   * 仅保留 `console.error` 等异常应用日志；每笔留 10 纳作偶发错误日志摊销（绝不漏收）。
    */
-  log_event: 1_320,
+  log_event: 10,
   /**
    * 基础 CPU 保守估（≈ 5 CPU-ms × $0.02 / 1M CPU-ms = 100 纳）：
    * 覆盖鉴权 SHA-256、JSON 解析、AES-GCM 解封、选址与结算拼装。
@@ -55,20 +54,20 @@ export const GAS_SCHEDULE = {
  * 与 migrations/ 里的表结构和索引一一对应：每增删一条索引，都必须同步更新这里与单测。
  */
 export const D1_ROW_WRITES = {
-  /** UPDATE consumers SET last_used_at = ?（非索引列）：1 行。 */
+  /** UPDATE consumers SET last_used_at = ?（非索引列，按 UTC 自然日节流，每天最多 1 行）。 */
   consumer_touch: 1,
-  /** UPSERT affinities：表 1 + PK 1 + affinities_address 1 = 3 行。 */
-  affinity_upsert: 3,
-  /** DELETE affinities 每删 1 行：表 1 + PK 1 + affinities_address 1 = 3 行。 */
-  affinity_delete: 3,
+  /** UPSERT affinities（WITHOUT ROWID 聚簇表，PRIMARY KEY (address, affinity_hash)，0 二级索引）：1 行。 */
+  affinity_upsert: 1,
+  /** DELETE affinities 每删 1 行（WITHOUT ROWID，0 二级索引）：1 行。 */
+  affinity_delete: 1,
   /** DELETE provider_models 每删 1 行：表 1 + PK 1 + provider_models_model 1 = 3 行。 */
   provider_model_delete: 3,
   /**
    * 结算（settle）：UPDATE principals（spend_nanos 非索引，1 行）+
-   * INSERT requests（表 1 + PK 1 + requests_address_id 1 = 3 行）= 4 行。
+   * INSERT requests（WITHOUT ROWID 聚簇表，PRIMARY KEY (address, id)，0 二级索引，1 行）= 2 行。
    * 乐观锁冲突时未命中的 UPDATE 变更 0 行，不会放大写入。
    */
-  settle: 4,
+  settle: 2,
 } as const;
 
 /**
@@ -83,7 +82,7 @@ export function applyGasMargin(rawNanos: number, marginBps: number = GAS_MARGIN_
   return Math.ceil((rawNanos * (10_000 + marginBps)) / 10_000);
 }
 
-/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 1,320 + 100 + 10 + 0 = 1,730 纳）。 */
+/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 100 + 10 + 0 = 420 纳）。 */
 export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.worker_invocation +
   GAS_SCHEDULE.log_event +
@@ -91,23 +90,21 @@ export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.d1_reads +
   GAS_SCHEDULE.read_subsidy;
 
-/** 刷新消费者密钥最近使用时间的写入成本（1,000 纳）。 */
+/** 刷新消费者密钥最近使用时间的写入成本（1,000 纳，按 UTC 自然日节流）。 */
 export const GAS_CONSUMER_TOUCH_NANOS = D1_ROW_WRITES.consumer_touch * GAS_SCHEDULE.d1_row_write;
 
-/** 结算落库成本（4,000 纳）。 */
+/** 结算落库成本（2,000 纳：principals 1 行 + requests WITHOUT ROWID 1 行）。 */
 export const GAS_SETTLE_NANOS = D1_ROW_WRITES.settle * GAS_SCHEDULE.d1_row_write;
 
-/** 写一次会话亲和的成本（3,000 纳）。 */
+/** 写一次会话亲和的成本（1,000 纳：affinities WITHOUT ROWID 1 行）。 */
 export const GAS_AFFINITY_UPSERT_NANOS = D1_ROW_WRITES.affinity_upsert * GAS_SCHEDULE.d1_row_write;
 
-/** 一次完整推理执行的最低 Gas（同方言直通、非流式、稳态无写亲和 = 6,730 纳）。 */
-export const GAS_FLOOR_NANOS = applyGasMargin(
-  GAS_ENTRY_BASE_NANOS + GAS_CONSUMER_TOUCH_NANOS + GAS_SETTLE_NANOS,
-);
+/** 一次完整推理执行的稳态最低 Gas（同日直通、非流式、无需 touch 与写亲和 = 2,420 纳）。 */
+export const GAS_FLOOR_NANOS = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_NANOS);
 
 /**
  * 默认余额安全阈值（10,000 纳 = $0.00001）：
- * 刚好覆盖「跨方言 + 流式 + 首次写亲和」的完整单次路径（9,890 纳）。
+ * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（4,580 纳）乃至含一次模型纠偏重试（8,680 纳）。
  * 余额低于该阈值时在入口直接 402 拒绝，0 次 D1 写、0 次上游调用。
  */
 export const DEFAULT_MIN_BALANCE_NANOS = 10_000;
@@ -138,10 +135,7 @@ export class GasMeter {
   constructor(options: GasMeterOptions) {
     this.availableNanos = options.availableNanos;
     this.marginBps = options.marginBps ?? GAS_MARGIN_BPS;
-    const floor = applyGasMargin(
-      GAS_ENTRY_BASE_NANOS + GAS_CONSUMER_TOUCH_NANOS + GAS_SETTLE_NANOS,
-      this.marginBps,
-    );
+    const floor = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_NANOS, this.marginBps);
     this.minBalanceNanos = Math.max(options.minBalanceNanos ?? DEFAULT_MIN_BALANCE_NANOS, floor);
   }
 

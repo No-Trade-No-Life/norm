@@ -246,8 +246,8 @@ Non-stream 响应在标准 body 之外附带 `norm` 对象：
 ```jsonc
 {
   "...": "OpenAI 响应原样",
-  "norm": { "request_id": "req_…", "fee_nanos": 7230, "gas_fee_nanos": 6730, "token_nanos": 500,
-            "unbilled_nanos": 0, "balance_nanos": 999992770, "latency_ms": 812, "host": "api.openai.com",
+  "norm": { "request_id": "req_…", "fee_nanos": 2920, "gas_fee_nanos": 2420, "token_nanos": 500,
+            "unbilled_nanos": 0, "balance_nanos": 999997080, "latency_ms": 812, "host": "api.openai.com",
             "pool": false }
 }
 ```

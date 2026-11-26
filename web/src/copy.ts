@@ -464,8 +464,8 @@ export const COPY = {
   'ab.not_3': { zh: '不做真实支付：演示版只给 $1 授信。', en: 'No real payments: the demo grants $1.' },
   'ab.fee_title': { zh: '计费', en: 'Billing' },
   'ab.fee_body': {
-    zh: '上游提供商 token 账单由你直接付给上游提供商。Norm 从 300 纳美元起步按实际资源付费点动态累加 Gas（直通非流式最低 6,730 纳美元，余额低于 10,000 纳美元提前拒单），外加按 Token 算的部分；Gas 成功失败都收，失败时只免 Token。',
-    en: 'You pay provider token bills directly. Norm meters Gas dynamically from 300 nano-USD along actual execution steps (6,730 nano-USD floor for passthrough non-stream, pre-rejected below 10,000 nano-USD balance) plus the token cost; gas is charged whether the call succeeds or fails, and only tokens are waived on failure.',
+    zh: '上游提供商 token 账单由你直接付给上游提供商。Norm 从 300 纳美元起步按实际资源付费点动态累加 Gas（稳态直通非流式最低 2,420 纳美元，余额低于 10,000 纳美元提前拒单），外加按 Token 算的部分；Gas 成功失败都收，失败时只免 Token。',
+    en: 'You pay provider token bills directly. Norm meters Gas dynamically from 300 nano-USD along actual execution steps (2,420 nano-USD steady-state floor for passthrough non-stream, pre-rejected below 10,000 nano-USD balance) plus the token cost; gas is charged whether the call succeeds or fails, and only tokens are waived on failure.',
   },
 
   'common.loading': { zh: '加载中…', en: 'Loading…' },

@@ -175,7 +175,7 @@ console.log('5. 上游提供商拒绝时只收 Gas（假密钥打真·官方端�
   check('上游提供商 401 原样返回', response.status === 401, response.status);
   const gasHeader = Number(response.headers.get('x-norm-gas-fee-nanos'));
   const me = await (await fetch(`${BASE}/api/v1/account/me`, { headers: sign('GET', '/api/v1/account/me') })).json();
-  check('这一次只扣动态 Gas（6,730 纳美元）', gasHeader === 6730 && me.balance_nanos === before - gasHeader, {
+  check('这一次只扣稳态动态 Gas（2,420 纳美元）', gasHeader === 2420 && me.balance_nanos === before - gasHeader, {
     before,
     after: me.balance_nanos,
     gasHeader,

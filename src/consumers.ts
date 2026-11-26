@@ -39,7 +39,7 @@ export function consumerKeyHint(key: string): string {
  */
 export async function principalFromConsumerKey(env: Env, key: string): Promise<Principal> {
   const row = await env.DB.prepare(
-    `SELECT c.id, c.address,
+    `SELECT c.id, c.address, c.last_used_at,
             p.recharge_nanos, p.voucher_nanos, p.spend_nanos, p.withdraw_nanos
        FROM consumers c
        JOIN principals p ON p.address = c.address
@@ -49,6 +49,7 @@ export async function principalFromConsumerKey(env: Env, key: string): Promise<P
     .first<{
       id: string;
       address: string;
+      last_used_at: number | null;
       recharge_nanos: number;
       voucher_nanos: number;
       spend_nanos: number;
@@ -60,12 +61,24 @@ export async function principalFromConsumerKey(env: Env, key: string): Promise<P
     address: row.address,
     consumerId: row.id,
     balanceNanos: availableNanos(row),
+    consumerLastUsedAt: row.last_used_at,
   };
+}
+
+const SECONDS_PER_DAY = 86_400;
+
+/**
+ * 按 UTC 自然日节流 `consumers.last_used_at`：
+ * 从未使用或跨了 UTC 日期才写一次（每把钥匙每天最多 1 行 D1 写，同日后续调用 0 写、+0 Gas）。
+ */
+export function needsConsumerTouch(lastUsedAt: number | null, nowSec: number): boolean {
+  if (lastUsedAt === null) return true;
+  return Math.floor(lastUsedAt / SECONDS_PER_DAY) !== Math.floor(nowSec / SECONDS_PER_DAY);
 }
 
 /**
  * 记录下游密钥最近使用时间（1 行 D1 写，last_used_at 非索引列）。
- * 仅在确认要执行请求时调用，并由调用方计入 GasMeter。
+ * 仅在确认要执行请求且跨日/首次使用时调用，并由调用方计入 GasMeter。
  */
 export async function touchConsumer(env: Env, consumerId: string): Promise<void> {
   await env.DB.prepare('UPDATE consumers SET last_used_at = ? WHERE id = ?')

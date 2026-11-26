@@ -282,26 +282,62 @@ export async function modelCoverage(
   return { known, serving };
 }
 
+/** 把要删除的模型名按 D1 绑定变量上限切成批次（1 个 provider_id + 最多 40 个 model）。 */
+function modelDeleteChunks(names: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let start = 0; start < names.length; start += MODEL_QUERY_CHUNK) {
+    chunks.push(names.slice(start, start + MODEL_QUERY_CHUNK));
+  }
+  return chunks;
+}
+
 /**
- * 整份替换一条上游的清单。
+ * 按集合 diff 同步一条上游的模型清单。
  *
- * 替换而不是合并：清单是「它现在有什么」的事实，上游撤掉的型号不该在表里留下来。
+ * 与早先「整份 DELETE 再整份 INSERT」不同：provider_models 有 PK + 二级索引（每行 3 写），
+ * 100 个模型的上游无脑全删全插一次就是 601 行写。改成先读现有集合做差集后，清单未变且
+ * 已有抓取记录时 0 次 D1 写；有增删时也只动变化的那几行。
  *
  * 空清单**不写**：一条 200 但不认识形状的回答，和「这家什么模型都没有」看起来一样，
- * 而前者真会发生（中转层回 `{}`）。旧快照至少是上一次的真话，不该被一次答不上话覆盖。
- * 抓取时刻与行一起写：两样合起来才是「知不知道」的完整答案。
+ * 旧快照至少是上一次的真话，不该被一次答不上话覆盖。
  */
 export async function recordProviderModels(
   env: Env,
   providerId: string,
   models: readonly string[],
   at: number,
-): Promise<void> {
+): Promise<{ added: number; removed: number }> {
   const names = [...new Set(models.filter((name) => name.length > 0))];
-  if (names.length === 0) return;
+  if (names.length === 0) return { added: 0, removed: 0 };
 
-  const statements = [env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ?').bind(providerId)];
-  for (const chunk of modelInsertChunks(names)) {
+  const [existingRows, fetchedRow] = await Promise.all([
+    env.DB.prepare('SELECT model FROM provider_models WHERE provider_id = ?')
+      .bind(providerId)
+      .all<{ model: string }>(),
+    env.DB.prepare('SELECT models_fetched_at FROM providers WHERE id = ?')
+      .bind(providerId)
+      .first<{ models_fetched_at: number }>(),
+  ]);
+
+  const current = new Set(existingRows.results.map((row) => row.model));
+  const wanted = new Set(names);
+  const toRemove = [...current].filter((name) => !wanted.has(name));
+  const toAdd = names.filter((name) => !current.has(name));
+  const alreadyFetched = (fetchedRow?.models_fetched_at ?? 0) > 0;
+
+  if (toRemove.length === 0 && toAdd.length === 0 && alreadyFetched) {
+    return { added: 0, removed: 0 };
+  }
+
+  const statements: D1PreparedStatement[] = [];
+  for (const chunk of modelDeleteChunks(toRemove)) {
+    statements.push(
+      env.DB.prepare(
+        `DELETE FROM provider_models WHERE provider_id = ? AND model IN (${chunk.map(() => '?').join(', ')})`,
+      ).bind(providerId, ...chunk),
+    );
+  }
+  for (const chunk of modelInsertChunks(toAdd)) {
     statements.push(
       env.DB.prepare(
         `INSERT INTO provider_models (provider_id, model, fetched_at)
@@ -312,6 +348,7 @@ export async function recordProviderModels(
   }
   statements.push(env.DB.prepare('UPDATE providers SET models_fetched_at = ? WHERE id = ?').bind(at, providerId));
   await env.DB.batch(statements);
+  return { added: toAdd.length, removed: toRemove.length };
 }
 
 /** 上游自己说没有这个型号：把那一行划掉，下一次选址就不会再选到它。返回实际删掉的行数（0 或 1）。 */
@@ -323,10 +360,10 @@ export async function dropProviderModel(env: Env, providerId: string, model: str
   return result.meta?.changes ?? 0;
 }
 
-/** 忘掉一条会话的粘性：这条路选错了，下一次重挑。返回实际删掉的行数（0 或 1）。 */
+/** 忘掉一条会话的粘性：这条路选错了，下一次重挑。返回实际删掉的行数（0 或 1，WITHOUT ROWID = 1 行写）。 */
 export async function forgetAffinity(env: Env, address: string, hash: string): Promise<number> {
-  const result = await env.DB.prepare('DELETE FROM affinities WHERE affinity_hash = ? AND address = ?')
-    .bind(hash, address)
+  const result = await env.DB.prepare('DELETE FROM affinities WHERE address = ? AND affinity_hash = ?')
+    .bind(address, hash)
     .run();
   return result.meta?.changes ?? 0;
 }
@@ -402,8 +439,10 @@ export async function resolveProvider(
   }
 
   const hash = affinityHash(address, affinityKey.value);
-  const pinned = await env.DB.prepare('SELECT provider_id, expires_at FROM affinities WHERE affinity_hash = ?')
-    .bind(hash)
+  const pinned = await env.DB.prepare(
+    'SELECT provider_id, expires_at FROM affinities WHERE address = ? AND affinity_hash = ?',
+  )
+    .bind(address, hash)
     .first<{ provider_id: string; expires_at: number }>();
 
   if (pinned && affinityFresh(pinned.expires_at, now)) {
@@ -429,24 +468,23 @@ export async function resolveProvider(
           `余额不足：本次请求预计至少需要 ${gas.projectedTotal(needed)} 纳美元 Gas，当前 ${gas.availableNanos}`,
         );
       }
-      // 二次重试时余额紧到不够写亲和，就跳过写亲和省下这 3 行写，继续走本次选出的上游。
+      // 二次重试时余额紧到不够写亲和，就跳过写亲和省下这 1 行写，继续走本次选出的上游。
       return { provider: chosen, via: via(chosen), sticky: false };
     }
   }
-  const deletedExpired = await rememberAffinity(env, address, hash, chosen.id, now);
+  await rememberAffinity(env, address, hash, chosen.id, now);
   if (gas) {
-    gas.chargeD1Writes(D1_ROW_WRITES.affinity_upsert + deletedExpired * D1_ROW_WRITES.affinity_delete);
+    gas.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
   }
   return { provider: chosen, via: via(chosen), sticky: false };
 }
 
-/** 单次写亲和顺手清理过期行的上限：避免沉寂很久的账户让某一次请求背上几十行清理费。 */
-const AFFINITY_GC_LIMIT = 2;
-
 /**
- * 写回亲和。只在「没记住 / 记住的不是这条 / 那条已过期」时才写：稳态下每个请求
- * 只多一次读，不额外写 D1。顺手清掉本账户最多 2 条过期行，并返回实际删掉的行数供
- * GasMeter 如实入账（直接读 batch 返回的 meta.changes，零额外查询）。
+ * 写回亲和（WITHOUT ROWID 聚簇表，0 二级索引 = 严格 1 行写 / 1,000 纳）。
+ *
+ * 只在「没记住 / 记住的不是这条 / 那条已过期」时才写；稳态 7 天内每次命中都是纯读（0.001 纳）。
+ * 刻意不在写亲和时顺手删过期行：过期判定读的时候靠 `expires_at > now` 完成，100 万条历史
+ * 记录也仅占 ~120 MB（远低于 D1 5 GB 额度），不该让单次正常请求为历史清理买单。
  */
 export async function rememberAffinity(
   env: Env,
@@ -454,27 +492,18 @@ export async function rememberAffinity(
   hash: string,
   providerId: string,
   now: number,
-): Promise<number> {
+): Promise<void> {
   const ttl = affinityTtlSeconds(env);
-  const [deleted] = await env.DB.batch([
-    env.DB.prepare(
-      `DELETE FROM affinities
-        WHERE affinity_hash IN (
-          SELECT affinity_hash FROM affinities
-           WHERE address = ? AND expires_at <= ?
-           LIMIT ${AFFINITY_GC_LIMIT}
-        )`,
-    ).bind(address, now),
-    env.DB.prepare(
-      `INSERT INTO affinities (affinity_hash, address, provider_id, expires_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(affinity_hash) DO UPDATE SET
-         provider_id = excluded.provider_id,
-         expires_at = excluded.expires_at,
-         updated_at = excluded.updated_at`,
-    ).bind(hash, address, providerId, now + ttl, now),
-  ]);
-  return deleted?.meta?.changes ?? 0;
+  await env.DB.prepare(
+    `INSERT INTO affinities (address, affinity_hash, provider_id, expires_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(address, affinity_hash) DO UPDATE SET
+       provider_id = excluded.provider_id,
+       expires_at = excluded.expires_at,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(address, hash, providerId, now + ttl, now)
+    .run();
 }
 
 /**

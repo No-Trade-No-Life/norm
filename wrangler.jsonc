@@ -4,13 +4,18 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-25",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  // 关闭每请求自动生成的 invocation_logs（省 1,320 纳/次），保留应用日志（console.error / 异常堆栈）；
+  // 临时查线上实时全量流用免费的 wrangler tail。
+  "observability": {
+    "logs": { "enabled": true, "invocation_logs": false }
+  },
 
   // 单源部署：SPA 与 API 同域同版本，没有跨域，也没有版本错配。
+  // 仅 /api/* 与 /v1/* 进 Worker；静态资源（HTML/JS/CSS/SVG）由 Cloudflare 边缘免费直出（0 Worker 调用）。
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "run_worker_first": true,
+    "run_worker_first": ["/api/*", "/v1/*"],
     "not_found_handling": "none"
   },
 
