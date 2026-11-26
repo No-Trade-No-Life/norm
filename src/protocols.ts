@@ -118,6 +118,21 @@ export type ModelInfo = {
   id: string;
   created?: number;
   owned_by?: string;
+  /** 上游自述的输入 / 输出模态。没说的就是 `undefined`——不猜，见 `Modalities`。 */
+  modalities?: Modalities;
+};
+
+/**
+ * 一条模型**自己声明**的输入 / 输出模态。
+ *
+ * 这不是 Norm 的判断，是上游清单里的原话：只有 OpenRouter 那一系（以及照抄它清单形状的
+ * 聚合型上游）会多带一段 `architecture: { input_modalities, output_modalities }`。
+ * OpenAI、Anthropic、Google 的官方清单里根本没有这个字段——**缺是常态，不是解析失败**。
+ * 所以 `undefined` 的意思是「这条上游没说」，而不是「只能文本」。
+ */
+export type Modalities = {
+  input: string[];
+  output: string[];
 };
 
 /**
@@ -198,6 +213,50 @@ const recordOf = (value: unknown): Record<string, unknown> =>
 const listOf = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const stringOf = (value: unknown): string => (typeof value === 'string' ? value : '');
 
+/** 一份清单里认得的模态词形：认不出的词不往表里放，宁可少说一句。 */
+const MODALITY_TOKEN = /^[a-z0-9][a-z0-9_.-]{0,15}$/;
+
+/** 一段模态声明归一成小写词表：去重、保序、丢掉认不出的词。 */
+function modalityList(value: unknown): string[] {
+  const out: string[] = [];
+  for (const raw of listOf(value)) {
+    const token = stringOf(raw).trim().toLowerCase();
+    if (token.length === 0 || !MODALITY_TOKEN.test(token) || out.includes(token)) continue;
+    out.push(token);
+  }
+  return out;
+}
+
+/**
+ * 上游自述的模态，认三种写法（都是 OpenRouter 那一系的形状与它的抄法）：
+ *
+ *   architecture: { input_modalities: ['text','image'], output_modalities: ['text'] }
+ *   architecture: { modality: 'text+image->text' }           ← 老字段，一个字符串
+ *   { input_modalities: [...], output_modalities: [...] }     ← 摊平在顶层的抄法
+ *
+ * 两边都没认出来就是 `undefined`；只声明了一半的照实只写一半（另一侧是空数组）。补一个
+ * 猜出来的另一半，就把「没说」写成了「说了」——这比留空更糟。
+ */
+function readModalities(item: Record<string, unknown>): Modalities | undefined {
+  const architecture = recordOf(item.architecture);
+  let input = modalityList(architecture.input_modalities ?? item.input_modalities);
+  let output = modalityList(architecture.output_modalities ?? item.output_modalities);
+
+  if (input.length === 0 && output.length === 0) {
+    const [left, right] = stringOf(architecture.modality ?? item.modality).split('->');
+    input = modalityList(left?.split('+'));
+    output = modalityList(right?.split('+'));
+  }
+
+  return input.length === 0 && output.length === 0 ? undefined : { input, output };
+}
+
+/** 一条模型带上它自述的模态；没有就一个字都不多写，出口那边也就不必判空。 */
+function withModalities(item: Record<string, unknown>, info: ModelInfo): ModelInfo {
+  const modalities = readModalities(item);
+  return modalities === undefined ? info : { ...info, modalities };
+}
+
 /** created 在各家是 unix 秒、毫秒或 ISO 字符串：能读就读，读不懂就不写这个字段。 */
 function secondsOf(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return Math.floor(value > 1e11 ? value / 1000 : value);
@@ -208,7 +267,7 @@ function secondsOf(value: unknown): number | undefined {
   return undefined;
 }
 
-/** OpenAI 一族的清单：`{object:"list", data:[{id, created, owned_by}]}`。 */
+/** OpenAI 一族的清单：`{object:"list", data:[{id, created, owned_by}]}`，模态是可选的扩展。 */
 function readOpenAiModels(json: unknown): ModelInfo[] {
   return listOf(recordOf(json).data).flatMap((entry) => {
     const item = recordOf(entry);
@@ -216,7 +275,13 @@ function readOpenAiModels(json: unknown): ModelInfo[] {
     if (!id) return [];
     const created = secondsOf(item.created);
     const ownedBy = stringOf(item.owned_by);
-    return [{ id, ...(created === undefined ? {} : { created }), ...(ownedBy ? { owned_by: ownedBy } : {}) }];
+    return [
+      withModalities(item, {
+        id,
+        ...(created === undefined ? {} : { created }),
+        ...(ownedBy ? { owned_by: ownedBy } : {}),
+      }),
+    ];
   });
 }
 
@@ -575,7 +640,7 @@ const anthropicMessages: Adapter = {
       const id = stringOf(item.id);
       if (!id) return [];
       const created = secondsOf(item.created_at);
-      return [{ id, ...(created === undefined ? {} : { created }) }];
+      return [withModalities(item, { id, ...(created === undefined ? {} : { created }) })];
     }),
 };
 
@@ -661,7 +726,7 @@ const googleGemini: Adapter = {
       const item = recordOf(entry);
       const name = stringOf(item.name).replace(/^models\//, '');
       if (!name) return [];
-      return [{ id: name }];
+      return [withModalities(item, { id: name })];
     }),
 };
 

@@ -136,10 +136,40 @@ export type CatalogEntry = { provider_id: string; protocol: Protocol; items: Mod
  * 以后做定价撮合，一个上游的报价就是「这张表的 x 倍」，不必再维护第二份价格。
  * 型号没被收录时它是 null —— 不猜。
  */
-export type CatalogModelRow = ModelInfo & {
+export type CatalogModelRow = Omit<ModelInfo, 'modalities'> & {
   providers: string[];
   official: (Rates & { match: string; off_peak?: Rates }) | null;
+  /**
+   * 上游自述的输入 / 输出模态；**谁都没声明就是 null**，不是「只能文本」。
+   *
+   * `declared` 是这一行有几条上游真的说了，少于 `providers` 的条数时，`input` / `output`
+   * 是几条上游的并集：有上游说能读图，不代表随便落到一条上都能读。这个数就是给读的人
+   * 判断「全票还是一票」用的，所以它必须跟着数组一起走，不能只留并集。
+   */
+  modalities: CatalogModalities | null;
 };
+
+/** 一份合成的模态：并集 + 有几句上游说过。 */
+export type CatalogModalities = {
+  input: string[];
+  output: string[];
+  declared: number;
+};
+
+/** 展示次序：常见的几种按固定顺序排，认不得的按字母跟在后面。 */
+const MODALITY_ORDER = ['text', 'image', 'audio', 'video', 'file'];
+
+/**
+ * 一组模态排成稳定的次序。
+ *
+ * 不用「上游答话的先后」：同一个模型名下，谁先回清单会把 `图,文` 排成 `文,图`，
+ * 而这两行说的是一模一样的事。次序要能被眼睛比出来，所以钉死在这里。
+ */
+function orderModalities(tokens: ReadonlySet<string>): string[] {
+  const known = MODALITY_ORDER.filter((token) => tokens.has(token));
+  const rest = [...tokens].filter((token) => !MODALITY_ORDER.includes(token)).sort();
+  return [...known, ...rest];
+}
 
 /**
  * 一行模型的官方价锚点：先问这条协议有没有自己的定价模式，没有才回通用表。
@@ -159,14 +189,22 @@ function anchorOf(protocol: Protocol, model: string): CatalogModelRow['official'
 /**
  * 把几条上游的清单并成一张表：一行一个模型名，顺序按名字。
  *
- * 合并规则只有两条：
+ * 合并规则只有三条：
  *   1. 同名就是同一条模型（Norm 转发时模型名原样透传，叫同一个名字就能打到同一处）；
- *   2. `created` / `owned_by` 谁先给就留谁给的，后来的能补空，不能覆盖。
+ *   2. `created` / `owned_by` 先给的不被覆盖，后来的能补空；
+ *   3. 模态取并集，并记下有几条上游真的说过——说过的不能被没说的拖回去，没说的也不能
+ *      被说过的替它作答。
  *
  * 同一家把同一个模型列两遍（见过）不会让它在 `providers` 里出现两次。
  */
 export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
-  const byId = new Map<string, CatalogModelRow>();
+  type Draft = Omit<CatalogModelRow, 'modalities'> & {
+    input: Set<string>;
+    output: Set<string>;
+    /** 真的声明了模态的那几条上游 id：同一个名字被几家提供时，只算「有人说过」。 */
+    declaring: Set<string>;
+  };
+  const byId = new Map<string, Draft>();
 
   for (const entry of entries) {
     for (const item of entry.items) {
@@ -176,6 +214,9 @@ export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
           id: item.id,
           providers: [entry.provider_id],
           official: anchorOf(entry.protocol, item.id),
+          input: new Set(item.modalities?.input ?? []),
+          output: new Set(item.modalities?.output ?? []),
+          declaring: new Set(item.modalities === undefined ? [] : [entry.provider_id]),
           ...(item.created === undefined ? {} : { created: item.created }),
           ...(item.owned_by === undefined ? {} : { owned_by: item.owned_by }),
         });
@@ -188,13 +229,25 @@ export function mergeCatalog(entries: CatalogEntry[]): CatalogModelRow[] {
         const anchor = anchorOf(entry.protocol, item.id);
         if (anchor?.off_peak) existing.official = anchor;
       }
+      if (item.modalities !== undefined) {
+        for (const token of item.modalities.input) existing.input.add(token);
+        for (const token of item.modalities.output) existing.output.add(token);
+        existing.declaring.add(entry.provider_id);
+      }
       if (existing.created === undefined && item.created !== undefined) existing.created = item.created;
       if (existing.owned_by === undefined && item.owned_by !== undefined) existing.owned_by = item.owned_by;
     }
   }
 
   return [...byId.values()]
-    .map((row) => ({ ...row, providers: [...new Set(row.providers)] }))
+    .map(({ input, output, declaring, ...row }) => ({
+      ...row,
+      providers: [...new Set(row.providers)],
+      modalities:
+        declaring.size === 0
+          ? null
+          : { input: orderModalities(input), output: orderModalities(output), declared: declaring.size },
+    }))
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
@@ -231,7 +284,7 @@ export async function syncProviderModels({
   const probe = await probeProviderModels({ env, address, provider });
   if (probe.ok) {
     try {
-      await recordProviderModels(env, provider.id, probe.items.map((item) => item.id), nowSeconds());
+      await recordProviderModels(env, provider.id, probe.items, nowSeconds());
     } catch (error) {
       // 写不进清单只说明「这次没刷新到」：路由那边会把这条上游当成清单未知继续用，
       // 读总表这一页也照样能显示它这次探测到的真实清单。一次落库失败不该变成 500。

@@ -341,26 +341,100 @@ describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
 
     // 首次同步：3 个模型全部写入
     spy.resetCounts();
-    const first = await recordProviderModels(env, 'prv_m', ['m-a', 'm-b', 'm-c'], 1_700_000_100);
-    expect(first).toEqual({ added: 3, removed: 0 });
+    const first = await recordProviderModels(
+      env,
+      'prv_m',
+      [{ id: 'm-a' }, { id: 'm-b' }, { id: 'm-c' }],
+      1_700_000_100,
+    );
+    expect(first).toEqual({ added: 3, removed: 0, updated: 0 });
     expect(spy.counts().writes).toBe(2); // 1 batch INSERT + 1 UPDATE models_fetched_at
 
     // 清单未变再次同步：严格 0 次 D1 写
     spy.resetCounts();
-    const same = await recordProviderModels(env, 'prv_m', ['m-c', 'm-a', 'm-b'], 1_700_000_200);
-    expect(same).toEqual({ added: 0, removed: 0 });
+    const same = await recordProviderModels(
+      env,
+      'prv_m',
+      [{ id: 'm-c' }, { id: 'm-a' }, { id: 'm-b' }],
+      1_700_000_200,
+    );
+    expect(same).toEqual({ added: 0, removed: 0, updated: 0 });
     expect(spy.counts().writes).toBe(0);
 
     // 下线 m-b、新增 m-d：只删 1、只插 1
     spy.resetCounts();
-    const changed = await recordProviderModels(env, 'prv_m', ['m-a', 'm-c', 'm-d'], 1_700_000_300);
-    expect(changed).toEqual({ added: 1, removed: 1 });
+    const changed = await recordProviderModels(
+      env,
+      'prv_m',
+      [{ id: 'm-a' }, { id: 'm-c' }, { id: 'm-d' }],
+      1_700_000_300,
+    );
+    expect(changed).toEqual({ added: 1, removed: 1, updated: 0 });
     const stored = (
       db.prepare('SELECT model FROM provider_models WHERE provider_id = ? ORDER BY model').all('prv_m') as Array<{
         model: string;
       }>
     ).map((r) => r.model);
     expect(stored).toEqual(['m-a', 'm-c', 'm-d']);
+  });
+
+  it('清单没变、只是上游改了模态：只 UPDATE 那一行，不删不插', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    const spy = spyD1(db);
+    const env = { DB: spy.DB } as unknown as Env;
+
+    const address = 'model-modality-fixture';
+    db.prepare('INSERT INTO principals (address, created_at) VALUES (?, ?)').run(address, 1_700_000_000);
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run(
+      'prv_mm',
+      address,
+      'p',
+      'https://openrouter.ai/api/v1',
+      'sk-a…z',
+      'sealed',
+      'aes-256-gcm',
+      'openai-chat',
+      1_700_000_000,
+    );
+
+    const first = await recordProviderModels(
+      env,
+      'prv_mm',
+      [{ id: 'm', modalities: { input: ['text'], output: ['text'] } }],
+      1_700_000_100,
+    );
+    expect(first).toEqual({ added: 1, removed: 0, updated: 0 });
+
+    // 名字没变、上游改口说它也能读图：只改这一行的模态，不重插（主键与索引都不动）。
+    spy.resetCounts();
+    const changed = await recordProviderModels(
+      env,
+      'prv_mm',
+      [{ id: 'm', modalities: { input: ['text', 'image'], output: ['text'] } }],
+      1_700_000_200,
+    );
+    expect(changed).toEqual({ added: 0, removed: 0, updated: 1 });
+    expect(spy.counts().writes).toBe(2); // 1 次 UPDATE 那一行 + 1 次 UPDATE models_fetched_at
+
+    const stored = db.prepare('SELECT modalities FROM provider_models WHERE provider_id = ?').get('prv_mm') as {
+      modalities: string | null;
+    };
+    expect(JSON.parse(stored.modalities ?? '{}')).toEqual({ input: ['text', 'image'], output: ['text'] });
+
+    // 再说同样的话：0 次写。
+    spy.resetCounts();
+    const again = await recordProviderModels(
+      env,
+      'prv_mm',
+      [{ id: 'm', modalities: { input: ['text', 'image'], output: ['text'] } }],
+      1_700_000_300,
+    );
+    expect(again).toEqual({ added: 0, removed: 0, updated: 0 });
+    expect(spy.counts().writes).toBe(0);
   });
 
   it('纯读模式（readOnly: true）绝不「读导致写」：命中亲和沿用，未命中不写 affinities', async () => {

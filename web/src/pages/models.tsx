@@ -25,8 +25,9 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
+import type { Lang } from '../copy';
 import { perMillion, when } from '../lib/format';
-import { protocolLabel, trustLabel } from '../lib/labels';
+import { modalityLabel, protocolLabel, trustLabel } from '../lib/labels';
 import { useModelCatalog } from '../queries';
 import { PROTOCOLS, type CatalogModel, type CatalogProvider } from '../types';
 
@@ -45,6 +46,29 @@ const COLUMN_CLASS: Record<string, string> = {
   protocol: 'hidden lg:table-cell',
 };
 
+/** 输出里有非文本模态：这类模型根本走不了 chat completions，值得单独标出来。 */
+const textOnly = (output: string[]): boolean => output.every((token) => token === 'text');
+
+/**
+ * 一侧的模态词。空数组 = 上游这一侧没说——不补默认值，也不按模型名猜。
+ * `alert` 只给非文本输出用：能读图是能力，只能出图是「这个入口用不了」。
+ */
+function ModalityChips({ tokens, lang, alert }: { tokens: string[]; lang: Lang; alert?: boolean }) {
+  const { t } = useI18n();
+  if (tokens.length === 0) {
+    return <span className="text-[11px] text-muted-foreground">{t('md.modalities_missing')}</span>;
+  }
+  return (
+    <>
+      {tokens.map((token) => (
+        <Badge key={token} variant={alert ? 'destructive' : 'outline'} className="px-1.5 font-normal">
+          {modalityLabel(token, lang)}
+        </Badge>
+      ))}
+    </>
+  );
+}
+
 /**
  * 模型列表：账户现在到底能调哪些模型。
  *
@@ -59,6 +83,8 @@ export function ModelsPage() {
   const [query, setQuery] = useState('');
   const [providerFilter, setProviderFilter] = useState(ALL);
   const [protocolFilter, setProtocolFilter] = useState(ALL);
+  /** 输入模态：只列这次真的有人声明过的，免得给一排点了必然空的下拉项。 */
+  const [modalityFilter, setModalityFilter] = useState(ALL);
   const [sorting, setSorting] = useState<SortingState>([{ id: 'id', desc: false }]);
 
   const providers = useMemo(() => catalog.data?.providers ?? [], [catalog.data]);
@@ -75,6 +101,8 @@ export function ModelsPage() {
       if (providerFilter !== ALL && !model.providers.includes(providerFilter)) return false;
       const serving = servingOf(model);
       if (protocolFilter !== ALL && !serving.some((provider) => provider.protocol === protocolFilter)) return false;
+      // 没声明模态的行不进任何模态筛选：不知道不等于能。
+      if (modalityFilter !== ALL && !(model.modalities?.input.includes(modalityFilter) ?? false)) return false;
       if (!needle) return true;
       return (
         model.id.toLowerCase().includes(needle) ||
@@ -83,7 +111,14 @@ export function ModelsPage() {
     });
     // servingOf 只读 byId 与 model，跟着 byId 走即可。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models, byId, providerFilter, protocolFilter, query]);
+  }, [models, byId, providerFilter, protocolFilter, modalityFilter, query]);
+
+  /** 筛选项：这一批数据里出现过的输入模态，按名字排。 */
+  const inputModalities = useMemo(() => {
+    const seen = new Set<string>();
+    for (const model of models) for (const token of model.modalities?.input ?? []) seen.add(token);
+    return [...seen].sort();
+  }, [models]);
 
   const columns = useMemo<ColumnDef<CatalogModel>[]>(
     () => [
@@ -139,6 +174,37 @@ export function ModelsPage() {
             >
               {perMillion(official.input)} / {perMillion(official.output)}
             </span>
+          );
+        },
+      },
+      {
+        id: 'modalities',
+        header: t('md.col_modalities'),
+        enableSorting: false,
+        cell: ({ row }) => {
+          const modalities = row.original.modalities;
+          if (!modalities) {
+            return (
+              <span className="text-xs text-muted-foreground" title={t('md.modalities_missing_hint')}>
+                {t('md.modalities_missing')}
+              </span>
+            );
+          }
+          // 声明数与警告都写在悬停里：表格是扫一眼用的，句子放不进一格。
+          const alert = !textOnly(modalities.output);
+          const detail = [
+            t('md.modalities_declared', { declared: modalities.declared, total: row.original.providers.length }),
+            t('md.modalities_source'),
+            alert ? t('md.modalities_output_warning') : null,
+          ]
+            .filter(Boolean)
+            .join('\n');
+          return (
+            <div className="flex flex-wrap items-center gap-1" title={detail}>
+              <ModalityChips tokens={modalities.input} lang={lang} />
+              <span className="text-xs text-muted-foreground">→</span>
+              <ModalityChips tokens={modalities.output} lang={lang} alert={alert} />
+            </div>
           );
         },
       },
@@ -263,6 +329,19 @@ export function ModelsPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Select value={modalityFilter} onValueChange={(value) => setModalityFilter(String(value))}>
+              <SelectTrigger size="sm" className="w-full text-xs sm:w-32" aria-label={t('md.filter_modality_in')}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>{t('md.filter_all_modalities')}</SelectItem>
+                {inputModalities.map((modality) => (
+                  <SelectItem key={modality} value={modality}>
+                    {modalityLabel(modality, lang)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               variant="outline"
               size="sm"
@@ -371,6 +450,7 @@ export function ModelsPage() {
                   setQuery('');
                   setProviderFilter(ALL);
                   setProtocolFilter(ALL);
+                  setModalityFilter(ALL);
                 }}
               >
                 {t('md.clear_filters')}
