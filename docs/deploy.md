@@ -133,45 +133,57 @@ pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
 `/profile/api-tokens` 看它是否还在、是否未过期。`wrangler login` 的 OAuth 凭据**不能**代铸 token
 （`/user/tokens` 对它返回 9109），这一步必须走浏览器里的会话。
 
-## ChatGPT 订阅（`openai-oauth`）需要的一跳
+## ChatGPT 订阅（`openai-oauth`）需要的一条代理
 
 Cloudflare Worker 的 `fetch` 会在每个出站请求上盖 `cf-worker` / `cf-connecting-ip`，
-`chatgpt.com` 见到就回 403（实测：同一条请求直连 200、从边缘出去 403，把 `cf-worker`
-置空也依旧 403）。所以 `openai-oauth` 的 `base_url` 要指向**你自己的一跳**，由它替 Norm
-把请求发出去。一跳同时决定这次调用的出口 IP——也就是 OpenAI-LB 里 `http_proxy_url` 的作用。
+`chatgpt.com` 见到就回 403（实测：同一条请求直连 200、从边缘出去 403、换成真实 IP 也一样）。
+所以这条上游要一条 HTTP 代理：Norm 自己开 CONNECT 隧道，字节由代理重新发出，那些头不存在。
+协议基址是钉死的官方地址，出口是这条上游的配置——两者互不干扰。
 
-最小一跳（Node 22，二十行，流式直通）：
+最小 CONNECT 代理（Node 22，二十几行，带 Basic 认证）：
 
 ```js
-import { createServer } from 'node:http';
+import { createServer, connect } from 'node:net';
 
-const UPSTREAM = 'https://chatgpt.com/backend-api/codex';
+const [user, pass] = [process.env.PX_USER, process.env.PX_PASS];
+const want = 'Basic ' + Buffer.from(`${user}:${pass}`).toString('base64');
 
-createServer(async (req, res) => {
-  // 关键：把 Worker 盖的戳摘掉。cf-worker / cf-connecting-ip 是「这是从 Cloudflare 内部
-  // 发出来的」的信号，原样转发过去上游照样 403——CONNECT 代理之所以没用，就是因为那些头
-  // 在 TLS 里面，它搬不走；只有重建请求的转发器才摘得掉。
-  const headers = Object.fromEntries(
-    Object.entries(req.headers).filter(([name]) => !name.startsWith('cf-') && name !== 'host'),
-  );
-  const upstream = await fetch(UPSTREAM + req.url, {    // /responses 原样拼上去
-    method: req.method,
-    headers,
-    body: ['GET', 'HEAD'].includes(req.method) ? undefined : req,
-    duplex: 'half',
-  });
-  res.writeHead(upstream.status, Object.fromEntries(upstream.headers));
-  for await (const chunk of upstream.body) res.write(chunk);   // 不缓冲：SSE 要逐帧出去
-  res.end();
-}).listen(8080);
+createServer((client) => {
+  let buf = Buffer.alloc(0);
+  const onData = (chunk) => {
+    buf = Buffer.concat([buf, chunk]);
+    const end = buf.indexOf('\r\n\r\n');
+    if (end < 0) return;                       // 头还没读完
+    client.off('data', onData);
+    const head = buf.subarray(0, end).toString('latin1');
+    const rest = buf.subarray(end + 4);        // 头之后可能已经跟着隧道数据，不能丢
+    const [method, target] = head.split('\r\n')[0].split(' ');
+    const auth = /proxy-authorization:\s*(.+)/i.exec(head)?.[1].trim();
+    if (method !== 'CONNECT' || auth !== want) {
+      client.end('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="px"\r\n\r\n');
+      return;
+    }
+    const [host, port] = target.split(':');
+    const upstream = connect(Number(port), host, () => {
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (rest.length > 0) upstream.write(rest);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    upstream.on('error', () => client.destroy());
+  };
+  client.on('data', onData);
+  client.on('error', () => client.destroy());
+}).listen(8888, '0.0.0.0', () => console.log('connect-proxy on 8888'));
 ```
 
-挂到公网（`cloudflared` 那条最省事：一跳自己待在 Cloudflare 后面没关系，它不是 Worker，
-不盖戳）：
+放在一台公网机器上（端口走高端口、口令要有、安全组只开这一个口）：
 
 ```bash
-cloudflared tunnel --url http://127.0.0.1:8080   # 拿到的 https://xxx.trycloudflare.com 就是 base_url
+PX_USER=norm PX_PASS=$(openssl rand -hex 12) node px.mjs
 ```
 
-然后在 Norm 里新建上游提供商：协议选 `OpenAI OAuth（ChatGPT 订阅）`，`base_url` 填这一跳的
-地址，凭据用「连接 ChatGPT」走一遍授权。
+然后在 Norm 里新建上游提供商：协议选 `OpenAI OAuth（ChatGPT 订阅）`，**不用填 base_url**，
+代理填 `http://norm:<口令>@<公网地址>:8888`，凭据用「连接 ChatGPT」走一遍授权。
+
+只收 `http://` 代理；`https://` 代理要在隧道外再套一层 TLS，收益为零、路径多一条。

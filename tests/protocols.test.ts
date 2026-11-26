@@ -46,21 +46,21 @@ describe('协议契约（protocol schema）', () => {
     });
   });
 
-  it('openai-oauth：凭据走 OAuth、上游只认流式，基址是用户填的那一跳（不是官方地址）', () => {
+  it('openai-oauth：凭据走 OAuth、上游只认流式，基址钉死为官方地址（出口由 proxy_url 决定）', () => {
     expect(schemaOf('openai-oauth')).toEqual({
       protocol: 'openai-oauth',
       dialect: 'openai-responses',
-      base_url: null,
-      fields: ['base_url', 'provider_key'],
+      base_url: 'https://chatgpt.com/backend-api/codex',
+      fields: ['provider_key'],
       oauth: true,
       stream_only: true,
       audio: [],
     });
   });
 
-  it('钉死基址的协议只有 deepseek、opencode-go 与 qwen：哪条协议不要 base_url 是数据，不是判断', () => {
+  it('钉死基址的协议只有 deepseek、opencode-go、openai-oauth 与 qwen：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
-    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'qwen']);
+    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'openai-oauth', 'qwen']);
   });
 
   it('音频能力只落在 qwen 与 openai-audio 两条协议上', () => {

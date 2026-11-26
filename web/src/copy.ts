@@ -169,10 +169,6 @@ export const COPY = {
   },
   'pr.field_base_url': { zh: 'base_url', en: 'Base URL' },
   'pr.field_base_url_placeholder': { zh: '例如 https://api.openai.com/v1', en: 'e.g. https://api.openai.com/v1' },
-  'pr.field_base_url_oauth_hint': {
-    zh: '两条路都行：填你自己的那一跳；或者留官方地址 https://chatgpt.com/backend-api/codex 并给这条上游配一条代理。直接填官方地址又没配代理，会在边缘被 403。',
-    en: 'Point this at your own hop (it forwards to https://chatgpt.com/backend-api/codex). It decides the egress IP and steps around Cloudflare’s block on Worker egress — the official host answers 403 from the edge.',
-  },
   'pr.field_base_url_hint': {
     zh: '打到哪台主机就填哪个地址；之后只有你能改，转发时只读库里的地址，不读任何请求头。',
     en: 'The endpoint Norm will call. Only you can change it; forwarding always reads the stored address, never a request header.',
