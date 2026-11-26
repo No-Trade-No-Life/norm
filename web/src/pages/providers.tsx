@@ -408,8 +408,12 @@ function NewProviderDialog({
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
-            {/* 音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。 */}
-            {schema !== null && schema.audio.length > 0 ? (
+            {/*
+              音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。
+              `?? []` 不是防御性编程：那条公开读带 `max-age=60`，浏览器手里的响应可能比这份
+              前端还旧（新前端 + 旧响应），少读一个字段就够把整页打崩一次。
+            */}
+            {schema !== null && (schema.audio ?? []).length > 0 ? (
               <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
             ) : null}
           </div>
@@ -583,8 +587,12 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
               </SelectContent>
             </Select>
             <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_protocol_hint')}</p>
-            {/* 音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。 */}
-            {schema !== null && schema.audio.length > 0 ? (
+            {/*
+              音频能力是协议的事实（`GET /api/v1/protocols` 的 audio），前端不留第二份判断。
+              `?? []` 不是防御性编程：那条公开读带 `max-age=60`，浏览器手里的响应可能比这份
+              前端还旧（新前端 + 旧响应），少读一个字段就够把整页打崩一次。
+            */}
+            {schema !== null && (schema.audio ?? []).length > 0 ? (
               <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
             ) : null}
           </div>

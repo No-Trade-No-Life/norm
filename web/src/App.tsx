@@ -1,8 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AppShell } from './components/app-shell';
+import { ErrorBoundary } from './components/error-boundary';
 import { ErrorNote } from './components/page';
 import { useIdentity } from './identity-context';
 import { useLogin } from './queries';
@@ -61,17 +62,34 @@ export function App() {
 
   return (
     <AppShell>
+      {/* 一页崩了不该把外壳一起带走：每条路由各自兜底，侧栏与导航还在，换个页面继续用。 */}
       <Routes>
-        <Route path="/" element={<PlaygroundPage />} />
-        <Route path="/providers" element={<ProvidersPage />} />
-        <Route path="/models" element={<ModelsPage />} />
-        <Route path="/consumers" element={<ConsumersPage />} />
-        <Route path="/usage" element={<UsagePage />} />
-        <Route path="/provenance" element={<ProvenancePage />} />
-        <Route path="/attestation" element={<AttestationPage />} />
-        <Route path="/about" element={<AboutPage />} />
+        {ROUTES.map((route) => (
+          <Route
+            key={route.path}
+            path={route.path}
+            element={<ErrorBoundary>{route.element}</ErrorBoundary>}
+          />
+        ))}
         <Route path="*" element={<Navigate replace to="/" />} />
       </Routes>
     </AppShell>
   );
 }
+
+/**
+ * 路由表：路径与页面在这里一一对应。
+ *
+ * 拿它建成一张表而不是写一串 `<Route>`，是为了让「每条路由都有一层边界」是结构上的事实——
+ * 增一条路由时不可能忘记挂边界。
+ */
+const ROUTES: Array<{ path: string; element: ReactNode }> = [
+  { path: '/', element: <PlaygroundPage /> },
+  { path: '/providers', element: <ProvidersPage /> },
+  { path: '/models', element: <ModelsPage /> },
+  { path: '/consumers', element: <ConsumersPage /> },
+  { path: '/usage', element: <UsagePage /> },
+  { path: '/provenance', element: <ProvenancePage /> },
+  { path: '/attestation', element: <AttestationPage /> },
+  { path: '/about', element: <AboutPage /> },
+];
