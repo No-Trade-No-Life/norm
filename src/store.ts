@@ -244,59 +244,6 @@ export type RequestRecord = {
   at: number;
 };
 
-/**
- * 一次调用在账本里的那一行——下游按请求 ID 对账时读的就是它。
- *
- * 只有记账字段（金额、用量、状态、延迟），没有请求体、没有响应体、也没有上游密钥：
- * 对账要的是「这一笔收了多少」，不是「这一笔说了什么」。
- */
-export type RequestReceiptRow = {
-  id: string;
-  model: string;
-  status: string;
-  status_code: number | null;
-  latency_ms: number;
-  first_token_ms: number | null;
-  input_tokens: number;
-  cached_tokens: number;
-  output_tokens: number;
-  audio_ms: number;
-  audio_characters: number;
-  gas_billed_nanos: number;
-  token_billed_nanos: number;
-  fee_nanos: number;
-  base_url: string;
-  created_at: number;
-};
-
-/** 一次批量查询最多问这么多条：对账是批量行为，但账本不该被一次请求扫出一个大洞。 */
-export const REQUEST_RECEIPT_BATCH_LIMIT = 100;
-
-/**
- * 按请求 ID 读这位消费者自己那一笔。
- *
- * `consumer_id` 是硬条件，不是过滤项：一把 Token 只能看见它付过的账。查不到与不是它的，
- * 回答完全一样（都进 `missing`）——否则「这个 id 存在但属于别人」这件事本身就泄露了。
- */
-export async function requestReceipts(
-  env: Env,
-  consumerId: string,
-  ids: readonly string[],
-): Promise<RequestReceiptRow[]> {
-  if (ids.length === 0) return [];
-  const placeholders = ids.map(() => '?').join(', ');
-  const { results } = await env.DB.prepare(
-    `SELECT id, model, status, status_code, latency_ms, first_token_ms,
-            input_tokens, cached_tokens, output_tokens, audio_ms, audio_characters,
-            gas_billed_nanos, token_billed_nanos, fee_nanos, base_url, created_at
-       FROM requests
-      WHERE consumer_id = ? AND id IN (${placeholders})`,
-  )
-    .bind(consumerId, ...ids)
-    .all<RequestReceiptRow>();
-  return results;
-}
-
 /** 只写请求记录、不扣费：`settle` 三次都被并发改写时用它兜底，那一笔标成未收。 */
 export async function recordRequest(env: Env, row: RequestRecord, spendNanos: number): Promise<void> {
   await requestInsert(env, row, {
