@@ -106,7 +106,7 @@ describe('思考的读出与再渲染', () => {
         model: 'deepseek-v4.1-flash',
         usage: { input: 1, cached: 0, output: 2 },
         createdAt: 0,
-      }),
+      }, norm),
     ].map((chunk) => JSON.parse(chunk.split('\n').find((line) => line.startsWith('data: '))!.slice(6)));
 
     const added = events.filter((event) => event.type === 'response.output_item.added');
@@ -127,7 +127,7 @@ describe('思考的读出与再渲染', () => {
     const events = [
       ...emitter.head(),
       ...emitter.delta('只说这个'),
-      ...emitter.tail({ text: '只说这个', reasoning: '', toolCalls: [], model: 'm', usage: { input: 1, cached: 0, output: 2 }, createdAt: 0 }),
+      ...emitter.tail({ text: '只说这个', reasoning: '', toolCalls: [], model: 'm', usage: { input: 1, cached: 0, output: 2 }, createdAt: 0 }, norm),
     ].map((chunk) => JSON.parse(chunk.split('\n').find((line) => line.startsWith('data: '))!.slice(6)));
 
     expect(events.some((event) => event.type?.toString().startsWith('response.reasoning'))).toBe(false);

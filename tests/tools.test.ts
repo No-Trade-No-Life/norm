@@ -365,7 +365,7 @@ describe('流式：规范事件 → 入口帧', () => {
     });
     expect(deltas[1].tool_calls[0].function.arguments).toBe('{"city"');
     expect(deltas[2].tool_calls[0].function.arguments).toBe(':"上海"}');
-    expect(sse(emitter.tail(answer))[0].json.choices[0].finish_reason).toBe('tool_calls');
+    expect(sse(emitter.tail(answer, norm))[0].json.choices[0].finish_reason).toBe('tool_calls');
   });
 
   it('anthropic：先关文本块，再开 tool_use 块，收尾 stop_reason 是 tool_use', () => {
@@ -375,7 +375,7 @@ describe('流式：规范事件 → 入口帧', () => {
     expect(opened[0].json.index).toBe(0);
     expect(opened[1].json.content_block).toEqual({ type: 'tool_use', id: 'call_1', name: 'get_weather', input: {} });
     expect(sse(emitter.toolArgs(0, '{"city"'))[0].json.delta).toEqual({ type: 'input_json_delta', partial_json: '{"city"' });
-    const tail = sse(emitter.tail(answer));
+    const tail = sse(emitter.tail(answer, norm));
     expect(tail[0].event).toBe('content_block_stop');
     expect(tail[1].json.delta.stop_reason).toBe('tool_use');
   });
@@ -395,7 +395,7 @@ describe('流式：规范事件 → 入口帧', () => {
     expect(opened[0].json).toMatchObject({ output_index: 0, item: { type: 'message' } });
     expect(opened[5].json).toMatchObject({ output_index: 1, item: { type: 'function_call', call_id: 'call_1', name: 'get_weather' } });
     sse(emitter.toolArgs(0, '{"city"'));
-    const tail = sse(emitter.tail(answer));
+    const tail = sse(emitter.tail(answer, norm));
     const completed = tail[tail.length - 1].json.response;
     expect(completed.output).toEqual([
       {
@@ -413,7 +413,7 @@ describe('流式：规范事件 → 入口帧', () => {
     const emitter = streamEmitter('google-gemini', 'req_1', 'm');
     expect(emitter.toolStart(0, { id: 'call_1', name: 'get_weather' })).toEqual([]);
     expect(emitter.toolArgs(0, '{"city"')).toEqual([]);
-    const frame = sse(emitter.tail(answer))[0];
+    const frame = sse(emitter.tail(answer, norm))[0];
     expect(frame.json.candidates[0].content.parts).toEqual([{ functionCall: { name: 'get_weather', args: { city: '上海' } } }]);
 
     const textOnly = sse(
@@ -421,7 +421,7 @@ describe('流式：规范事件 → 入口帧', () => {
         ...answer,
         text: 'hello',
         toolCalls: [],
-      }),
+      }, norm),
     )[0];
     expect(textOnly.json.candidates[0].content).toBeUndefined();
     expect(textOnly.json.candidates[0].finishReason).toBe('STOP');
@@ -590,7 +590,7 @@ describe('跨方言桥接边界与参数透传回归', () => {
     expect(afterTool[2].json.index).toBe(2);
     expect(afterTool[2].json.delta.text).toBe('补充一句');
 
-    const tail = sse(emitter.tail(anomalous));
+    const tail = sse(emitter.tail(anomalous, norm));
     const msgDelta = tail.find((f) => f.event === 'message_delta');
     expect(msgDelta?.json.usage.input_tokens).toBe(0);
   });

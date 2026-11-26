@@ -6,10 +6,13 @@ import { hostOf } from '../base-urls';
 import { needsConsumerTouch, touchConsumer } from '../consumers';
 import { dialectCodecFor } from '../codecs';
 import {
+  carriesFinalUsage,
   carriesOutput,
+  closingCostFrame,
   parseInbound,
   readAnswer,
   renderInbound,
+  stampStreamCost,
   streamEmitter,
   streamError,
   usageSniffer,
@@ -455,6 +458,15 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
     return bill(accounting, { text: '', reasoning: '', toolCalls: [], model: accounting.model, usage, createdAt: 0 }, 200);
   };
 
+  /**
+   * 直通流里那条收尾帧要扣在手里：费用得等它把用量报齐了才算得出来，而客户端
+   * 读的正是同一帧。扣住的那一帧在下一行或流尾放行，顺序不变。
+   */
+  let held: string | null = null;
+  let settled: Promise<NormMeta> | null = null;
+  /** 结账只做一次：扣住的那一帧与流尾读的是同一份回执。 */
+  const settle = (): Promise<NormMeta> => (settled ??= finish());
+
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
       if (finished) return;
@@ -466,6 +478,28 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
         enqueued = true;
         controller.enqueue(bytes);
       };
+      /** 把扣住的收尾帧补上费用放行。 */
+      const releaseHeld = async (): Promise<void> => {
+        if (held === null) return;
+        const stamped = stampStreamCost(dialect, held, await settle());
+        push(encoder.encode(`data: ${stamped ?? held}\n`));
+        held = null;
+      };
+      /**
+       * 非 Chat 的一条 SSE 行：原样往下走，只有收尾帧被扣住——它的用量到这一刻
+       * 才齐，费用也才能写上去。别的行（event: / id: / 注释）照旧。
+       */
+      const relayLine = async (line: string): Promise<void> => {
+        const payload = line.startsWith('data:') ? line.slice(5).trim() : '';
+        const data = payload.length > 0 && payload !== '[DONE]' ? payload : '';
+        if (data.length > 0) noteFrame(data);
+        await releaseHeld();
+        if (data.length > 0 && carriesFinalUsage(dialect, data)) {
+          held = data;
+          return;
+        }
+        push(encoder.encode(`${line}\n`));
+      };
 
       try {
         while (!enqueued) {
@@ -473,18 +507,13 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
 
           if (value) {
             if (!injectNorm) {
-              // 字节一个都不改（这几条路的客户端是第三方 SDK），但要把用量读出来：
-              // 不读，responses / anthropic / gemini 的流式调用在账本上就是 0 / 0 / 0。
+              // 内容一个字节都不改（这几条路的客户端是第三方 SDK），只有收尾帧
+              // 在放行前补一个费用字段；顺带把用量读出来，不读，这几条路的
+              // 流式调用在账本上就是 0 / 0 / 0。
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
               buffer = lines.pop() ?? '';
-              for (const line of lines) {
-                if (!line.startsWith('data:')) continue;
-                const payload = line.slice(5).trim();
-                if (payload.length === 0 || payload === '[DONE]') continue;
-                noteFrame(payload);
-              }
-              if (value.byteLength > 0) push(value);
+              for (const line of lines) await relayLine(line);
             } else {
               buffer += decoder.decode(value, { stream: true });
               const lines = buffer.split('\n');
@@ -534,12 +563,14 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
               };
               push(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
             }
-            push(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
+            push(encoder.encode(`data: ${JSON.stringify({ cost_usd_nanos: meta.fee_nanos, norm: meta })}\n\ndata: [DONE]\n\n`));
           } else {
             // 上游有时不补换行，最后一段留在 buffer 里——它可能就是那条 response.completed。
-            const rest = buffer.startsWith('data:') ? buffer.slice(5).trim() : '';
-            if (rest.length > 0 && rest !== '[DONE]') noteFrame(rest);
-            await finish();
+            if (buffer.length > 0) await relayLine(buffer);
+            await releaseHeld();
+            const meta = await settle();
+            const closing = closingCostFrame(dialect, accounting.model, sniffer.usage(), meta);
+            if (closing.length > 0) push(encoder.encode(closing));
           }
           controller.close();
           return;
@@ -727,7 +758,7 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
                 }
               }
               // 补发 finish_reason（stop / tool_calls）：OpenAI SDK 与 Agent 框架靠它收尾或触发工具执行。
-              emit(emitter.tail(core)).forEach(push);
+              emit(emitter.tail(core, meta)).forEach(push);
               if (wantsUsage) {
                 const usageChunk = {
                   object: 'chat.completion.chunk',
@@ -743,9 +774,9 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
                 push(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
               }
             }
-            push(encoder.encode(`data: ${JSON.stringify({ norm: meta })}\n\ndata: [DONE]\n\n`));
+            push(encoder.encode(`data: ${JSON.stringify({ cost_usd_nanos: meta.fee_nanos, norm: meta })}\n\ndata: [DONE]\n\n`));
           } else {
-            emit(emitter.tail(core)).forEach(push);
+            emit(emitter.tail(core, meta)).forEach(push);
           }
           controller.close();
           return;
