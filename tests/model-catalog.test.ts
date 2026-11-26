@@ -89,6 +89,46 @@ describe('mergeCatalog', () => {
     expect(rows[0].official).toBeNull();
   });
 
+  it('模态取并集，并记下有几条上游真的说过', () => {
+    const rows = mergeCatalog([
+      {
+        provider_id: 'p-a',
+        protocol: 'openai-chat',
+        items: [{ id: 'm', modalities: { input: ['image', 'text'], output: ['text'] } }],
+      },
+      {
+        provider_id: 'p-b',
+        protocol: 'openai-chat',
+        items: [{ id: 'm', modalities: { input: ['text', 'audio'], output: ['text'] } }],
+      },
+      // 这一条什么都没说：它不该把已经说过的抹掉，也不该被算进「声明过」。
+      { provider_id: 'p-c', protocol: 'anthropic-messages', items: [{ id: 'm' }] },
+    ]);
+
+    // 次序按固定表排（text 在 image / audio 前面），不按谁先答话。
+    expect(rows[0].modalities).toEqual({ input: ['text', 'image', 'audio'], output: ['text'], declared: 2 });
+    expect(rows[0].providers).toEqual(['p-a', 'p-b', 'p-c']);
+  });
+
+  it('谁都没声明模态时是 null，不是 [\'text\']', () => {
+    const rows = mergeCatalog([{ provider_id: 'p', protocol: 'openai-chat', items: [{ id: 'm' }] }]);
+    expect(rows[0].modalities).toBeNull();
+  });
+
+  it('同一家把同一个模型列两遍，声明数不会被同一上游灌成 2', () => {
+    const rows = mergeCatalog([
+      {
+        provider_id: 'p',
+        protocol: 'openai-chat',
+        items: [
+          { id: 'm', modalities: { input: ['text'], output: ['text'] } },
+          { id: 'm', modalities: { input: ['text'], output: ['text'] } },
+        ],
+      },
+    ]);
+    expect(rows[0].modalities).toEqual({ input: ['text'], output: ['text'], declared: 1 });
+  });
+
   it('空清单就是空表', () => {
     expect(mergeCatalog([])).toEqual([]);
     expect(mergeCatalog([{ provider_id: 'p', protocol: 'openai-chat', items: [] }])).toEqual([]);
@@ -139,11 +179,11 @@ describe('isModelNotServed', () => {
  * 一写就 500。所以这里按真实体量钉住上限，而不是按夹具的体量钉。
  */
 describe('modelInsertChunks', () => {
-  it('每批的绑定变量都留在 100 个以内（每行 3 个）', () => {
-    const names = Array.from({ length: 201 }, (_, index) => `model-${index}`);
-    const chunks = modelInsertChunks(names);
-    expect(chunks.flat()).toEqual(names);
-    for (const chunk of chunks) expect(chunk.length * 3).toBeLessThanOrEqual(100);
+  it('每批的绑定变量都留在 100 个以内（每行 4 个）', () => {
+    const rows = Array.from({ length: 201 }, (_, index) => ({ id: `model-${index}` }));
+    const chunks = modelInsertChunks(rows);
+    expect(chunks.flat()).toEqual(rows);
+    for (const chunk of chunks) expect(chunk.length * 4).toBeLessThanOrEqual(100);
   });
 
   it('一批装得下就不切', () => {

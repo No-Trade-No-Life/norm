@@ -363,7 +363,14 @@ const provider = createServer((request, response) => {
         response.writeHead(200, { 'Content-Type': 'application/json' });
         response.end(JSON.stringify({ object: 'list', data: [
           { id: 'gpt-test', object: 'model', created: 1721174400, owned_by: 'openai' },
-          { id: 'gpt-4o-mini', object: 'model', created: 1721174400, owned_by: 'openai' },
+          // 只有 OpenRouter 那一系的清单会带模态；这两条上游并成一行时，声明数应当是 2。
+          {
+            id: 'gpt-4o-mini',
+            object: 'model',
+            created: 1721174400,
+            owned_by: 'openai',
+            architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
+          },
           { id: 'gpt-4o', object: 'model', created: 1715367049, owned_by: 'openai' },
           // 清单说它有、跑起来却说没有的那种上游：验证 Norm 会划掉这一行并只重试一次。
           { id: 'flaky-model', object: 'model', created: 1715367049, owned_by: 'openai' },
@@ -1607,6 +1614,19 @@ console.log('14. 模型总表：账户里所有上游的清单并成一张表，
     '官方价锚在最长的规则上',
     mini?.official?.match === 'gpt-4o-mini' && mini.official.input === 150_000_000 && mini.official.output === 600_000_000,
     mini?.official,
+  );
+  // 模态只抄上游自述的那一句：两条 openai 上游都带了 architecture，于是「2 条声明」。
+  check(
+    '模态照上游自述抄下来，并记下几条上游说过',
+    mini?.modalities?.declared === 2 &&
+      mini.modalities.input.join(',') === 'text,image' &&
+      mini.modalities.output.join(',') === 'text',
+    mini?.modalities,
+  );
+  check(
+    '没声明模态的模型是 null，不补一个默认的 text',
+    items.find((item) => item.id === 'claude-haiku-3')?.modalities === null,
+    items.find((item) => item.id === 'claude-haiku-3')?.modalities,
   );
 
   const probeRows = catalog.json.providers ?? [];

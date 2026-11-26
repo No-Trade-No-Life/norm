@@ -1,5 +1,5 @@
 import type { Env } from './env';
-import { type Protocol } from './protocols';
+import { type Modalities, type ModelInfo, type Protocol } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
@@ -264,22 +264,36 @@ export type ModelCoverage = { known: Set<string>; serving: Set<string> };
 /**
  * D1 每次查询最多 100 个绑定变量（`too many SQL variables`）。
  *
- * 写清单的 INSERT 每行 3 个变量，所以一条语句最多 33 行——取 30 留余量。
- * 这个数不是性能参数，是**正确性**参数：越过去就是整条写入失败，而它在
- * 「清单有多少条」这个维度上才暴露，夹具只有三五个模型时永远看不见。
+ * 写清单的 INSERT 每行 4 个变量（provider_id / model / fetched_at / modalities），
+ * 所以一条语句最多 25 行——取 24 留余量。这个数不是性能参数，是**正确性**参数：
+ * 越过去就是整条写入失败，而它在「清单有多少条」这个维度上才暴露，夹具只有三五个
+ * 模型时永远看不见。
  */
-export const MODEL_ROWS_PER_STATEMENT = 30;
+export const MODEL_ROWS_PER_STATEMENT = 24;
 
 /** 问清单时的 IN (...) 宽度：一个模型名 + N 个上游 id，同样要留在 100 以内。 */
 const MODEL_QUERY_CHUNK = 40;
 
-/** 把一串模型名切成每次 INSERT 能装下的若干批。纯函数，方便钉住上面那条上限。 */
-export function modelInsertChunks(names: readonly string[]): string[][] {
-  const chunks: string[][] = [];
-  for (let start = 0; start < names.length; start += MODEL_ROWS_PER_STATEMENT) {
-    chunks.push(names.slice(start, start + MODEL_ROWS_PER_STATEMENT));
+/** 把一串待写入的行切成每次 INSERT 能装下的若干批。纯函数，方便钉住上面那条上限。 */
+export function modelInsertChunks<T>(rows: readonly T[]): T[][] {
+  const chunks: T[][] = [];
+  for (let start = 0; start < rows.length; start += MODEL_ROWS_PER_STATEMENT) {
+    chunks.push(rows.slice(start, start + MODEL_ROWS_PER_STATEMENT));
   }
   return chunks;
+}
+
+/**
+ * 模态的落库形状：JSON 文本，没声明就是 NULL。
+ *
+ * 不用 `'[]'` 表示「没说」：那是「说了，但没有」——两句话在总表上显示成两种东西
+ * （`null` = 未声明，空数组 = 上游明确说自己哪样都不吃），不能压成一种。
+ */
+function modalitiesText(modalities: Modalities | undefined): string | null {
+  if (modalities === undefined) return null;
+  const input = [...new Set(modalities.input)];
+  const output = [...new Set(modalities.output)];
+  return input.length === 0 && output.length === 0 ? null : JSON.stringify({ input, output });
 }
 
 /**
@@ -331,35 +345,45 @@ function modelDeleteChunks(names: readonly string[]): string[][] {
  * 100 个模型的上游无脑全删全插一次就是 601 行写。改成先读现有集合做差集后，清单未变且
  * 已有抓取记录时 0 次 D1 写；有增删时也只动变化的那几行。
  *
+ * 模态也算进这份 diff：名字没变、上游改了它自述的模态，是上游换了说法，不写就永远停在
+ * 第一次的说法上。它只改一行（UPDATE），不碰主键也不碰索引。
+ *
  * 空清单**不写**：一条 200 但不认识形状的回答，和「这家什么模型都没有」看起来一样，
  * 旧快照至少是上一次的真话，不该被一次答不上话覆盖。
  */
 export async function recordProviderModels(
   env: Env,
   providerId: string,
-  models: readonly string[],
+  models: readonly ModelInfo[],
   at: number,
-): Promise<{ added: number; removed: number }> {
-  const names = [...new Set(models.filter((name) => name.length > 0))];
-  if (names.length === 0) return { added: 0, removed: 0 };
+): Promise<{ added: number; removed: number; updated: number }> {
+  // 同名只留第一条：上游偶尔把同一个名字列两遍，后一条不该覆盖前一条的模态。
+  const wanted = new Map<string, string | null>();
+  for (const item of models) {
+    if (item.id.length === 0 || wanted.has(item.id)) continue;
+    wanted.set(item.id, modalitiesText(item.modalities));
+  }
+  if (wanted.size === 0) return { added: 0, removed: 0, updated: 0 };
 
   const [existingRows, fetchedRow] = await Promise.all([
-    env.DB.prepare('SELECT model FROM provider_models WHERE provider_id = ?')
+    env.DB.prepare('SELECT model, modalities FROM provider_models WHERE provider_id = ?')
       .bind(providerId)
-      .all<{ model: string }>(),
+      .all<{ model: string; modalities: string | null }>(),
     env.DB.prepare('SELECT models_fetched_at FROM providers WHERE id = ?')
       .bind(providerId)
       .first<{ models_fetched_at: number }>(),
   ]);
 
-  const current = new Set(existingRows.results.map((row) => row.model));
-  const wanted = new Set(names);
-  const toRemove = [...current].filter((name) => !wanted.has(name));
-  const toAdd = names.filter((name) => !current.has(name));
+  const current = new Map(existingRows.results.map((row) => [row.model, row.modalities]));
+  const toRemove = [...current.keys()].filter((name) => !wanted.has(name));
+  const toAdd = [...wanted.keys()].filter((name) => !current.has(name));
+  const toUpdate = [...wanted.entries()].filter(
+    ([name, modalities]) => current.has(name) && current.get(name) !== modalities,
+  );
   const alreadyFetched = (fetchedRow?.models_fetched_at ?? 0) > 0;
 
-  if (toRemove.length === 0 && toAdd.length === 0 && alreadyFetched) {
-    return { added: 0, removed: 0 };
+  if (toRemove.length === 0 && toAdd.length === 0 && toUpdate.length === 0 && alreadyFetched) {
+    return { added: 0, removed: 0, updated: 0 };
   }
 
   const statements: D1PreparedStatement[] = [];
@@ -373,15 +397,27 @@ export async function recordProviderModels(
   for (const chunk of modelInsertChunks(toAdd)) {
     statements.push(
       env.DB.prepare(
-        `INSERT INTO provider_models (provider_id, model, fetched_at)
-         VALUES ${chunk.map(() => '(?, ?, ?)').join(', ')}
-         ON CONFLICT(provider_id, model) DO UPDATE SET fetched_at = excluded.fetched_at`,
-      ).bind(...chunk.flatMap((name) => [providerId, name, at])),
+        `INSERT INTO provider_models (provider_id, model, fetched_at, modalities)
+         VALUES ${chunk.map(() => '(?, ?, ?, ?)').join(', ')}
+         ON CONFLICT(provider_id, model) DO UPDATE SET fetched_at = excluded.fetched_at,
+           modalities = excluded.modalities`,
+      ).bind(...chunk.flatMap((name) => [providerId, name, at, wanted.get(name) ?? null])),
+    );
+  }
+  // 只是自述变了的那几行：一行一个 UPDATE，不删不插，主键与索引都不动。
+  for (const [name, modalities] of toUpdate) {
+    statements.push(
+      env.DB.prepare('UPDATE provider_models SET modalities = ?, fetched_at = ? WHERE provider_id = ? AND model = ?').bind(
+        modalities,
+        at,
+        providerId,
+        name,
+      ),
     );
   }
   statements.push(env.DB.prepare('UPDATE providers SET models_fetched_at = ? WHERE id = ?').bind(at, providerId));
   await env.DB.batch(statements);
-  return { added: toAdd.length, removed: toRemove.length };
+  return { added: toAdd.length, removed: toRemove.length, updated: toUpdate.length };
 }
 
 /** 上游自己说没有这个型号：把那一行划掉，下一次选址就不会再选到它。返回实际删掉的行数（0 或 1）。 */

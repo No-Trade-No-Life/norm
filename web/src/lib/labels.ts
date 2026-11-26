@@ -20,6 +20,19 @@ export function protocolLabel(protocol: string, lang: Lang): string {
   return labelOf(PROTOCOL_KEYS, protocol, lang);
 }
 
+/** 模态词的短标签。认不得的原样显示——后端不认识的词，前端也不替它翻译。 */
+const MODALITY_KEYS: Record<string, CopyKey> = {
+  text: 'mod.text',
+  image: 'mod.image',
+  audio: 'mod.audio',
+  video: 'mod.video',
+  file: 'mod.file',
+};
+
+export function modalityLabel(modality: string, lang: Lang): string {
+  return labelOf(MODALITY_KEYS, modality, lang);
+}
+
 /**
  * ZDR 策略：后端只报「是哪一条」（no-bodies / billing-fields-only / sealed-at-rest），
  * 句子留在字典里——否则英文界面会原样显示中文。

@@ -382,6 +382,11 @@ export type CatalogModel = {
     output: number;
     off_peak?: { input: number; cached: number; output: number };
   } | null;
+  /**
+   * 上游**自己声明**的输入 / 输出模态；谁都没声明就是 null——不是「只能文本」。
+   * `declared` 是这一行有几条上游真的说了，少于 `providers.length` 时说明数组是并集。
+   */
+  modalities: { input: string[]; output: string[]; declared: number } | null;
 };
 
 /**

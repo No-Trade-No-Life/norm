@@ -283,6 +283,36 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
 | `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
 
+### 模态是上游的原话，不是 Norm 的判断
+
+输入 / 输出模态只在**管理面**的模型总表里出现（`GET /api/v1/models`，签名），而且只写
+上游自己声明过的那一句。官方清单里本来就没有这个字段，只有 OpenRouter 那一系（以及照抄它
+形状的聚合型上游）会多带一段 `architecture`；认得三种写法：
+
+| 写法 | 说明 |
+|---|---|
+| `architecture.input_modalities` / `output_modalities` | 主字段，字符串数组 |
+| `architecture.modality` | 老字段，一个字符串：`text+image->text` |
+| `input_modalities` / `output_modalities` | 摊平在顶层的抄法 |
+
+总表的一行因此多一个字段：
+
+```jsonc
+{
+  "id": "openai/gpt-4o-mini",
+  "providers": ["prv_…"],
+  "modalities": { "input": ["text", "image"], "output": ["text"], "declared": 1 }
+}
+```
+
+- **谁都没声明就是 `null`**，不是「只能文本」。OpenAI / Anthropic / Google 的官方清单里根本
+  没有这个字段，所以 `null` 是常态，没人会替你补一个默认的 `["text"]`。
+- `declared` 是这一行有几条上游真的说了。少于 `providers.length` 时，`input` / `output` 是
+  **并集**：有上游说能读图，不代表随便落到一条上都能读。这个数就是给读的人判断全票还是一票的。
+- 一个词认不出（不在 `[a-z0-9_.-]{1,16}` 里）就丢掉，不往表里塞；只声明了一半的照实只写一半。
+- 数据面 `GET /v1/models` **不变**：它照 OpenAI 的形状回答（`id` / `created` / `owned_by`），
+  模态不进来——那是给客户端列模型的，不是给人挑模型的。
+
 `created` / `owned_by` 不是每家都给，缺了就不编——**空字段比假字段好**。模型名里可能有斜杠
 （`meta-llama/Llama-3`、`models/gemini-2.0-flash`），所以 `/v1/models/{model}` 收整段剩余路径。
 
