@@ -168,9 +168,9 @@ Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
 
 ## 转发（只认 Bearer 消费者密钥）
 
-线缆方言只有**四种**（入站与出站共用同一套方言名）；上游协议在方言之上声明厂商契约（`deepseek` 复用 `openai-responses`、`opencode-go` 复用 `openai-chat`，新增厂商协议零新增翻译代码）。**直通判定只比线缆上的方言**（`entry.dialect === profile.dialect`）：
+线缆方言只有**四种**（入站与出站共用同一套方言名）；上游协议在方言之上声明厂商契约（`deepseek` 与 `openai-oauth` 复用 `openai-responses`、`opencode-go` 复用 `openai-chat`，新增厂商协议零新增翻译代码）。**直通判定只比线缆上的方言**（`entry.dialect === profile.dialect`）：
 
-| 入口 | 客户端 | 上游方言 `openai-chat`（含 `opencode-go`） | `openai-responses`（含 `deepseek`） | `anthropic-messages` | `google-gemini` |
+| 入口 | 客户端 | 上游方言 `openai-chat`（含 `opencode-go`） | `openai-responses`（含 `deepseek`、`openai-oauth`） | `anthropic-messages` | `google-gemini` |
 |---|---|---|---|---|---|
 | `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 桥接 | 桥接 | 桥接 |
 | `POST /v1/responses` | Codex CLI | 桥接 | 直通 | 桥接 | 桥接 |
@@ -279,6 +279,7 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 |---|---|---|
 | `openai-chat` / `openai-responses` / `deepseek` | `{base}/models` | `data[].id` + `created` + `owned_by` |
 | `opencode-go` | `{base}/openai/v1/models` | `data[].id` + `created` + `owned_by` |
+| `openai-oauth` | `{base}/models` | **问不到**：它的清单端点要一个 `client_version`、回的是 `{models:[{slug}]}`，不在四种方言的清单形状里。这一版不探它——选址把「清单未知」的上游当可用，跑错型号会被上游的 400 划掉一行 |
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
 | `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
 

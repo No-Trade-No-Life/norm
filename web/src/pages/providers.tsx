@@ -20,11 +20,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { useI18n } from '../i18n';
 import {
   useCreateProvider,
+  useExchangeOAuth,
   useProtocols,
   useProviders,
   useRevokeProvider,
   useSetEnabled,
   useSetScope,
+  useStartOAuth,
   useUpdateProvider,
 } from '../queries';
 import type { Provider } from '../types';
@@ -220,6 +222,103 @@ function ProviderRow({
 }
 
 /**
+ * 「连接」这一步：OpenAI OAuth 的凭据不是一把能贴的 API key，而是一对会过期的令牌。
+ *
+ * 两步手势（与那批走 Codex 的客户端一致）：点开授权页 → 登录 → 浏览器停在
+ * `http://localhost:1455/auth/callback?code=…`（那台机器上没有服务在听，页面是打不开的，
+ * 但地址栏里已经有 code）→ 把整行贴回来。PKCE 的 verifier 与 state 只活在这个组件的状态里：
+ * 服务端不存流程表，换币时再由这里送回去。state 对不上就不换——那是「这次回调不是为这次
+ * 授权来的」唯一一条可判的信号。
+ */
+function OAuthConnect({ onConnected }: { onConnected: (providerKey: string) => void }) {
+  const { t } = useI18n();
+  const start = useStartOAuth();
+  const exchange = useExchangeOAuth();
+  const [flow, setFlow] = useState<{ verifier: string; state: string } | null>(null);
+  const [callbackUrl, setCallbackUrl] = useState('');
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const openAuthorize = async () => {
+    setError(null);
+    setAccountId(null);
+    try {
+      const started = await start.mutateAsync();
+      setFlow({ verifier: started.verifier, state: started.state });
+      // 新标签页打开：verifier 必须留在这个对话框里，所以不能就地跳转。
+      window.open(started.authorize_url, '_blank', 'noopener');
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  };
+
+  const finish = async () => {
+    setError(null);
+    if (flow === null) {
+      setError(t('pr.oauth_need_start'));
+      return;
+    }
+    let code = '';
+    let state = '';
+    try {
+      const url = new URL(callbackUrl.trim());
+      code = url.searchParams.get('code') ?? '';
+      state = url.searchParams.get('state') ?? '';
+    } catch {
+      setError(t('pr.oauth_url_invalid'));
+      return;
+    }
+    if (!code) {
+      setError(t('pr.oauth_url_invalid'));
+      return;
+    }
+    if (state !== flow.state) {
+      setError(t('pr.oauth_state_mismatch'));
+      return;
+    }
+    try {
+      const result = await exchange.mutateAsync({ code, verifier: flow.verifier });
+      setAccountId(result.account_id);
+      onConnected(result.provider_key);
+    } catch (caught) {
+      setError((caught as Error).message);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label>{t('pr.field_key')}</Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="sm" onClick={() => void openAuthorize()} disabled={start.isPending}>
+          {start.isPending ? t('pr.oauth_starting') : t('pr.oauth_start')}
+        </Button>
+        {accountId ? (
+          <span className="text-xs text-muted-foreground">{t('pr.oauth_connected', { account: accountId })}</span>
+        ) : null}
+      </div>
+      {flow === null ? null : (
+        <>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.oauth_hint')}</p>
+          <Input
+            value={callbackUrl}
+            onChange={(event) => setCallbackUrl(event.target.value)}
+            placeholder={t('pr.oauth_paste_placeholder')}
+            spellCheck={false}
+          />
+          <div>
+            <Button size="sm" onClick={() => void finish()} disabled={exchange.isPending || callbackUrl.trim() === ''}>
+              {exchange.isPending ? t('pr.oauth_finishing') : t('pr.oauth_finish')}
+            </Button>
+          </div>
+        </>
+      )}
+      {error ? <ErrorNote message={error} /> : null}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.oauth_credential_hint')}</p>
+    </div>
+  );
+}
+
+/**
  * 新建上游：**先选协议**，字段跟着协议走，最后才是「是否公开」。
  *
  * 「Base URL + API key」是协议的一部分，不是两个可以自由组合的输入框：通用的四条方言
@@ -341,17 +440,25 @@ function NewProviderDialog({
                 </div>
               )}
 
-              <div className="flex flex-col gap-1.5">
-                <Label>{t('pr.field_key')}</Label>
-                <Input
-                  type="password"
-                  value={providerKey}
-                  onChange={(event) => setProviderKey(event.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_hint')}</p>
-              </div>
+              {schema.oauth ? (
+                <OAuthConnect onConnected={setProviderKey} />
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <Label>{t('pr.field_key')}</Label>
+                  <Input
+                    type="password"
+                    value={providerKey}
+                    onChange={(event) => setProviderKey(event.target.value)}
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_hint')}</p>
+                </div>
+              )}
+
+              {schema.stream_only ? (
+                <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.stream_only_hint')}</p>
+              ) : null}
             </>
           )}
 
@@ -502,21 +609,27 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
               )}
 
               <div className="flex flex-col gap-1.5">
-                <Label>{t('pr.field_key')}</Label>
                 {/* 已保存的密钥只以提示的形式露一半：可核对、可替换，但读不出明文。 */}
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <span>{t('pr.field_key_current')}</span>
                   <code className="rounded bg-muted/60 px-1.5 py-0.5 text-foreground">{provider.key_hint}</code>
                 </div>
-                <Input
-                  type="password"
-                  value={providerKey}
-                  onChange={(event) => setProviderKey(event.target.value)}
-                  placeholder={t('pr.field_key_keep')}
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-                <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_edit_hint')}</p>
+                {schema.oauth ? (
+                  <OAuthConnect onConnected={setProviderKey} />
+                ) : (
+                  <>
+                    <Label>{t('pr.field_key')}</Label>
+                    <Input
+                      type="password"
+                      value={providerKey}
+                      onChange={(event) => setProviderKey(event.target.value)}
+                      placeholder={t('pr.field_key_keep')}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_key_edit_hint')}</p>
+                  </>
+                )}
               </div>
             </>
           )}

@@ -262,6 +262,34 @@ export function useCreateProvider() {
   });
 }
 
+/**
+ * OpenAI OAuth 的第一步：拿授权地址。
+ *
+ * PKCE 的 verifier 与 state 由服务端现生成、随响应回到这里——服务端不存流程表，
+ * 也不该存：换币要的 verifier 只存在于发起这次授权的那只浏览器里。
+ */
+export function useStartOAuth() {
+  return useMutation({
+    mutationFn: () =>
+      requestJson<{ authorize_url: string; verifier: string; state: string }>({
+        path: '/api/v1/providers/oauth/start',
+        method: 'POST',
+      }),
+  });
+}
+
+/** 第二步：把回调 URL 里的 code 换成一对令牌。它随后作为 provider_key 交给创建 / 编辑接口。 */
+export function useExchangeOAuth() {
+  return useMutation({
+    mutationFn: (body: { code: string; verifier: string }) =>
+      requestJson<{ provider_key: string; account_id: string }>({
+        path: '/api/v1/providers/oauth/exchange',
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+  });
+}
+
 export function useUpdateProvider() {
   const queryClient = useQueryClient();
   return useMutation({

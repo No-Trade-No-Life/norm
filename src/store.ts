@@ -169,6 +169,20 @@ export async function findProvider(env: Env, address: string, id: string): Promi
 }
 
 /**
+ * 换过新的 OAuth 凭据写回库。
+ *
+ * 只动密文，不动提示：轮换换的是令牌，工作区 id 与 key_hint 一个字都不变。按 id 写而不是
+ * 按 address 写，是因为调用发生的那一刻就要生效——公共池里那条属于站点，但那条行是谁的
+ * 不会因为谁在借用而改变。
+ */
+export async function updateProviderSealedKey(
+  env: Env,
+  { providerId, sealed }: { providerId: string; sealed: string },
+): Promise<void> {
+  await env.DB.prepare('UPDATE providers SET sealed_key = ? WHERE id = ?').bind(sealed, providerId).run();
+}
+
+/**
  * 一次调用的全部记账：Gas 与 Token 分开结算，同时写入请求记录。
  *
  *   1. Gas 费（gas_fee_nanos → gas_billed_nanos）：付给 Norm，覆盖执行与落库成本；

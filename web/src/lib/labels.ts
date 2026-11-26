@@ -8,6 +8,7 @@ const PROTOCOL_KEYS: Record<string, CopyKey> = {
   'google-gemini': 'proto.google-gemini',
   deepseek: 'proto.deepseek',
   'opencode-go': 'proto.opencode-go',
+  'openai-oauth': 'proto.openai-oauth',
 };
 
 /** 枚举值原样兜底，避免后端新增取值被前端吞掉。 */

@@ -29,7 +29,7 @@ import { fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
 import { isModelNotServed } from '../models';
 import { quote, type PriceAnchor, type Usage } from '../pricing';
-import { unsealProviderKey } from '../seal';
+import { providerCredential } from '../credentials';
 import {
   dropProviderModel,
   forgetAffinity,
@@ -213,12 +213,21 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     // 作用域里存在：不写日志、不进响应、不返回给客户端。
     //
     // 解封用的是**持有者**的地址，不是调用方的：公共池里那条属于站点，调用方只是借用。
-    const providerKey = await unsealProviderKey({
-      env: c.env,
-      address: provider.address,
-      providerId: provider.id,
-      sealed: provider.sealed_key,
-    });
+    // OAuth 协议的凭据会过期，换新也在这一步里（见 `credentials.ts`）。
+    let providerKey: string;
+    try {
+      providerKey = await providerCredential({ env: c.env, address: provider.address, provider });
+    } catch (error) {
+      // 这把钥匙用不了（换新被上游拒了、密文解不开）：请求根本没打出去，所以不记账，
+      // 但必须把原因交回去——「服务内部错误」会把唯一一条能诊断的信息吞掉。
+      return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
+    }
+
+    // 只认流式的上游（ChatGPT 的 responses 端点）在这里把注定失败的请求挡住：
+    // 放过去，代价是一次上游 400 加一笔 Gas，换来的还是一句「stream must be true」。
+    if (profile.stream_only === true && !stream) {
+      fail(400, 'stream_required', `${provider.protocol} 协议的上游只接受流式请求：请带 "stream": true`);
+    }
 
     /**
      * 会话头：有的上游（OpenCode Go）缺了它连路由都不做，直接 400 `MissingSessionID`。
