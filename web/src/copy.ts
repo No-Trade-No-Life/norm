@@ -266,6 +266,8 @@ export const COPY = {
   'proto.deepseek': { zh: 'DeepSeek', en: 'DeepSeek' },
   'proto.opencode-go': { zh: 'OpenCode Go', en: 'OpenCode Go' },
   'proto.openai-oauth': { zh: 'OpenAI OAuth（ChatGPT 订阅）', en: 'OpenAI OAuth (ChatGPT plan)' },
+  'proto.qwen': { zh: 'Qwen（百炼 · 文本 / 视觉 / 音频）', en: 'Qwen (DashScope: text / vision / audio)' },
+  'proto.openai-audio': { zh: 'OpenAI 音频（Qwen LB 等）', en: 'OpenAI audio (Qwen LB etc.)' },
 
   'pr.oauth_start': { zh: '连接 ChatGPT', en: 'Connect ChatGPT' },
   'pr.oauth_starting': { zh: '正在打开授权页…', en: 'Opening the authorization page…' },

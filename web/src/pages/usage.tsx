@@ -407,7 +407,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
               </TableCell>
               <TableCell className="hidden text-right xl:table-cell">
                 <TokenTriple input={row.input_tokens} cached={row.cached_tokens} output={row.output_tokens} />
-                <AudioUsage ms={row.audio_ms} characters={row.audio_characters} />
+                <AudioUsage ms={row.audio_ms ?? 0} characters={row.audio_characters ?? 0} />
               </TableCell>
               {/* 总消费 / Token 费 / Gas 费分列展示：单笔归因一目了然（总消费 = Token 费 + Gas 费）。 */}
               <TableCell

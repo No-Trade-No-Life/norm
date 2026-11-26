@@ -9,6 +9,8 @@ const PROTOCOL_KEYS: Record<string, CopyKey> = {
   deepseek: 'proto.deepseek',
   'opencode-go': 'proto.opencode-go',
   'openai-oauth': 'proto.openai-oauth',
+  'openai-audio': 'proto.openai-audio',
+  qwen: 'proto.qwen',
 };
 
 /** 枚举值原样兜底，避免后端新增取值被前端吞掉。 */
