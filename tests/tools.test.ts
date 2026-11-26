@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseInbound, readAnswer, renderInbound, streamEmitter, type AnswerCore, type NormMeta } from '../src/dialects';
-import { adapterFor, type ChatBody } from '../src/protocols';
+import { adapterFor, sanitizeGeminiSchema, type ChatBody } from '../src/protocols';
 
 /**
  * 工具调用的翻译矩阵：4 个入口方言 × 4 个上游方言。
@@ -398,11 +398,189 @@ describe('流式：规范事件 → 入口帧', () => {
     ]);
   });
 
-  it('gemini：流里没有工具帧，收尾那一帧带上完整的 functionCall', () => {
+  it('gemini：流里没有工具帧，收尾那一帧带上完整的 functionCall；纯文本收尾不发空 parts', () => {
     const emitter = streamEmitter('google-gemini', 'req_1', 'm');
     expect(emitter.toolStart(0, { id: 'call_1', name: 'get_weather' })).toEqual([]);
     expect(emitter.toolArgs(0, '{"city"')).toEqual([]);
     const frame = sse(emitter.tail(answer))[0];
     expect(frame.json.candidates[0].content.parts).toEqual([{ functionCall: { name: 'get_weather', args: { city: '上海' } } }]);
+
+    const textOnly = sse(
+      streamEmitter('google-gemini', 'req_2', 'm').tail({
+        ...answer,
+        text: 'hello',
+        toolCalls: [],
+      }),
+    )[0];
+    expect(textOnly.json.candidates[0].content).toBeUndefined();
+    expect(textOnly.json.candidates[0].finishReason).toBe('STOP');
+  });
+});
+
+describe('4×4 跨方言边界与参数透传回归', () => {
+  it('Bug 1 + 采样参数：openai-chat 的 max_tokens / max_completion_tokens / temperature / top_p / stop 完整过桥', () => {
+    const fromChat = parseInbound(
+      'openai-chat',
+      {
+        model: 'm',
+        max_tokens: 4096,
+        temperature: 0.3,
+        top_p: 0.9,
+        stop: ['END', 'STOP'],
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      'm',
+      false,
+    );
+    expect(fromChat.max_tokens).toBe(4096);
+    expect(fromChat.temperature).toBe(0.3);
+    expect(fromChat.top_p).toBe(0.9);
+    expect(fromChat.stop).toEqual(['END', 'STOP']);
+
+    // max_completion_tokens 优先于旧的 max_tokens
+    const withCompletion = parseInbound(
+      'openai-chat',
+      { model: 'm', max_tokens: 512, max_completion_tokens: 8192, stop: 'HALT', messages: [{ role: 'user', content: 'hi' }] },
+      'm',
+      false,
+    );
+    expect(withCompletion.max_tokens).toBe(8192);
+    expect(withCompletion.stop).toEqual(['HALT']);
+
+    // 落到 Anthropic / Responses / Gemini 各自字段
+    const anth = adapterFor('anthropic-messages').request(fromChat, 'm') as Record<string, any>;
+    expect(anth.max_tokens).toBe(4096);
+    expect(anth.temperature).toBe(0.3);
+    expect(anth.top_p).toBe(0.9);
+    expect(anth.stop_sequences).toEqual(['END', 'STOP']);
+
+    const resp = adapterFor('openai-responses').request(fromChat, 'm') as Record<string, any>;
+    expect(resp.max_output_tokens).toBe(4096);
+    expect(resp.temperature).toBe(0.3);
+    expect(resp.top_p).toBe(0.9);
+
+    const gem = adapterFor('google-gemini').request(fromChat, 'm') as Record<string, any>;
+    expect(gem.generationConfig).toEqual({
+      maxOutputTokens: 4096,
+      temperature: 0.3,
+      topP: 0.9,
+      stopSequences: ['END', 'STOP'],
+    });
+
+    // 反向：从 Gemini generationConfig 读入并透传到 Chat
+    const fromGemini = parseInbound(
+      'google-gemini',
+      {
+        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        generationConfig: { maxOutputTokens: 2048, temperature: 0.5, topP: 0.8, stopSequences: ['DONE'] },
+      },
+      'm',
+      false,
+    );
+    const toChat = adapterFor('openai-chat').request(fromGemini, 'm') as Record<string, any>;
+    expect(toChat.max_tokens).toBe(2048);
+    expect(toChat.temperature).toBe(0.5);
+    expect(toChat.top_p).toBe(0.8);
+    expect(toChat.stop).toEqual(['DONE']);
+  });
+
+  it('Bug 3：Chat 文本块数组不再被 JSON.stringify，developer 角色归一成 system 不打 400', () => {
+    const body = parseInbound(
+      'openai-chat',
+      {
+        model: 'm',
+        messages: [
+          { role: 'developer', content: [{ type: 'text', text: '遵守规则' }] },
+          { role: 'user', content: [{ type: 'text', text: '第一行' }, { type: 'text', text: '第二行' }] },
+        ],
+      },
+      'm',
+      false,
+    );
+    expect(body.messages).toEqual([
+      { role: 'system', content: '遵守规则' },
+      { role: 'user', content: '第一行\n第二行' },
+    ]);
+
+    const anth = adapterFor('anthropic-messages').request(body, 'm') as Record<string, any>;
+    expect(anth.system).toBe('遵守规则');
+    expect(anth.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: '第一行\n第二行' }] }]);
+
+    // Responses 里的 developer role 同样归一成 system
+    const fromResp = parseInbound(
+      'openai-responses',
+      {
+        model: 'm',
+        input: [
+          { role: 'developer', content: '严禁编造' },
+          { role: 'user', content: 'hi' },
+        ],
+      },
+      'm',
+      false,
+    );
+    expect(fromResp.messages).toEqual([
+      { role: 'system', content: '严禁编造' },
+      { role: 'user', content: 'hi' },
+    ]);
+  });
+
+  it('Bug 4：Gemini 流式多帧并行 functionCall 靠 toolOffset 递增编号，不互相覆盖', () => {
+    const adapter = adapterFor('google-gemini');
+    const frame1 = JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: 'a', args: { x: 1 } } }] } }] });
+    const frame2 = JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: 'b', args: { y: 2 } } }] } }] });
+    const e1 = adapter.streamEvents(frame1, 0);
+    const e2 = adapter.streamEvents(frame2, 1);
+    expect(e1).toEqual([
+      { kind: 'tool_start', index: 0, id: 'call_1', name: 'a' },
+      { kind: 'tool_args', index: 0, args: '{"x":1}' },
+    ]);
+    expect(e2).toEqual([
+      { kind: 'tool_start', index: 1, id: 'call_2', name: 'b' },
+      { kind: 'tool_args', index: 1, args: '{"y":2}' },
+    ]);
+  });
+
+  it('Bug 5：Gemini functionDeclarations 清洗 $schema / additionalProperties / default 并转换 nullable', () => {
+    const dirty = {
+      $schema: 'http://json-schema.org/draft-07/schema#',
+      type: 'object',
+      title: 'WeatherArgs',
+      additionalProperties: false,
+      properties: {
+        city: { type: 'string', default: '上海', minLength: 1 },
+        unit: { type: ['string', 'null'], const: 'C' },
+      },
+      required: ['city'],
+    };
+    expect(sanitizeGeminiSchema(dirty)).toEqual({
+      type: 'object',
+      properties: {
+        city: { type: 'string' },
+        unit: { type: 'string', nullable: true, enum: ['C'] },
+      },
+      required: ['city'],
+    });
+  });
+
+  it('Bug 6：Anthropic usage.input_tokens 下界夹到 0；工具块后若再吐文本新开文本块而非写回已关的块 0', () => {
+    const anomalous: AnswerCore = { ...answer, usage: { input: 5, cached: 12, output: 3 } };
+    const rendered = renderInbound('anthropic-messages', anomalous, norm) as Record<string, any>;
+    expect(rendered.usage.input_tokens).toBe(0);
+    expect(rendered.usage.cache_read_input_tokens).toBe(12);
+
+    const emitter = streamEmitter('anthropic-messages', 'req_1', 'm');
+    emitter.head();
+    emitter.toolStart(0, { id: 'call_1', name: 'get_weather' }); // 关 block 0，开 block 1
+    const afterTool = sse(emitter.delta('补充一句'));
+    expect(afterTool.map((f) => f.event)).toEqual(['content_block_stop', 'content_block_start', 'content_block_delta']);
+    expect(afterTool[0].json.index).toBe(1);
+    expect(afterTool[1].json.index).toBe(2);
+    expect(afterTool[2].json.index).toBe(2);
+    expect(afterTool[2].json.delta.text).toBe('补充一句');
+
+    const tail = sse(emitter.tail(anomalous));
+    const msgDelta = tail.find((f) => f.event === 'message_delta');
+    expect(msgDelta?.json.usage.input_tokens).toBe(0);
   });
 });

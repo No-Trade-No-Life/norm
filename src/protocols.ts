@@ -84,6 +84,10 @@ export type ChatMessage = {
 export type ChatBody = {
   model?: string;
   stream?: boolean;
+  max_tokens?: number;
+  temperature?: number;
+  top_p?: number;
+  stop?: string[];
   messages?: ChatMessage[];
   tools?: ChatTool[];
   tool_choice?: ChatToolChoice;
@@ -176,8 +180,8 @@ export type Adapter = {
   session_header?: string;
   /** 规范形式 → 这条方言的请求体。 */
   request: (body: ChatBody, model: string) => unknown;
-  /** 流式：把上游一条 SSE 的 data 拆成规范事件；认不出的帧就是空数组。 */
-  streamEvents: (data: string) => StreamEvent[];
+  /** 流式：把上游一条 SSE 的 data 拆成规范事件；认不出的帧就是空数组。`toolOffset` 给无序号上游（Gemini）分配不冲突的调用序号。 */
+  streamEvents: (data: string, toolOffset?: number) => StreamEvent[];
   /** 列模型的上游路径（已含协议自带的版本段）。 */
   modelsPath: () => string;
   /** 把上游的模型清单翻译成规范形式；形状不认识就当空清单，不猜。 */
@@ -220,18 +224,32 @@ const textOf = (content: unknown): string => {
   if (typeof content === 'string') return content;
   // null / undefined 是「没有文本」（带工具调用的 assistant 就是这样），不是字符串 "null"。
   if (content === undefined || content === null) return '';
+  // OpenAI 现代客户端常发文本块数组 `[{ type: "text", text: "..." }]`，不能直接 JSON.stringify。
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        const text = (part as { text?: unknown } | null)?.text;
+        return typeof text === 'string' ? text : '';
+      })
+      .filter((value) => value.length > 0)
+      .join('\n');
+  }
   return JSON.stringify(content);
 };
 
+const isSystemRole = (role?: string): boolean => role === 'system' || role === 'developer';
+
 function systemPrompt(messages: ChatMessage[] = []): string {
   return messages
-    .filter((m) => m.role === 'system')
+    .filter((m) => isSystemRole(m.role))
     .map((m) => textOf(m.content))
+    .filter((value) => value.length > 0)
     .join('\n\n');
 }
 
 function turns(messages: ChatMessage[] = []): ChatMessage[] {
-  return messages.filter((m) => m.role !== 'system');
+  return messages.filter((m) => !isSystemRole(m.role));
 }
 
 /* ── 工具调用：规范形式 ↔ 四家线缆形状，唯一的换算处 ────────────────
@@ -256,6 +274,61 @@ export function toolArguments(call: ChatToolCall): Record<string, unknown> {
 /** 参数 Schema 的缺省：Anthropic 与 Gemini 都要求这个字段在，空对象是最保守的那个。 */
 function parametersOf(tool: ChatTool): unknown {
   return tool.parameters ?? { type: 'object', properties: {} };
+}
+
+/**
+ * Gemini `functionDeclarations.parameters` 不接受标准 JSON Schema 的元关键字
+ * （遇到 `$schema` / `additionalProperties` / `default` 等直接 400）。
+ * 递归清洗出 Gemini 接受的子集，同时把 `type: ['string', 'null']` 翻成 `nullable: true`。
+ */
+const GEMINI_FORBIDDEN_SCHEMA_KEYS = new Set([
+  '$schema',
+  '$id',
+  '$defs',
+  '$ref',
+  'definitions',
+  'additionalProperties',
+  'unevaluatedProperties',
+  'propertyNames',
+  'default',
+  'examples',
+  'title',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'minLength',
+  'maxLength',
+  'pattern',
+]);
+
+export function sanitizeGeminiSchema(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(sanitizeGeminiSchema);
+  if (schema === null || typeof schema !== 'object') return schema;
+
+  const source = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (GEMINI_FORBIDDEN_SCHEMA_KEYS.has(key)) continue;
+    if (key === 'type' && Array.isArray(value)) {
+      const nonNull = value.filter((item) => item !== 'null');
+      if (nonNull.length > 0) out.type = nonNull[0];
+      if (value.includes('null')) out.nullable = true;
+      continue;
+    }
+    if (key === 'const') {
+      out.enum = [value];
+      continue;
+    }
+    if (key === 'properties' && value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const props: Record<string, unknown> = {};
+      for (const [propName, propSchema] of Object.entries(value as Record<string, unknown>)) {
+        props[propName] = sanitizeGeminiSchema(propSchema);
+      }
+      out.properties = props;
+      continue;
+    }
+    out[key] = sanitizeGeminiSchema(value);
+  }
+  return out;
 }
 
 /** Gemini 的 `functionResponse.response` 必须是对象：结果本来就是 JSON 就原样给，否则包一层。 */
@@ -327,6 +400,9 @@ const openaiChat: Adapter = {
     messages: (body.messages ?? []).map(chatWireMessage),
     stream: body.stream === true,
     ...(body.max_tokens === undefined ? {} : { max_tokens: body.max_tokens }),
+    ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+    ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+    ...(body.stop?.length ? { stop: body.stop } : {}),
     ...(body.tools?.length ? { tools: body.tools.map(chatWireTool) } : {}),
     // 没带工具却带 tool_choice 是自相矛盾的：上游会当作 400，这里就不发。
     ...(body.tools?.length && body.tool_choice ? { tool_choice: chatWireChoice(body.tool_choice) } : {}),
@@ -370,6 +446,8 @@ const openaiResponses: Adapter = {
       input: turns(body.messages).flatMap(responseItems),
       stream: body.stream === true,
       ...(body.max_tokens === undefined ? {} : { max_output_tokens: body.max_tokens }),
+      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
       ...(body.tools?.length
         ? {
             tools: body.tools.map((tool) => ({
@@ -470,6 +548,9 @@ const anthropicMessages: Adapter = {
     return {
       model,
       max_tokens: (body.max_tokens as number | undefined) ?? 1024,
+      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.top_p === undefined ? {} : { top_p: body.top_p }),
+      ...(body.stop?.length ? { stop_sequences: body.stop } : {}),
       system: systemPrompt(body.messages) || undefined,
       messages: turnsOut.map((turn) => ({ role: turn.role, content: turn.blocks })),
       stream: body.stream === true,
@@ -542,11 +623,17 @@ const googleGemini: Adapter = {
     }
     const system = systemPrompt(body.messages);
     const tools = body.tools ?? [];
+    const generationConfig: Record<string, unknown> = {
+      ...(body.max_tokens === undefined ? {} : { maxOutputTokens: body.max_tokens }),
+      ...(body.temperature === undefined ? {} : { temperature: body.temperature }),
+      ...(body.top_p === undefined ? {} : { topP: body.top_p }),
+      ...(body.stop?.length ? { stopSequences: body.stop } : {}),
+    };
     return {
       // 流式端点由 path 决定（:streamGenerateContent?alt=sse），body 形状相同。
       contents: turnsOut.map((turn) => ({ role: turn.role, parts: turn.blocks })),
       systemInstruction: system ? { parts: [{ text: system }] } : undefined,
-      generationConfig: body.max_tokens ? { maxOutputTokens: body.max_tokens } : undefined,
+      ...(Object.keys(generationConfig).length > 0 ? { generationConfig } : {}),
       ...(tools.length
         ? {
             tools: [
@@ -554,7 +641,7 @@ const googleGemini: Adapter = {
                 functionDeclarations: tools.map((tool) => ({
                   name: tool.name,
                   ...(tool.description ? { description: tool.description } : {}),
-                  parameters: parametersOf(tool),
+                  parameters: sanitizeGeminiSchema(parametersOf(tool)),
                 })),
               },
             ],
@@ -664,7 +751,7 @@ function anthropicStreamEvents(data: string): StreamEvent[] {
 }
 
 /** Gemini：没有增量，一次 functionCall 就把名字与整段参数都给全了。 */
-function geminiStreamEvents(data: string): StreamEvent[] {
+function geminiStreamEvents(data: string, toolOffset = 0): StreamEvent[] {
   const frame = frameOf(data);
   if (!frame) return [];
   const events: StreamEvent[] = [];
@@ -675,8 +762,8 @@ function geminiStreamEvents(data: string): StreamEvent[] {
       if (text.length > 0) events.push({ kind: 'text', text });
       if (piece.functionCall) {
         const call = recordOf(piece.functionCall);
-        // Gemini 不给调用 id，也没有分片：按到达顺序编号，参数一次给完。
-        const index = events.filter((event) => event.kind === 'tool_start').length;
+        // Gemini 不给调用 id，也没有分片：用跨帧递增的 toolOffset 编号，防止多帧并行调用互相覆盖。
+        const index = toolOffset + events.filter((event) => event.kind === 'tool_start').length;
         events.push({ kind: 'tool_start', index, id: `call_${index + 1}`, name: stringOf(call.name) });
         events.push({ kind: 'tool_args', index, args: JSON.stringify(call.args ?? {}) });
       }
