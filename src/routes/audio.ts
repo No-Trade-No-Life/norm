@@ -14,7 +14,7 @@ import {
   GasMeter,
 } from '../gas';
 import { fail } from '../http';
-import { uuidv7 } from '../ids';
+import { unifiedRequestId, uuidv7 } from '../ids';
 import { audioRateFor, quoteAudio } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
@@ -63,7 +63,7 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
   }
 
   const affinity = affinityKeyOf(c.req.raw.headers);
-  const requestId = uuidv7();
+  const requestId = unifiedRequestId(c.req.raw.headers) ?? uuidv7();
   const startedAt = Date.now();
   const gas = new GasMeter({
     availableNanos: principal.balanceNanos,

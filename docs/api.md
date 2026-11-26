@@ -315,6 +315,35 @@ curl https://norm.ntnl.io/v1/audio/speech \
 
 上游回的错原话照回（状态码与响应体都不改），那一笔只收 Gas、不收 Token 费——与推理路径同一口径。
 
+## 请求费用查询（只认 Bearer 消费者密钥）
+
+上层网关通常**先**把调用转出去、**后**结算，所以它记下请求 ID，等账落定再回头补齐金额。
+Norm 说同一套契约（Qwen LB / DeepSeek LB / OpenAI LB 一族共用的那一条）：
+
+```bash
+curl https://norm.ntnl.io/v1/requests/<REQUEST_ID> -H "Authorization: Bearer sk-norm-…"
+
+curl https://norm.ntnl.io/v1/requests/query \
+  -H "Authorization: Bearer sk-norm-…" -H 'Content-Type: application/json' \
+  -d '{"ids":["<REQUEST_ID>","<ANOTHER_REQUEST_ID>"]}'
+```
+
+```json
+{"requests":[{"request_id":"…","model":"…","status":"ok","status_code":200,
+  "cost_usd_nanos":80390,"gas_billed_nanos":4000,"token_billed_nanos":76390,
+  "input_tokens":0,"cached_tokens":0,"output_tokens":0,
+  "audio_ms":2500,"audio_characters":0,"latency_ms":820,"first_token_ms":null,
+  "host":"dashscope.aliyuncs.com","created_at":1796000000}],
+ "missing":["<一个不存在的 id>"]}
+```
+
+- `cost_usd_nanos` 是这一笔**实扣**的总额，恒等于 `gas_billed_nanos + token_billed_nanos`。
+- 一把 Token 只能看见它自己付过的账；查不到与不是它的，回答完全一样（都进 `missing`）——
+  否则「这个 id 存在但属于别人」这件事本身就泄露了。
+- 一次最多 100 条。只回答记账字段：没有请求体、没有响应体、没有上游密钥。
+- 请求 ID 可以自报：带 `x-normai-request-id`（合法 UUID）时 Norm 采用它，响应里也回同一个，
+  两边因此不必各自维护一张对照表。
+
 ## 模型清单（只认 Bearer 消费者密钥）
 
 | 方法 | 路径 | 说明 |

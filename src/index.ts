@@ -12,6 +12,7 @@ import { modelCatalogRoutes } from './routes/model-catalog';
 import { modelRoutes } from './routes/models';
 import { audioRoutes } from './routes/audio';
 import { relayRoutes } from './routes/relay';
+import { requestRoutes } from './routes/requests';
 
 /**
  * 两个面各放一份身份：管理面是 `Identity`（地址 + 幂等键），转发面是 `Principal`
@@ -97,6 +98,8 @@ function relayOnly() {
   relay.route('/models', modelRoutes);
   // 音频两个入口与聊天入口同属转发面：同一把 Token、同一份余额、同一本账。
   relay.route('/', audioRoutes);
+  // 请求费用查询：上层网关拿请求 ID 回来对账，与推理同一个 Token、同一份可见范围。
+  relay.route('/', requestRoutes);
   relay.route('/', relayRoutes);
   return relay;
 }

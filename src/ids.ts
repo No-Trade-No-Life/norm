@@ -110,3 +110,17 @@ export const base58 = (() => {
 
   return { encode, decode };
 })();
+
+/**
+ * 上游网关传下来的统一请求 ID（NormAI 的 `x-normai-request-id`）。
+ *
+ * 跨服务对账要的是**同一个 id**：网关先记下它，再拿它回头问「这一笔收了多少」。所以在
+ * 自报 id 合法时采用它，不合法（或有多个值）就自己生成一个——一个能对账的 id 比一个
+ * 好看的自增序重要，但也不能让客户端随便塞一段字符串当主键。
+ */
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function unifiedRequestId(headers: Headers): string | null {
+  const value = headers.get('x-normai-request-id')?.trim() ?? '';
+  return UUID_SHAPE.test(value) ? value.toLowerCase() : null;
+}
