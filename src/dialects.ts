@@ -768,7 +768,7 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
             status: 'completed',
             model: answer.model,
             output: [
-              ...(answer.text.length > 0 || answer.toolCalls.length === 0
+              ...(text.length > 0 || answer.toolCalls.length === 0
                 ? [message('completed', [{ type: 'output_text', text }])]
                 : []),
               ...answer.toolCalls.map((call, index) => ({
