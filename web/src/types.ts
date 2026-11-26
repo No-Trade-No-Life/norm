@@ -221,6 +221,9 @@ export type CallBill = {
   host: string;
   /** true = 这一单落到了公共池（他人上游），Token 费转给上游提供方；false = 自有上游，仅收 Gas。 */
   pool: boolean;
+  /** 音频用量：转写覆盖的毫秒数、合成念的字数；文本调用没有这两项。 */
+  audio_ms?: number;
+  audio_characters?: number;
 };
 
 /** 按下游消费者密钥聚合的用量：哪把钥匙花了多少（Gas vs Token）。 */
@@ -430,4 +433,23 @@ export type ModelCatalog = {
   fetched_at: number;
   providers: CatalogProvider[];
   models: CatalogModel[];
+};
+
+/**
+ * 账单条要画的那几项。每个字段都可空：合成只回响应头（没有余额与延迟），
+ * 失败的调用只有 Gas。有就说，没有就不说——不补一个 0 上去假装知道。
+ */
+export type Bill = {
+  request_id?: string | null;
+  fee_nanos?: number | null;
+  gas_billed_nanos?: number | null;
+  gas_fee_nanos?: number | null;
+  token_billed_nanos?: number | null;
+  token_nanos?: number | null;
+  balance_nanos?: number | null;
+  latency_ms?: number | null;
+  host?: string | null;
+  pool?: boolean | null;
+  audio_ms?: number | null;
+  audio_characters?: number | null;
 };

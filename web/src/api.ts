@@ -130,7 +130,11 @@ export type ConsumerRequest = {
   path: string;
   consumerKey: string;
   method?: 'GET' | 'POST' | 'DELETE';
-  body?: string;
+  /**
+   * 字符串 = JSON；FormData 也收（转写那一条是 multipart）。类型写 BodyInit 而不是
+   * string，是为了让「音频文件直接交进去」这件事在类型上成立，而不是拼一段 base64。
+   */
+  body?: BodyInit;
   headers?: Record<string, string>;
   signal?: AbortSignal;
 };
@@ -140,12 +144,30 @@ export function consumerFetch({ path, consumerKey, method = 'GET', body, headers
     method,
     body,
     headers: {
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      // multipart 的边界的由浏览器现生成：只有字符串体才由我们声明 JSON。
+      ...(typeof body === 'string' ? { 'Content-Type': 'application/json' } : {}),
       Authorization: `Bearer ${consumerKey}`,
       ...headers,
     },
     signal,
   });
+}
+
+/**
+ * 转发面的失败：状态码 + 上游的原话。
+ *
+ * 上游的错误体一律原样回来（改写它只会让「为什么失败」更难查），所以这里的活儿是把它
+ * 压成一句话——`error` 常常是一个对象，直接塞进 JSX 会让整页白屏。
+ */
+export async function consumerError(response: Response): Promise<ApiError> {
+  const text = await response.text();
+  let parsed: unknown = text;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    // 不是 JSON 就按纯文本用
+  }
+  return new ApiError(response.status, 'relay_failed', errorText(parsed, `${response.status} ${response.statusText}`));
 }
 
 /** 消费者请求 + 解析 JSON。401 的处置（换钥匙重试）在 `./consumer-key` 里。 */

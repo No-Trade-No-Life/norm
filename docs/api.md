@@ -217,7 +217,7 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 `response.completed`），所以**收尾帧里的 token 数就是记账用的那一份**；上游提供商一次都没给时
 三项都是 0，账单也就只有 Gas 费。
 同格式直通时上游提供商的帧原样到达，一个事件都不加——`request_id` 从 `X-Norm-Request-Id` 响应头读。
-唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为 Playground 是它的客户端。
+唯一的例外是 `/v1/chat/completions` 直通：流末插一条 `{"norm":…}`，因为「多轮对话」是它的客户端。
 
 | 头 | 是否必填 |
 |---|---|
