@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import { dialectCodecFor, sanitizeGeminiSchema, type ChatBody } from '../src/codecs';
 import { parseInbound, readAnswer, renderInbound, streamEmitter, type AnswerCore, type NormMeta } from '../src/dialects';
-import { adapterFor, sanitizeGeminiSchema, type ChatBody } from '../src/protocols';
+import { protocolFor } from '../src/protocols';
 
 /**
- * 工具调用的翻译矩阵：4 个入口方言 × 4 个上游方言。
+ * 跨方言工具调用：4 种入口方言 ↔ 规范中间态 ↔ 4 种上游方言（Hub 复用）。
  *
  * 这里钉的是**方言**，不是协议：`deepseek` 必须收 Responses 形状的 tools（扁平），
  * `opencode-go` 必须收 Chat 形状的（套一层 `function`）——它们是协议名不同、方言相同的
@@ -155,7 +156,7 @@ describe('规范形式 → 上游请求（四方言说工具）', () => {
   const canonical: ChatBody = parseInbound('openai-chat', chatRequest, 'm', false);
 
   it('openai-chat：函数套在 function 里，工具结果单列一条 role=tool', () => {
-    const out = adapterFor('openai-chat').request(canonical, 'm') as Record<string, any>;
+    const out = dialectCodecFor('openai-chat').encodeRequest(canonical, 'm') as Record<string, any>;
     expect(out.tools).toEqual([{ type: 'function', function: weatherTool }]);
     expect(out.tool_choice).toEqual({ type: 'function', function: { name: 'get_weather' } });
     expect(out.messages[1].tool_calls).toEqual([
@@ -164,12 +165,12 @@ describe('规范形式 → 上游请求（四方言说工具）', () => {
     expect(out.messages[2]).toEqual({ role: 'tool', tool_call_id: 'call_1', content: '{"temp":21}' });
   });
 
-  it('opencode-go：协议名不同、方言相同——请求体与 openai-chat 一模一样', () => {
-    expect(adapterFor('opencode-go').request(canonical, 'm')).toEqual(adapterFor('openai-chat').request(canonical, 'm'));
+  it('opencode-go：复用 openai-chat 方言编解码器（同一实例，零额外翻译）', () => {
+    expect(dialectCodecFor(protocolFor('opencode-go').dialect)).toBe(dialectCodecFor('openai-chat'));
   });
 
   it('openai-responses：工具声明是扁平的，调用与结果各占一条 input 条目', () => {
-    const out = adapterFor('openai-responses').request(canonical, 'm') as Record<string, any>;
+    const out = dialectCodecFor('openai-responses').encodeRequest(canonical, 'm') as Record<string, any>;
     expect(out.tools).toEqual([{ type: 'function', ...weatherTool }]);
     expect(out.tool_choice).toEqual({ type: 'function', name: 'get_weather' });
     expect(out.input).toEqual([
@@ -179,14 +180,15 @@ describe('规范形式 → 上游请求（四方言说工具）', () => {
     ]);
   });
 
-  it('deepseek：说 Responses 方言，所以收的就是 Responses 形状的 tools，不是 Chat 的', () => {
-    const deepseek = adapterFor('deepseek').request(canonical, 'm') as Record<string, any>;
-    expect(deepseek).toEqual(adapterFor('openai-responses').request(canonical, 'm'));
+  it('deepseek：复用 openai-responses 方言编解码器，发出的就是 Responses 形状的 tools', () => {
+    const codec = dialectCodecFor(protocolFor('deepseek').dialect);
+    expect(codec).toBe(dialectCodecFor('openai-responses'));
+    const deepseek = codec.encodeRequest(canonical, 'm') as Record<string, any>;
     expect(deepseek.tools[0]).not.toHaveProperty('function');
   });
 
   it('anthropic：input_schema 接着 parameters，tool_use 与 tool_result 都是 content 块', () => {
-    const out = adapterFor('anthropic-messages').request(canonical, 'm') as Record<string, any>;
+    const out = dialectCodecFor('anthropic-messages').encodeRequest(canonical, 'm') as Record<string, any>;
     expect(out.tools).toEqual([{ name: 'get_weather', description: '查天气', input_schema: weatherTool.parameters }]);
     expect(out.tool_choice).toEqual({ type: 'tool', name: 'get_weather' });
     expect(out.messages).toEqual([
@@ -197,7 +199,7 @@ describe('规范形式 → 上游请求（四方言说工具）', () => {
   });
 
   it('google-gemini：functionDeclarations 一包，functionResponse 按名字对齐、response 是对象', () => {
-    const out = adapterFor('google-gemini').request(canonical, 'm') as Record<string, any>;
+    const out = dialectCodecFor('google-gemini').encodeRequest(canonical, 'm') as Record<string, any>;
     expect(out.tools).toEqual([{ functionDeclarations: [weatherTool] }]);
     expect(out.toolConfig).toEqual({ functionCallingConfig: { mode: 'ANY', allowedFunctionNames: ['get_weather'] } });
     expect(out.contents).toEqual([
@@ -286,7 +288,7 @@ describe('规范形式 → 入口方言（四方言回工具调用）', () => {
 
 describe('流式：上游帧 → 规范事件', () => {
   it('openai-chat：第一帧给 id 与名字，之后是参数片段', () => {
-    const events = adapterFor('openai-chat').streamEvents(
+    const events = dialectCodecFor('openai-chat').decodeStreamEvents(
       JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'get_weather', arguments: '{"city"' } }] } }] }),
     );
     expect(events).toEqual([
@@ -297,10 +299,10 @@ describe('流式：上游帧 → 规范事件', () => {
 
   it('openai-responses：output_item.added 开调用，参数走自己的增量事件', () => {
     const events = [
-      ...adapterFor('openai-responses').streamEvents(
+      ...dialectCodecFor('openai-responses').decodeStreamEvents(
         JSON.stringify({ type: 'response.output_item.added', output_index: 1, item: { type: 'function_call', call_id: 'call_1', name: 'get_weather' } }),
       ),
-      ...adapterFor('openai-responses').streamEvents(
+      ...dialectCodecFor('openai-responses').decodeStreamEvents(
         JSON.stringify({ type: 'response.function_call_arguments.delta', output_index: 1, delta: '{"city"' }),
       ),
     ];
@@ -312,10 +314,10 @@ describe('流式：上游帧 → 规范事件', () => {
 
   it('anthropic：tool_use 块开始，input_json_delta 给参数', () => {
     const events = [
-      ...adapterFor('anthropic-messages').streamEvents(
+      ...dialectCodecFor('anthropic-messages').decodeStreamEvents(
         JSON.stringify({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_1', name: 'get_weather' } }),
       ),
-      ...adapterFor('anthropic-messages').streamEvents(
+      ...dialectCodecFor('anthropic-messages').decodeStreamEvents(
         JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"city"' } }),
       ),
     ];
@@ -326,7 +328,7 @@ describe('流式：上游帧 → 规范事件', () => {
   });
 
   it('gemini：没有增量，一帧就把名字与整段参数给全', () => {
-    const events = adapterFor('google-gemini').streamEvents(
+    const events = dialectCodecFor('google-gemini').decodeStreamEvents(
       JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: 'get_weather', args: { city: '上海' } } }] } }] }),
     );
     expect(events).toEqual([
@@ -419,7 +421,7 @@ describe('流式：规范事件 → 入口帧', () => {
   });
 });
 
-describe('4×4 跨方言边界与参数透传回归', () => {
+describe('跨方言桥接边界与参数透传回归', () => {
   it('Bug 1 + 采样参数：openai-chat 的 max_tokens / max_completion_tokens / temperature / top_p / stop 完整过桥', () => {
     const fromChat = parseInbound(
       'openai-chat',
@@ -450,18 +452,18 @@ describe('4×4 跨方言边界与参数透传回归', () => {
     expect(withCompletion.stop).toEqual(['HALT']);
 
     // 落到 Anthropic / Responses / Gemini 各自字段
-    const anth = adapterFor('anthropic-messages').request(fromChat, 'm') as Record<string, any>;
+    const anth = dialectCodecFor('anthropic-messages').encodeRequest(fromChat, 'm') as Record<string, any>;
     expect(anth.max_tokens).toBe(4096);
     expect(anth.temperature).toBe(0.3);
     expect(anth.top_p).toBe(0.9);
     expect(anth.stop_sequences).toEqual(['END', 'STOP']);
 
-    const resp = adapterFor('openai-responses').request(fromChat, 'm') as Record<string, any>;
+    const resp = dialectCodecFor('openai-responses').encodeRequest(fromChat, 'm') as Record<string, any>;
     expect(resp.max_output_tokens).toBe(4096);
     expect(resp.temperature).toBe(0.3);
     expect(resp.top_p).toBe(0.9);
 
-    const gem = adapterFor('google-gemini').request(fromChat, 'm') as Record<string, any>;
+    const gem = dialectCodecFor('google-gemini').encodeRequest(fromChat, 'm') as Record<string, any>;
     expect(gem.generationConfig).toEqual({
       maxOutputTokens: 4096,
       temperature: 0.3,
@@ -479,7 +481,7 @@ describe('4×4 跨方言边界与参数透传回归', () => {
       'm',
       false,
     );
-    const toChat = adapterFor('openai-chat').request(fromGemini, 'm') as Record<string, any>;
+    const toChat = dialectCodecFor('openai-chat').encodeRequest(fromGemini, 'm') as Record<string, any>;
     expect(toChat.max_tokens).toBe(2048);
     expect(toChat.temperature).toBe(0.5);
     expect(toChat.top_p).toBe(0.8);
@@ -504,7 +506,7 @@ describe('4×4 跨方言边界与参数透传回归', () => {
       { role: 'user', content: '第一行\n第二行' },
     ]);
 
-    const anth = adapterFor('anthropic-messages').request(body, 'm') as Record<string, any>;
+    const anth = dialectCodecFor('anthropic-messages').encodeRequest(body, 'm') as Record<string, any>;
     expect(anth.system).toBe('遵守规则');
     expect(anth.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: '第一行\n第二行' }] }]);
 
@@ -528,11 +530,11 @@ describe('4×4 跨方言边界与参数透传回归', () => {
   });
 
   it('Bug 4：Gemini 流式多帧并行 functionCall 靠 toolOffset 递增编号，不互相覆盖', () => {
-    const adapter = adapterFor('google-gemini');
+    const codec = dialectCodecFor('google-gemini');
     const frame1 = JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: 'a', args: { x: 1 } } }] } }] });
     const frame2 = JSON.stringify({ candidates: [{ content: { parts: [{ functionCall: { name: 'b', args: { y: 2 } } }] } }] });
-    const e1 = adapter.streamEvents(frame1, 0);
-    const e2 = adapter.streamEvents(frame2, 1);
+    const e1 = codec.decodeStreamEvents(frame1, 0);
+    const e2 = codec.decodeStreamEvents(frame2, 1);
     expect(e1).toEqual([
       { kind: 'tool_start', index: 0, id: 'call_1', name: 'a' },
       { kind: 'tool_args', index: 0, args: '{"x":1}' },

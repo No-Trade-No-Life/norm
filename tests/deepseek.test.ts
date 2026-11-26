@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { dialectCodecFor } from '../src/codecs';
 import { DEEPSEEK_TARIFFS, isDeepSeekPeak } from '../src/deepseek';
-import { adapterFor, rateAt, tariffFor } from '../src/protocols';
+import { protocolFor, rateAt, tariffFor } from '../src/protocols';
 
 const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
 
@@ -69,20 +70,23 @@ describe('DEEPSEEK_TARIFFS（两档价目）', () => {
 });
 
 describe('deepseek 协议', () => {
-  it('说 Responses 方言：路径、请求与清单都与 openai-responses 一样', () => {
-    const deepseek = adapterFor('deepseek');
-    const responses = adapterFor('openai-responses');
+  it('复用 Responses 方言：路径、编解码与清单都与 openai-responses 同一份', () => {
+    const deepseek = protocolFor('deepseek');
+    const responses = protocolFor('openai-responses');
     const body = { messages: [{ role: 'user', content: '你好' }] };
 
     expect(deepseek.dialect).toBe('openai-responses');
     expect(deepseek.path('m')).toBe(responses.path('m'));
-    expect(deepseek.request(body, 'm')).toEqual(responses.request(body, 'm'));
+    expect(dialectCodecFor(deepseek.dialect)).toBe(dialectCodecFor('openai-responses'));
+    expect(dialectCodecFor(deepseek.dialect).encodeRequest(body, 'm')).toEqual(
+      dialectCodecFor(responses.dialect).encodeRequest(body, 'm'),
+    );
     expect(deepseek.modelsPath()).toBe(responses.modelsPath());
   });
 
   it('分时价只挂在 deepseek 这一条协议上', () => {
-    expect(adapterFor('deepseek').pricing?.mode.kind).toBe('time-tiered');
-    expect(adapterFor('openai-responses').pricing).toBeUndefined();
+    expect(protocolFor('deepseek').pricing?.mode.kind).toBe('time-tiered');
+    expect(protocolFor('openai-responses').pricing).toBeUndefined();
     expect(tariffFor('openai-chat', 'deepseek-v4-pro')).toBeNull();
   });
 

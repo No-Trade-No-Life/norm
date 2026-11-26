@@ -180,8 +180,8 @@ export const COPY = {
     en: 'A disabled provider is skipped when Norm picks a provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
-    zh: '协议决定这条上游的字段：四条通用方言要你填 base_url，deepseek 的地址是官方固定值、只要密钥。入口方言与协议同名时不转换，请求体按原始字节转发；不同的格才由 Norm 翻译。DeepSeek 选 deepseek：底层同样说 OpenAI Responses，但计价按官方高峰 / 低谷两档。',
-    en: 'The protocol decides the fields: the four generic dialects ask for a base URL, while deepseek fixes the official address and only wants a key. When the entry dialect matches the protocol nothing is converted — the body goes out byte-for-byte. Pick deepseek for DeepSeek: the wire format is OpenAI Responses, but billing follows DeepSeek’s peak / off-peak tariffs.',
+    zh: '协议声明上游的线缆方言与厂商契约：四条通用方言要你填 base_url；deepseek（复用 OpenAI Responses + 分时计价）与 opencode-go（复用 OpenAI Chat + 自动会话头）的地址由协议固定、只要密钥。入口方言与上游方言一致时按原始字节直通，跨方言时经统一中间层自动桥接。',
+    en: 'The protocol declares the upstream wire dialect and vendor contract: the four generic dialects ask for a base URL, while deepseek (reusing OpenAI Responses + peak/off-peak tariffs) and opencode-go (reusing OpenAI Chat + session header) fix their official address and only want a key. Matching wire dialects pass through byte-for-byte; mismatched dialects bridge automatically.',
   },
   'pr.protocol_loading': { zh: '正在读取这条协议的字段…', en: 'Loading this protocol’s fields…' },
   'pr.field_base_url_fixed': {
@@ -229,10 +229,10 @@ export const COPY = {
     zh: '把它当普通 api key 用：Bearer、x-api-key 或 x-goog-api-key 都认（各家 SDK 的习惯）。没有任何 Norm 专有的头：走哪条上游由 Norm 自己挑——自己的上游优先，公共池兜底，同一个 thread-id / session-id 粘在同一条上。',
     en: 'Use it as an ordinary api key: Bearer, x-api-key or x-goog-api-key (whatever your SDK sends). There is no Norm-specific header: Norm picks the upstream itself — your own providers first, the public pool as a fallback, sticky per thread-id / session-id.',
   },
-  'co.entries_title': { zh: '四个入口 · 四种协议', en: 'Four entries · four providers' },
+  'co.entries_title': { zh: '四个入口 · 四种方言', en: 'Four entries · four dialects' },
   'co.entries_body': {
-    zh: '入口方言与这条上游提供商的 protocol 同名时不做转换（请求体按原始字节转发，响应原样回来）；不同的 12 格才翻译。跨方言不翻译工具调用。',
-    en: 'When the entry dialect matches the provider\'s protocol nothing is converted — the body goes out byte-for-byte and the response comes back untouched. Only the other 12 cells are translated. Tool calling is never translated across dialects.',
+    zh: '直通只看线缆方言：入口方言与上游协议的方言一致时按原始字节转发、响应原样回来（厂商协议直接复用对应方言）；跨方言请求经统一中间层桥接，完整支持流式与工具调用。',
+    en: 'Passthrough matches on wire dialect: when the entry dialect matches the provider\'s dialect, requests go out byte-for-byte and responses return untouched (vendor protocols reuse their underlying dialect). Cross-dialect calls bridge through the canonical layer with streaming and tool calling support.',
   },
   'co.rotate': { zh: '轮换', en: 'Rotate' },
   'co.rotate_confirm': { zh: '确认轮换？', en: 'Confirm rotate?' },

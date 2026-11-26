@@ -1,22 +1,21 @@
 /**
- * 四条方言，两侧同名。
+ * 四条线缆方言，入站与出站共用同一套方言名。
  *
- * Norm 的转发是 4×4 的：客户端用哪种方言说话（入口）× 上游提供商说哪种方言（`adapter.dialect`）。
- * 因为两侧用的是同一套名字，「入口方言 === 上游方言」就是一句字符串相等——而那 4 格
- * **不转换**：请求体原样发出去，响应体原样还回来，一个字段都不碰。
+ * 转发只比较线缆方言（`entry.dialect === profile.dialect`）：
+ *   - 同方言直通：请求体原样发出去，响应体原样还回来，一个字段都不碰；
+ *   - 跨方言桥接：入口 → 规范中间态（`ChatBody`）→ 上游方言编解码（`src/codecs.ts`）→ 回来时再渲染成入口方言。
  *
- * 只有其余 12 格才经过 OpenAI Chat 这座桥：入口 → ChatBody → 协议适配器（见
- * protocols.ts，它只管 ChatBody 到四种上游方言）→ 回来时再渲染成入口方言。
- * 桥只在这一侧出现，所以「4 入口 × 4 上游」不是 16 条路径，而是 4 段入口翻译
- * 加 4 段上游适配，互不相干。
+ * 桥只在规范中间态居中出现，因此翻译是 M + N（入口 4 段 + 出站 4 段，互不相干），不是 M × N 矩阵。
+ * 厂商协议（`deepseek` / `opencode-go` 等）只在 `src/protocols.ts` 声明复用哪一种方言并叠加基址/头/计价，
+ * 本文件与 `src/codecs.ts` 永远不感知具体厂商协议名。
  *
  * 工具调用同样过桥：四家的 `tools` / `tool_choice` / `tool_calls` / 工具结果的形状各不相同，
- * 规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 protocols.ts 的
+ * 规范形式只留扁平的「工具声明」「一次调用」「一条结果」三样（见 `src/codecs.ts` 的
  * `ChatTool` / `ChatToolCall`）。入口读进来、出口说回去，带工具的请求因此可以落在任何一条
- * 方言的上游上。同格式直通时仍然一个字节都不碰——那条路上的 `tools` 是客户端自己的事。
+ * 方言的上游上。同方言直通时仍然一个字节都不碰——那条路上的 `tools` 是客户端自己的事。
  */
 import { fail } from './http';
-import { toolArguments, type ChatBody, type ChatMessage, type ChatTool, type ChatToolCall, type ChatToolChoice, type Dialect, type StreamEvent } from './protocols';
+import { toolArguments, type ChatBody, type ChatMessage, type ChatTool, type ChatToolCall, type ChatToolChoice, type Dialect, type StreamEvent } from './codecs';
 import type { Usage } from './pricing';
 
 export type { Dialect };
@@ -386,7 +385,7 @@ function stopListOf(dialect: Dialect, raw: Raw): string[] {
 }
 
 /**
- * 只用在**跨方言**那 12 格上；同格式直通时这个函数不会被调用。
+ * 只用在**跨方言桥接**路径上；同方言直通时这个函数不会被调用。
  *
  * `stream` 由调用方给出，不从 body 里读：Gemini 的流式写在路径上
  * （`:streamGenerateContent`），body 里没有这个字段，从 body 读会把它抹成 false。
@@ -545,7 +544,7 @@ export function readAnswer(dialect: Dialect, json: Raw): AnswerCore {
   return EXTRACT[dialect](json ?? {});
 }
 
-/* ── 规范形式 → 出口方言（只用在跨方言那 12 格） ───────────────────── */
+/* ── 规范形式 → 出口方言（只用在跨方言桥接） ──────────────────────── */
 
 /**
  * 协议适配器已经把响应读成 AnswerCore，这里再落到客户端要的方言。

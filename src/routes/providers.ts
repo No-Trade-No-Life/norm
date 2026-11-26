@@ -3,7 +3,7 @@ import { canOwnPool, type Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds } from '../ids';
-import { PROTOCOLS, adapterFor, isProtocol } from '../protocols';
+import { PROTOCOLS, isProtocol, protocolFor } from '../protocols';
 import { hostOf } from '../base-urls';
 import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
@@ -58,10 +58,10 @@ providerRoutes.post('/', async (c) => {
   }
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
 
-  // 基址从哪来由协议决定：厂商协议（`deepseek`）的地址是协议自带的，用户不填；通用的
+  // 基址从哪来由协议决定：厂商协议（`deepseek` / `opencode-go`）的地址是协议自带的，用户不填；通用的
   // 四条方言才要用户填自己的上游。填了固定协议的地址且对不上，说明调用方以为它能选。
-  const adapter = adapterFor(protocol);
-  const fixedBaseUrl = adapter.base_url;
+  const profile = protocolFor(protocol);
+  const fixedBaseUrl = profile.base_url;
   const givenBaseUrl = (body.base_url ?? '').trim().replace(/\/+$/, '');
   if (fixedBaseUrl !== undefined && givenBaseUrl && givenBaseUrl !== fixedBaseUrl) {
     fail(400, 'base_url_fixed', `${protocol} 协议的基址固定为 ${fixedBaseUrl}，不要另填 base_url`);
@@ -185,7 +185,7 @@ providerRoutes.patch('/:id', async (c) => {
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
 
-  const fixedBaseUrl = adapterFor(protocol).base_url;
+  const fixedBaseUrl = protocolFor(protocol).base_url;
   const givenBaseUrl = (body.base_url ?? '').trim().replace(/\/+$/, '');
   let baseUrl: string;
   if (fixedBaseUrl !== undefined) {
@@ -195,7 +195,7 @@ providerRoutes.patch('/:id', async (c) => {
     baseUrl = fixedBaseUrl;
   } else if (givenBaseUrl) {
     baseUrl = givenBaseUrl;
-  } else if (protocol === existing.protocol || adapterFor(existing.protocol).base_url === undefined) {
+  } else if (protocol === existing.protocol || protocolFor(existing.protocol).base_url === undefined) {
     // 通用方言之间换协议，地址还是用户自己那一个，沿用；只有从厂商给定的地址
     // 换回通用方言时，才必须重新填一次。
     baseUrl = existing.base_url;

@@ -337,9 +337,8 @@ export type ChatChunk = {
 };
 
 /**
- * 上游提供商说哪种协议：决定 Norm 打 /chat/completions 还是 /responses。
- * `deepseek` 是说 Responses 方言、但价目按官方时段分两档的那一条厂商变体。
- * 与「base_url 能不能自定义」无关——base_url 永远可自定义，创建后钉死。
+ * 全部上游协议：四条通用方言协议 + 复用这些方言的厂商契约协议（`deepseek` / `opencode-go`）。
+ * 表单字段由 `GET /api/v1/protocols` 动态驱动，这里供筛选器与类型标注使用。
  */
 export const PROTOCOLS = [
   'openai-chat',
@@ -347,6 +346,7 @@ export const PROTOCOLS = [
   'anthropic-messages',
   'google-gemini',
   'deepseek',
+  'opencode-go',
 ] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 
