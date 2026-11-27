@@ -1,20 +1,31 @@
-import { DownloadIcon, Loader2Icon } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { DownloadIcon, ImagePlusIcon, Loader2Icon, XIcon } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { consumerError } from '../api';
 import { BillBar, type Bill } from '../components/call-bill';
 import { ModelPicker } from '../components/model-picker';
 import { Empty, ErrorNote, PageHeader } from '../components/page';
 import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Textarea } from '../components/ui/textarea';
 import { consumerResponse } from '../consumer-key';
 import { useI18n } from '../i18n';
 import { useIdentity } from '../identity-context';
+import { formatBytes } from '../lib/audio';
 import { candidateModels } from '../lib/catalog';
 import { geminiBlockReason, readGeminiImages, type GeminiImage } from '../lib/gemini-image';
 import { readImageApiResponse } from '../lib/image-api';
+import {
+  MAX_REFERENCE_BYTES,
+  MAX_REFERENCE_IMAGES,
+  admitReferenceFiles,
+  referencePayload,
+  type ReferenceImage,
+  type ReferenceRejection,
+} from '../lib/reference-images';
+import { readReferenceFile } from '../lib/reference-image-file';
 import { useModelCatalog } from '../queries';
 
 /** 一条能出图的路：线缆不同，但「给一句话、拿一张图」这件事是同一个。 */
@@ -67,6 +78,14 @@ export function ImagesPage() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
+  // 参考图只属于 Images 那条线缆（Gemini 的 generateContent 没有这个字段）。选中的图跟着页面
+  // 走：切到 Gemini 时它们不显示也不进请求体，切回来还在，不用重挑。
+  const [references, setReferences] = useState<ReferenceImage[]>([]);
+  const [rejections, setRejections] = useState<ReferenceRejection[]>([]);
+  const [reading, setReading] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const nextReferenceId = useRef(0);
+
   // 清单里第一个能出图的模型就是默认值：别让人对着空框去记上游叫它什么。
   useEffect(() => {
     if (!model && options.length > 0) setModel(options[0]);
@@ -74,6 +93,47 @@ export function ImagesPage() {
 
   // 手填的模型名不在清单里时按 Gemini 处理：那是这个页面一直以来的默认路（直通会原话交回）。
   const wire: Wire = targets.find((target) => target.model === model)?.wire ?? 'gemini';
+
+  /** 挑文件：先按张数 / 类型 / 大小过一遍，再逐张读成 data URL。读不出来的也逐张说，不静默丢。 */
+  const pickReferences = async (files: FileList | null) => {
+    const picked = Array.from(files ?? []);
+    if (picked.length === 0) return;
+    const { accepted, rejected } = admitReferenceFiles(references.length, picked);
+    setReading(true);
+    try {
+      const read = await Promise.all(accepted.map((file) => readReferenceFile(file)));
+      const next: ReferenceImage[] = [];
+      const failed: ReferenceRejection[] = [];
+      read.forEach((item, index) => {
+        if (!item) {
+          failed.push({ name: accepted[index].name, reason: 'unreadable' });
+          return;
+        }
+        nextReferenceId.current += 1;
+        next.push({ id: `ref-${nextReferenceId.current}`, ...item });
+      });
+      if (next.length > 0) setReferences((current) => [...current, ...next].slice(0, MAX_REFERENCE_IMAGES));
+      setRejections([...rejected, ...failed]);
+    } finally {
+      setReading(false);
+    }
+  };
+
+  const removeReference = (id: string) => {
+    setReferences((current) => current.filter((reference) => reference.id !== id));
+    setRejections([]);
+  };
+
+  /** 被退回的文件各说一句：哪一张、为什么、上限是多少。 */
+  const rejectionText = (rejection: ReferenceRejection): string => {
+    if (rejection.reason === 'type') return t('im.reference_bad_type', { name: rejection.name });
+    if (rejection.reason === 'size') {
+      return t('im.reference_too_large', { name: rejection.name, size: formatBytes(MAX_REFERENCE_BYTES) });
+    }
+    if (rejection.reason === 'empty') return t('im.reference_empty', { name: rejection.name });
+    if (rejection.reason === 'unreadable') return t('im.reference_unreadable', { name: rejection.name });
+    return t('im.reference_full', { count: MAX_REFERENCE_IMAGES });
+  };
 
   const generate = async () => {
     setError(null);
@@ -87,12 +147,17 @@ export function ImagesPage() {
 
     try {
       if (wire === 'openai') {
+        // 参考图：格式不对就别发（服务端会整条 400，白付一次往返）；一张都没有时字段不出现。
+        const referenceImages = referencePayload(references);
+        if (referenceImages === null) return setError(t('im.reference_invalid'));
         // 一次调用画一张：`n` 不传，尺寸与质量按页面上的选择（默认 1K 方图、自动质量）。
+        const body: Record<string, unknown> = { model: model.trim(), prompt: prompt.trim(), size, quality };
+        if (referenceImages.length > 0) body.reference_images = referenceImages;
         const response = await consumerResponse({
           address: identity.address,
           path: '/v1/images/generations',
           method: 'POST',
-          body: JSON.stringify({ model: model.trim(), prompt: prompt.trim(), size, quality }),
+          body: JSON.stringify(body),
         });
         if (!response.ok) throw await consumerError(response);
         const payload = (await response.json()) as { norm?: Bill };
@@ -179,6 +244,76 @@ export function ImagesPage() {
                     : t('im.no_model')
             }
           />
+
+          {/* 参考图也只属于 Images 那条线缆：Gemini 的 generateContent 没有这个字段，切过去就藏起来。 */}
+          {wire === 'openai' ? (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <Label>{t('im.reference')}</Label>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {t('im.reference_count', { count: references.length, max: MAX_REFERENCE_IMAGES })}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={reading || references.length >= MAX_REFERENCE_IMAGES}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    <ImagePlusIcon />
+                    {reading ? t('im.reference_reading') : t('im.reference_pick')}
+                  </Button>
+                </div>
+              </div>
+              {/* 文件选择器走 ui/Input（原生 input 只作为它的实体），按钮负责把对话框叫出来。 */}
+              <Input
+                ref={fileInput}
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                onChange={(event) => {
+                  void pickReferences(event.target.files);
+                  // 清掉 value：同一个文件再选一次也要触发 onChange。
+                  event.target.value = '';
+                }}
+              />
+              {references.length > 0 ? (
+                <ul className="flex flex-wrap gap-2">
+                  {references.map((reference) => (
+                    <li key={reference.id} className="relative">
+                      <img
+                        src={reference.dataUrl}
+                        alt={reference.name}
+                        title={reference.name}
+                        className="size-20 rounded-lg border border-border bg-background object-cover"
+                      />
+                      <Button
+                        variant="outline"
+                        size="icon-xs"
+                        className="absolute -top-1.5 -right-1.5 rounded-full bg-background"
+                        aria-label={t('im.reference_remove', { name: reference.name })}
+                        title={t('im.reference_remove', { name: reference.name })}
+                        onClick={() => removeReference(reference.id)}
+                      >
+                        <XIcon className="size-3" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="text-[11px] text-muted-foreground">
+                {t('im.reference_hint', { count: MAX_REFERENCE_IMAGES, size: formatBytes(MAX_REFERENCE_BYTES) })}
+              </p>
+              {rejections.length > 0 ? (
+                <ul className="flex flex-col gap-0.5 text-[11px] text-destructive">
+                  {rejections.map((rejection, index) => (
+                    <li key={`${rejection.name}-${rejection.reason}-${index}`}>{rejectionText(rejection)}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* 尺寸与质量是 Images 那条线缆的字段：Gemini 那条只要一句「我要图」。 */}
           {wire === 'openai' ? (

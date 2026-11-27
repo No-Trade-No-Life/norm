@@ -186,6 +186,24 @@ export const COPY = {
   'im.failed': { zh: '生成失败', en: 'Generation failed' },
   'im.empty_result': { zh: '上游回了 200，但回包里一张图都没有。', en: 'The upstream answered 200 with no image in the reply.' },
   'im.blocked': { zh: '上游拦下了这次生成：{reason}', en: 'The upstream blocked this generation: {reason}' },
+  'im.reference': { zh: '参考图', en: 'Reference images' },
+  'im.reference_hint': {
+    zh: '最多 {count} 张，单张不超过 {size}；PNG / JPEG / WEBP / GIF。带参考图时按图生图（编辑）走。',
+    en: 'Up to {count} images, {size} each; PNG / JPEG / WEBP / GIF. With references this becomes an image edit.',
+  },
+  'im.reference_pick': { zh: '选择图片', en: 'Choose images' },
+  'im.reference_reading': { zh: '读取中…', en: 'Reading…' },
+  'im.reference_count': { zh: '已选 {count}/{max}', en: '{count}/{max} selected' },
+  'im.reference_remove': { zh: '移除 {name}', en: 'Remove {name}' },
+  'im.reference_full': { zh: '最多 {count} 张，多出来的没有加进来', en: 'At most {count} images; the extras were not added' },
+  'im.reference_too_large': { zh: '{name} 超过 {size}，没有加进来', en: '{name} is over {size} and was not added' },
+  'im.reference_bad_type': {
+    zh: '{name} 不是 PNG / JPEG / WEBP / GIF，没有加进来',
+    en: '{name} is not PNG / JPEG / WEBP / GIF and was not added',
+  },
+  'im.reference_empty': { zh: '{name} 是空文件，没有加进来', en: '{name} is an empty file and was not added' },
+  'im.reference_unreadable': { zh: '{name} 读不出来，没有加进来', en: '{name} could not be read and was not added' },
+  'im.reference_invalid': { zh: '参考图格式不对：先移除它再发一次', en: 'A reference image is malformed: remove it and send again' },
 
   'ws.title': { zh: '联网搜索', en: 'Web search' },
   'ws.desc': {
