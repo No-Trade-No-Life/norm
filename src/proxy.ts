@@ -17,6 +17,11 @@ export type ProxyTarget = {
   host: string;
   port: number;
   authorization: string;
+  /**
+   * true = 到代理这一跳本身是 TLS（`https://` 代理）。缺省表示明文 `http://`，
+   * 只有 `https` 才会带上这个字段——明文是绝大多数代理的形态，让它保持默认形状。
+   */
+  tls?: true;
 };
 
 /**
@@ -31,20 +36,30 @@ export function parseProxyUrl(raw: string): ProxyTarget | null {
   } catch {
     return null;
   }
-  // 只收明文 HTTP 代理：`https://` 代理要在隧道外面再套一层 TLS，收益为零、路径多一条。
-  if (url.protocol !== 'http:' || url.hostname === '') return null;
+  // 两种代理都收：`http://` 是明文，`https://` 是到代理这一段也做 TLS（`tunnel.ts` 多握一次手）。
+  // 别的 scheme（socks5:// 之类）不在支持之列——隧道只实现了 CONNECT 这一种语义。
+  const secure = url.protocol === 'https:';
+  if ((!secure && url.protocol !== 'http:') || url.hostname === '') return null;
   // 带路径的地址一定把「代理」和「转发器」搞混了：代理只认一个主机加一个端口。
   if (url.pathname !== '/' || url.search !== '' || url.hash !== '') return null;
   const authorization =
     url.username === '' ? '' : `Basic ${btoa(`${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`)}`;
-  return { host: url.hostname, port: url.port === '' ? 80 : Number(url.port), authorization };
+  return {
+    host: url.hostname,
+    port: url.port === '' ? (secure ? 443 : 80) : Number(url.port),
+    authorization,
+    ...(secure ? { tls: true as const } : {}),
+  };
 }
 
 /** 展示用提示：密码位置换成 `***`。代理在哪不是秘密，凭据是。 */
 export function proxyHintOf(raw: string): string {
   const target = parseProxyUrl(raw);
   if (target === null) return '';
-  return target.authorization === '' ? `http://${target.host}:${target.port}` : `http://***@${target.host}:${target.port}`;
+  const scheme = target.tls === true ? 'https' : 'http';
+  return target.authorization === ''
+    ? `${scheme}://${target.host}:${target.port}`
+    : `${scheme}://***@${target.host}:${target.port}`;
 }
 
 /** 隧道那一层的读写：只有这两个动词，够 HTTP/1.1 用了。 */

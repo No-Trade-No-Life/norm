@@ -21,10 +21,42 @@ const decoder = new TextDecoder('latin1');
  * INVARIANT: 代理回的那一行必须是 2xx。407 说明凭据不对，别的说明它不肯转——两种都要把原话
  * 交出去，不能让调用方以为「上游坏了」。
  */
-async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
+/**
+ * 到代理这一跳的字节流：明文就是 socket 本身，加密就是套在 socket 上的那层 TLS。
+ *
+ * 加密代理多握一次手，换来的是「Worker → 代理」这一段不再明文——Basic 凭据、CONNECT 的
+ * 目标主机名、以及之后所有字节都在 TLS 里。目标站那一层 TLS 由 `openTunnel` 再叠一次，
+ * 两层各证各的身份（代理出示代理的证书，上游出示上游的证书）。
+ */
+async function proxyTransport(proxy: ProxyTarget): Promise<Tunnel> {
   const socket = connect({ hostname: proxy.host, port: proxy.port });
   const writer = socket.writable.getWriter();
-  await writer.write(
+  const reader = socket.readable.getReader();
+  if (proxy.tls !== true) {
+    return {
+      read: async () => {
+        const { value, done } = await reader.read();
+        return done ? undefined : value;
+      },
+      write: async (data) => {
+        await writer.write(data);
+      },
+    };
+  }
+  // subtls 的写回调是同步的，错误没法抛回去；写失败时连接已经断了，下一次读会如实报错。
+  const queue = new LazyReadFunctionReadQueue(async () => {
+    const { value, done } = await reader.read();
+    return done ? undefined : value;
+  });
+  const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => {
+    writer.write(data).catch(() => undefined);
+  });
+  return { read: () => outer.read(), write: (data) => outer.write(data) };
+}
+
+async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
+  const transport = await proxyTransport(proxy);
+  await transport.write(
     encoder.encode(
       [
         `CONNECT ${host}:443 HTTP/1.1`,
@@ -35,15 +67,13 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
       ].join('\r\n'),
     ),
   );
-  writer.releaseLock();
 
-  const reader = socket.readable.getReader();
   let pending = new Uint8Array(0);
   let status = '';
   // 读到响应头为止。头之后的字节已经在隧道里了（可能正是服务端的 ServerHello），不能丢。
   while (status === '') {
-    const { value, done } = await reader.read();
-    if (done) throw new Error('代理在隧道建立之前就断开了');
+    const value = await transport.read();
+    if (value === undefined) throw new Error('代理在隧道建立之前就断开了');
     const merged = new Uint8Array(pending.length + value.length);
     merged.set(pending);
     merged.set(value, pending.length);
@@ -71,13 +101,10 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
       pending = new Uint8Array(0);
       return out;
     }
-    const { value, done } = await reader.read();
-    return done ? undefined : value;
+    return transport.read();
   });
-  const upstream = socket.writable.getWriter();
-  // subtls 的写回调是同步的，错误没法抛回去；写失败时 socket 已经断了，下一次读会如实报错。
   const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => {
-    upstream.write(data).catch(() => undefined);
+    transport.write(data).catch(() => undefined);
   });
   return { read: () => tls.read(), write: (data) => tls.write(data) };
 }

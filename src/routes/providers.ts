@@ -129,7 +129,7 @@ providerRoutes.post('/', async (c) => {
   // 代理地址和密钥一样进门就封装：里面通常带着 user:pass，明文不该在库里过夜。
   const proxyUrl = (body.proxy_url ?? '').trim();
   if (proxyUrl !== '' && parseProxyUrl(proxyUrl) === null) {
-    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http://host:port，可带 user:pass');
+    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http:// 或 https:// 的 host:port，可带 user:pass');
   }
   const sealedProxy =
     proxyUrl === '' ? '' : await sealProviderKey({ env: c.env, address, providerId: id, providerKey: proxyUrl });
@@ -252,7 +252,7 @@ providerRoutes.patch('/:id', async (c) => {
   // 代理有三种意思：字段没提 = 不动；空串 = 拆掉；有值 = 换一条。
   const givenProxy = body.proxy_url === undefined ? undefined : (body.proxy_url ?? '').trim();
   if (givenProxy !== undefined && givenProxy !== '' && parseProxyUrl(givenProxy) === null) {
-    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http://host:port，可带 user:pass');
+    fail(400, 'proxy_url_invalid', 'proxy_url 只能是 http:// 或 https:// 的 host:port，可带 user:pass');
   }
   const sealedProxy =
     givenProxy === undefined
