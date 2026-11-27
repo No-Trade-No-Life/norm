@@ -1,20 +1,33 @@
+const SIGNIFICANT_DIGITS = 3;
+
+/**
+ * 数值 → 十进制文本：三位**有效数字**，至少两位小数，第二位之后的零收掉。
+ *
+ * 不用 `toPrecision`：它给出 `7.5e-4` 这种指数写法，而账本要的是能一眼读的十进制。
+ */
+function decimal(value: number): string {
+  const abs = Math.abs(value);
+  const exponent = abs === 0 ? 0 : Math.floor(Math.log10(abs));
+  // 三位有效数字落在小数第几位：0.00075 → 第 6 位；0.08 → 第 4 位；44.66 → 第 2 位。
+  const decimals = Math.min(12, Math.max(2, SIGNIFICANT_DIGITS - 1 - exponent));
+  const [whole, fraction = ''] = value.toFixed(decimals).split('.');
+  return `${whole}.${fraction.slice(0, 2)}${fraction.slice(2).replace(/0+$/, '')}`;
+}
+
 /**
  * 纳美元 → 人类可读。1e9 = $1。
  *
- * 分档按「这一档还有信息」来定：余额要读到分，一次调用的账单要读到 9 位小数——
- * 300 纳美元的服务费就是 $0.0000003，四舍五入到 6 位会显示成 $0.000000，
- * 而那不是「零」，是一笔真收了钱的账。
+ * 按**有效数字**给位数，不按固定小数位：同一个账本里既有 $0.00075 的一次搜索，也有 $0.08
+ * 的一张图、$0.95 的余额。固定小数位会让小额只剩一位有效数字（0.00075 → $0.0008，读起来
+ * 像多收了 7%）；固定的有效位数让每一档都留三位——量级不同，精度一致。
+ *
+ * 两条护栏：不小于一分时至少给到分（$44.66 不会被印成 $45），末尾的零只在第二位小数之后
+ * 才收掉（$1.50 仍是 $1.50，$0.000750 收成 $0.00075）。
  */
 export function usd(nanos: number | null | undefined): string {
   if (nanos === null || nanos === undefined) return '—';
-  const value = nanos / 1_000_000_000;
-  if (value === 0) return '$0';
-  const abs = Math.abs(value);
-  if (abs >= 0.01) return `$${value.toFixed(2)}`;
-  if (abs >= 0.0001) return `$${value.toFixed(4)}`;
-  if (abs >= 0.000001) return `$${value.toFixed(6)}`;
-  // 更小的量级：给到 9 位，并把尾随的 0 收掉，免得一排 $0.000000300 读起来像噪声。
-  return `$${value.toFixed(9).replace(/0+$/, '').replace(/\.$/, '')}`;
+  if (nanos === 0) return '$0';
+  return `$${decimal(nanos / 1_000_000_000)}`;
 }
 
 /** 带符号：流水里 grant 是正、charge 是负。 */
@@ -82,15 +95,12 @@ export function percent(part: number | null | undefined, whole: number | null | 
 /**
  * 官方价：纳美元 / 1M token → 每百万 token 的美元。
  *
- * 与 usd() 分家的原因：价目表里常有 $0.075 这种三位小数的单价，
- * 四舍五入到分（$0.08）会让「官方价」这个锚点先自己失真。
+ * 与 `usd()` 同一条格式（三位有效数字），只是数值本身是「每百万 token 的价」：价目表里
+ * 常有 $0.075 这种单价，四舍五入到分（$0.08）会让「官方价」这个锚点先自己失真。
  */
 export function perMillion(nanos: number): string {
-  const value = nanos / 1_000_000_000;
-  if (value === 0) return '$0';
-  // 至少两位小数（$1.10 而不是 $1.1），再多则保留有效位：$0.075 不能被舍成 $0.08。
-  const [whole, fraction = ''] = value.toFixed(4).replace(/0+$/, '').split('.');
-  return `$${whole}.${fraction.padEnd(2, '0')}`;
+  if (nanos === 0) return '$0';
+  return `$${decimal(nanos / 1_000_000_000)}`;
 }
 
 /**
