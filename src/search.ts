@@ -12,10 +12,8 @@
  * 一目了然的事说成两句。信封与 DeepSeek LB 的 `/v1/web-search` 同一套（`sources[]`，`url`
  * 必有），于是「官方 API」与「一条 LB」可以互换着用：改一次基址，调用方不必改代码。
  */
+import { DEEPSEEK_SEARCH_CALL_NANOS } from './deepseek';
 import { fail } from './http';
-
-/** 上游 Search API 的路径，拼在协议基址之后（DeepSeek 官方基址是 `https://api.deepseek.com`）。 */
-export const SEARCH_PATH = '/v1/tools/search';
 
 /** 下游没指定条数时要几条。 */
 export const DEFAULT_MAX_RESULTS = 8;
@@ -91,7 +89,7 @@ export function readSearchAsk(raw: string): SearchAsk {
 }
 
 /** 上游 Search API 的请求体：查询带着域名操作符，`count` 是结果条数，`need_content` 要正文。 */
-export function searchBody(ask: SearchAsk): string {
+function searchBody(ask: SearchAsk): string {
   return JSON.stringify({ query: ask.query, count: ask.max_results, need_content: ask.need_content });
 }
 
@@ -103,7 +101,7 @@ export function searchBody(ask: SearchAsk): string {
  * 一笔不该存在的 Token 费。上游回的不是 JSON 或没有 `results` 数组同理：那是上游违约，
  * 不是「搜不到」。
  */
-export async function readSearchAnswer(reply: Response): Promise<SearchSource[]> {
+async function readSearchAnswer(reply: Response): Promise<SearchSource[]> {
   let payload: unknown;
   try {
     payload = await reply.json();
@@ -203,4 +201,53 @@ function withDomainOperators(
   if (allowed !== null) return `${query} ${allowed.map((domain) => `site:${domain}`).join(' OR ')}`;
   if (blocked !== null) return `${query} ${blocked.map((domain) => `-site:${domain}`).join(' ')}`;
   return query;
+}
+
+/**
+ * 上游说哪一种搜索方言。
+ *
+ * 今天只有一条：DeepSeek 的 Search API。用方言名而不是把路径写死在路由里，是因为「搜索」
+ * 的形状是**下游**定的——问一句话、要一页结果——而上游可以换人：将来别的搜索引擎（或一家
+ * 自己的搜索服务）都可以包成同一个形状的方言，各自给一条路径、一个请求体、一个读法、一个
+ * 价，路由一个字都不用改。
+ *
+ * 而它挂在**协议**上而不是**模型**上：搜索不跑模型，没有 token 用量，也没有「这次用哪个
+ * 型号」可问——能不能搜是这条上游的事实，「不用选模型」不是省掉了一步，而是这一步本来就
+ * 不存在。
+ */
+export type SearchDialect = 'deepseek-search';
+
+/**
+ * 一种上游搜索方言：打到哪个路径、请求体怎么说、结果怎么读、一次值多少钱。
+ *
+ * 与 `AudioCodec` 同一个形状、同一条纪律：方言名进协议（`ProtocolProfile.search`），编解码
+ * 只活在这一份文件里。价格挂在方言上而不是通用价目表上——`pricing.ts` 那张表按 token 记价，
+ * 而搜索按次记价，那是两件不同的事，混在一张表里只会让两边都说不清。
+ */
+export type SearchCodec = {
+  dialect: SearchDialect;
+  /** 上游搜索路径，拼在协议基址之后。 */
+  path: string;
+  /** 一次**成功**搜索的官方价（纳美元）；失败、超时与无结果都不收。 */
+  callNanos: number;
+  /** 规范请求 → 上游请求体（JSON 文本）。 */
+  encode: (ask: SearchAsk) => string;
+  /** 上游的成功应答 → 一页结果；没有结果的那一次按失败处理，不收钱。 */
+  read: (reply: Response) => Promise<SearchSource[]>;
+};
+
+/** DeepSeek 的搜索方言：官方 Search API，按成功的调用计费。 */
+const DEEPSEEK_SEARCH: SearchCodec = {
+  dialect: 'deepseek-search',
+  path: '/v1/tools/search',
+  callNanos: DEEPSEEK_SEARCH_CALL_NANOS,
+  encode: searchBody,
+  read: readSearchAnswer,
+};
+
+const SEARCH_CODECS: Record<SearchDialect, SearchCodec> = { 'deepseek-search': DEEPSEEK_SEARCH };
+
+/** 取一条搜索方言（协议里存的是方言名，编解码在这里取）。 */
+export function searchCodecFor(dialect: SearchDialect): SearchCodec {
+  return SEARCH_CODECS[dialect];
 }

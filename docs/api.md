@@ -364,8 +364,9 @@ curl https://norm.ntnl.io/v1/images/generations \
 ## 联网搜索（只认 Bearer 消费者密钥）
 
 搜索是一条**独立端点**，不是 `/v1/responses` 上的 `tools`：DeepSeek 的 Search API 就是搜索
-引擎本身，一次请求一次应答，不跑模型、没有 tool 循环。上游今天只有一种搜法，入口因此不带
-方言参数——`deepseek` 协议自带这一条，选它就是「这台上游会搜索」。
+引擎本身，一次请求一次应答，不跑模型、没有 tool 循环。上游的搜法是**协议**的事（`deepseek`
+协议自带 `deepseek-search` 这一条方言），不选模型、也不带方言参数——选一条会搜索的上游，
+就是「这台上游会搜索」；将来别的搜索引擎包成同一条方言，这个入口照旧。
 
 ```bash
 curl https://norm.ntnl.io/v1/web-search \

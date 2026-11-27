@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { HttpError } from '../src/http';
-import { SEARCH_CALL_NANOS } from '../src/pricing';
-import { SEARCH_PATH, readSearchAnswer, readSearchAsk, searchBody } from '../src/search';
+import { protocolFor } from '../src/protocols';
+import { readSearchAsk, searchCodecFor } from '../src/search';
+
+/** DeepSeek 的搜索方言：今天唯一的一条，路径与价格都挂在它上面。 */
+const codec = searchCodecFor('deepseek-search');
 
 /** 把一次出错读成 `状态码 + 代码`：搜索这一层的每个拒绝都是这两件事。 */
 function rejection(run: () => unknown): { status: number; code: string; message: string } {
@@ -41,7 +44,7 @@ describe('联网搜索的请求：一句话、一页条数、要不要正文', (
   });
 
   it('条数与正文原样进上游请求体（上游管它叫 count）', () => {
-    const body = searchBody(ask({ query: 'rust', max_results: 50, need_content: true }));
+    const body = codec.encode(ask({ query: 'rust', max_results: 50, need_content: true }));
     expect(JSON.parse(body)).toEqual({ query: 'rust', count: 50, need_content: true });
   });
 
@@ -91,7 +94,7 @@ describe('联网搜索的请求：一句话、一页条数、要不要正文', (
 });
 
 describe('联网搜索的应答：有 url 的才算一条结果', () => {
-  const respond = (body: unknown) => readSearchAnswer(new Response(JSON.stringify(body)));
+  const respond = (body: unknown) => codec.read(new Response(JSON.stringify(body)));
 
   it('结果折成 sources：带 url 的留下，字段改名成信封那一套', async () => {
     const sources = await respond({
@@ -137,20 +140,25 @@ describe('联网搜索的应答：有 url 的才算一条结果', () => {
       const missing = await asyncRejection(() => respond(body));
       expect(missing).toMatchObject({ status: 502, code: 'search_data_missing' });
     }
-    const notJson = await asyncRejection(() =>
-      readSearchAnswer(new Response('<html>bad gateway</html>')),
-    );
+    const notJson = await asyncRejection(() => codec.read(new Response('<html>bad gateway</html>')));
     expect(notJson).toMatchObject({ status: 502, code: 'search_data_missing' });
   });
 });
 
-describe('联网搜索的价格：按成功的调用算', () => {
-  it('每 1,000 次 0.75 美元 = 一次 750,000 纳美元', () => {
-    expect(SEARCH_CALL_NANOS).toBe(750_000);
-    expect((SEARCH_CALL_NANOS * 1000) / 1_000_000_000).toBe(0.75);
+describe('搜索是一条协议方言：挂在协议上，不挂在模型上', () => {
+  it('deepseek 协议声明了这条方言，别的协议一条都没有', () => {
+    expect(protocolFor('deepseek').search).toBe('deepseek-search');
+    for (const protocol of ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini'] as const) {
+      expect(protocolFor(protocol).search).toBeUndefined();
+    }
   });
 
-  it('打的是 Search API 自己的路径，不是任何推理端点', () => {
-    expect(SEARCH_PATH).toBe('/v1/tools/search');
+  it('方言自己知道打哪条路径：Search API 本身，不是任何推理端点', () => {
+    expect(codec.path).toBe('/v1/tools/search');
+  });
+
+  it('方言自己知道一次多少钱：每 1,000 次 0.75 美元 = 一次 750,000 纳美元', () => {
+    expect(codec.callNanos).toBe(750_000);
+    expect((codec.callNanos * 1000) / 1_000_000_000).toBe(0.75);
   });
 });

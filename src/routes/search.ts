@@ -14,10 +14,10 @@ import {
 } from '../gas';
 import { HttpError, fail } from '../http';
 import { uuidv7 } from '../ids';
-import { SEARCH_CALL_NANOS, ZERO_AUDIO_USAGE } from '../pricing';
+import { ZERO_AUDIO_USAGE } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
-import { readSearchAnswer, readSearchAsk, searchBody, SEARCH_PATH, type SearchSource } from '../search';
+import { readSearchAsk, searchCodecFor, type SearchSource } from '../search';
 import { resolveProvider } from '../store';
 import { failureHeaders, receiptHeaders, recordFailure, settleBill, type Accounting } from './billing';
 
@@ -74,7 +74,10 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
   const provider = choice.provider;
   const profile = protocolFor(provider.protocol);
   // 选址已经按搜索能力筛过，走到了这里说明它确实有这一条。
-  if (profile.search !== true) fail(404, 'search_not_served', `${provider.protocol} 没有搜索能力`);
+  if (profile.search === undefined) fail(404, 'search_not_served', `${provider.protocol} 没有搜索能力`);
+  // 方言决定三件事：打到哪条路径、请求体怎么说、一次值多少钱。路由这一层不认识任何一种
+  // 具体的搜索引擎，换一家上游多一条方言，这个文件一个字都不用改。
+  const codec = searchCodecFor(profile.search);
 
   // 闸门 B（发往上游前预算检查）：余额要够覆盖「记一笔消费者 + 跨用户转账 + 结算」这几次写库。
   const pendingTransfer = choice.via === 'pool' ? GAS_TOKEN_TRANSFER_NANOS : 0;
@@ -125,11 +128,11 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
       env: c.env,
       address: provider.address,
       provider,
-      url: `${provider.base_url.replace(/\/+$/, '')}${SEARCH_PATH}`,
+      url: `${provider.base_url.replace(/\/+$/, '')}${codec.path}`,
       init: {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey) },
-        body: searchBody(ask),
+        body: codec.encode(ask),
       },
     });
   } catch (error) {
@@ -155,7 +158,7 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
 
   let sources: SearchSource[];
   try {
-    sources = await readSearchAnswer(reply);
+    sources = await codec.read(reply);
   } catch (error) {
     // 上游回了 200，却没有一页结果（或回的不是搜索信封）：这次搜索不算成功，Token 费不收，
     // 但那次上游请求真的发生过，Gas 照收——与文本、音频的失败同一口径。
@@ -172,7 +175,7 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
   const meta = await settleBill(accounting, {
     status: 'ok',
     statusCode: reply.status,
-    tokenNanos: provider.address === address ? 0 : SEARCH_CALL_NANOS,
+    tokenNanos: provider.address === address ? 0 : codec.callNanos,
     usage: { input: 0, cached: 0, output: 0 },
     audio: ZERO_AUDIO_USAGE,
   });

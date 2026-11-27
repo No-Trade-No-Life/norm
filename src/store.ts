@@ -546,7 +546,7 @@ export async function resolveProvider(
   // 搜索同理，而且更简单：这次调用没有模型可问，能问的只有「这条上游会不会搜索」。
   // 不会的那条连一次上游请求都不该有——搜索是它的能力缺口，不是它的配置问题。
   if (request.search === true) {
-    pool = pool.filter((row) => protocolFor(row.protocol).search === true);
+    pool = pool.filter((row) => protocolFor(row.protocol).search !== undefined);
     if (pool.length === 0) {
       fail(
         404,

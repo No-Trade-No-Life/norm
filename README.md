@@ -149,11 +149,16 @@ curl https://norm.ntnl.io/v1/web-search \
 - **入口**：`POST /v1/web-search`，body 是 `query`（必填）、`max_results`（1–50，缺省 8）、
   `need_content`（缺省 false），以及可选的 `allowed_domains` / `blocked_domains`（裸域名，
   二者不能同时给；转发前折成 Search API 的 `site:` / `-site:` 查询语法）。
-- **选址**：搜索没有模型可问，所以能力由**协议**声明——今天只有 `deepseek` 自带 Search API。
-  规则仍是「自有优先、公共池兜底、会话亲和」。
+- **方言挂在协议上，不挂在模型上**：`ProtocolProfile.search` 存的是方言名（今天只有
+  `deepseek-search`），与音频那侧同一个道理——对外一条线缆，对内可以有多条实现。搜索**不
+  选模型**：它不跑模型、没有 token，也没有「这次用哪个型号」可问，能不能搜是这条上游的事实。
+  将来别的搜索引擎（或一家自己的搜索服务）都能包成同一条方言：一条路径、一个请求体、一个
+  读法、一个价，路由一个字都不用改。选址规则仍是「自有优先、公共池兜底、会话亲和」。
 - **计价**：按**成功的调用**算，不按 token。上游价目每 1,000 次 0.75 美元，即一次
-  `750,000` 纳美元（`pricing::SEARCH_CALL_NANOS`）；失败、超时、以及「一条结果都没有」的那次
-  都不收 Token 费，只收 Gas。调用自有上游时 Token 费仍记为 0（自己直接付给厂商）。
+  `750,000` 纳美元——这个价是 DeepSeek 这一条协议的事实（`deepseek.ts` 的
+  `DEEPSEEK_SEARCH_CALL_NANOS`，随方言一起挂在 `SearchCodec.callNanos` 上），不进按 token
+  记价的通用表；别的搜索方言带自己的价。失败、超时、以及「一条结果都没有」的那次都不收
+  Token 费，只收 Gas。调用自有上游时 Token 费仍记为 0（自己直接付给厂商）。
 - **信封**：`sources[]`，每条必有 `url`；与 DeepSeek LB 的 `/v1/web-search` 同一套，改一次
   base_url 就能在「官方 API」与「一条 LB」之间换，调用方不必改代码。
 
