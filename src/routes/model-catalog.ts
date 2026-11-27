@@ -30,7 +30,8 @@ const MAX_PROBES = 24;
 
 type CatalogProvider = {
   id: string;
-  label: string;
+  /** `null` = 这条上游没有标签；页面用 `host` 顶上。 */
+  label: string | null;
   base_url: string;
   host: string;
   protocol: Protocol;

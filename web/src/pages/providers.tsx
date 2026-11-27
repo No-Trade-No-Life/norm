@@ -30,6 +30,7 @@ import {
   useUpdateProvider,
 } from '../queries';
 import type { Provider } from '../types';
+import { providerName, safeHost } from '../lib/format';
 import { protocolLabel } from '../lib/labels';
 
 export function ProvidersPage() {
@@ -148,7 +149,7 @@ function ProviderRow({
     <TableRow>
       <TableCell className="font-medium">
         <span className="flex flex-wrap items-center gap-1.5">
-          {item.label}
+          {providerName(item.label, safeHost(item.base_url))}
           {/* 池子里那条不是这个账户的资源：标出来，并且不给任何开关。 */}
           {item.mine ? null : (
             <Badge variant="outline" className="font-normal">
@@ -361,7 +362,8 @@ function NewProviderDialog({
 
   const submit = async () => {
     setError(null);
-    if (!label.trim() || !providerKey.trim() || (asksBaseUrl && !baseUrl.trim())) {
+    // 只有真正决定「这条上游能不能用」的字段才拦人：标签不填就不填。
+    if (!providerKey.trim() || (asksBaseUrl && !baseUrl.trim())) {
       setError(t('pr.missing'));
       return;
     }
@@ -369,7 +371,8 @@ function NewProviderDialog({
       // 明文密钥这一次经过请求体，服务端立刻用 Worker secret 封装，之后只剩提示。
       // base_url 只在协议要的时候才发：固定基址的协议不接受另一个地址。
       await create.mutateAsync({
-        label: label.trim(),
+        // 标签可选：留空就不发，服务端存「没有标签」，页面用主机名认这条上游。
+        ...(label.trim() ? { label: label.trim() } : {}),
         provider_key: providerKey.trim(),
         protocol,
         enabled,
@@ -488,6 +491,7 @@ function NewProviderDialog({
           <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_label')}</Label>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_label_hint')}</p>
           </div>
 
           <div className="flex items-center justify-between gap-3">
@@ -525,7 +529,7 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
   const update = useUpdateProvider();
   const protocols = useProtocols();
 
-  const [label, setLabel] = useState(provider.label);
+  const [label, setLabel] = useState(provider.label ?? '');
   const [protocol, setProtocol] = useState<string>(provider.protocol);
   const [baseUrl, setBaseUrl] = useState(provider.base_url);
   const [enabled, setEnabled] = useState(provider.enabled === 1);
@@ -550,13 +554,14 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
 
   const submit = async () => {
     setError(null);
-    if (!label.trim() || (asksBaseUrl && !baseUrl.trim())) {
+    if (asksBaseUrl && !baseUrl.trim()) {
       setError(t('pr.missing'));
       return;
     }
     try {
       const body: Record<string, unknown> = {
-        label: label.trim(),
+        // 清空标签是一个明确的动作：发 null，而不是把空串当名字存进去。
+        label: label.trim() === '' ? null : label.trim(),
         protocol,
         enabled,
       };
@@ -673,6 +678,7 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
           <div className="flex flex-col gap-1.5">
             <Label>{t('pr.field_label')}</Label>
             <Input value={label} onChange={(event) => setLabel(event.target.value)} placeholder={t('pr.field_label_placeholder')} />
+            <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.field_label_hint')}</p>
           </div>
 
           <div className="flex flex-col gap-1.5">

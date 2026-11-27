@@ -83,7 +83,8 @@ export type ProviderScope = 'private' | 'pool';
 export type Provider = {
   id: string;
   address: string;
-  label: string;
+  /** 人看的名字。`null` = 没填标签：它从来不是必填项，列表里用主机名顶上。 */
+  label: string | null;
   base_url: string;
   key_hint: string;
   sealed_key: string;
@@ -421,7 +422,8 @@ export type CatalogModel = {
  */
 export type CatalogProvider = {
   id: string;
-  label: string;
+  /** `null` = 没填标签；这一行还有 `host` 可以认人。 */
+  label: string | null;
   base_url: string;
   host: string;
   protocol: Protocol;

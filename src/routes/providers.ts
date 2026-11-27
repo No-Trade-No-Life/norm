@@ -19,7 +19,11 @@ import {
 } from '../oauth';
 
 type Body = {
-  label?: string;
+  /**
+   * 人看的名字。**可选、可空**：没有标签不该拦住一条能跑的上游，`null` / 空串 / 不填
+   * 都是「没有标签」，库里存 NULL，页面上退回主机名。
+   */
+  label?: string | null;
   /** 基址：协议钉死时（`deepseek`）可以不填；通用协议必填。 */
   base_url?: string;
   /** 上游提供商明文密钥：只在这一次请求体里出现，服务端立刻封装，之后再也不见明文。 */
@@ -90,14 +94,14 @@ providerRoutes.post('/oauth/exchange', async (c) => {
 
 providerRoutes.post('/', async (c) => {
   const body = await c.req.json<Body>();
-  const label = (body.label ?? '').trim();
+  // 标签不填就不填：它只影响回头认人，不影响这条上游能不能用。
+  const label = labelOf(body.label);
   // 协议可省，默认最通用的 chat；scope 不写就绝不会进池子。
   const protocol = body.protocol ?? 'openai-chat';
   // 不写就绝不会进池子：池子里的密钥是站点的，进不进是一个显式动作。
   const scope = body.scope ?? 'private';
   const enabled = body.enabled ?? true;
 
-  if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
   if (scope !== 'private' && scope !== 'pool') fail(400, 'scope_invalid', 'scope 只能是 private / pool');
   if (scope === 'pool' && !canOwnPool(c.env, c.get('principal').address)) {
@@ -215,11 +219,12 @@ providerRoutes.patch('/:id', async (c) => {
   if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
 
   const body = await c.req.json<Body>();
-  const label = body.label === undefined ? existing.label : body.label.trim();
+  // 标签三种写法，与 proxy_url 同一种三态：字段不出现 = 保持原值；null / 空串 = 清掉；
+  // 有值 = 换一个。名字不是必填项，所以「清掉」也必须能表达。
+  const label = body.label === undefined ? existing.label : labelOf(body.label);
   const protocol = body.protocol ?? existing.protocol;
   const enabled = body.enabled === undefined ? existing.enabled === 1 : body.enabled;
 
-  if (!label) fail(400, 'label_missing', '缺少 label');
   if (!isProtocol(protocol)) fail(400, 'protocol_invalid', `protocol 只能是 ${PROTOCOLS.join(' / ')}`);
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
 
@@ -293,6 +298,15 @@ providerRoutes.delete('/:id', async (c) => {
   if (updated.meta.changes === 0) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
   return c.json({ id, revoked: true });
 });
+
+/**
+ * 标签归一：没填、空串、全空白 → `null`。库里只有一个「没有标签」的值，
+ * 免得 `''` 与 `NULL` 两种空法各自被页面读成不同意思。
+ */
+function labelOf(input: string | null | undefined): string | null {
+  const text = (input ?? '').trim();
+  return text === '' ? null : text;
+}
 
 /**
  * OAuth 协议的凭据在写入口解析一次：贴错的 JSON、缺 refresh_token、不是 OpenAI 的令牌，
