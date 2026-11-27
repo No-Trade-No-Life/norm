@@ -78,7 +78,8 @@ export type ProviderScope = 'private' | 'pool';
 export type ProviderRow = {
   id: string;
   address: string;
-  label: string;
+  /** 人看的名字。`null` = 没有标签：它从来不是必填项，显示什么由前端决定。 */
+  label: string | null;
   base_url: string;
   key_hint: string;
   sealed_key: string;

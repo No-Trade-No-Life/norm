@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
 import type { Lang } from '../copy';
-import { perMillion, when } from '../lib/format';
+import { perMillion, providerName, when } from '../lib/format';
 import { modalityLabel, protocolLabel, trustLabel } from '../lib/labels';
 import { useModelCatalog } from '../queries';
 import { PROTOCOLS, type CatalogModel, type CatalogProvider } from '../types';
@@ -91,6 +91,9 @@ export function ModelsPage() {
   const models = useMemo(() => catalog.data?.models ?? [], [catalog.data]);
   const byId = useMemo(() => new Map(providers.map((provider) => [provider.id, provider])), [providers]);
 
+  /** 上游在这里叫什么：标签可选，没有就用主机名（与「上游提供商」页同一套规则）。 */
+  const nameOf = (provider: CatalogProvider) => providerName(provider.label, provider.host);
+
   /** 一行模型 → 提供它的那几条上游（撤销后可能缺一条，缺了就当没有）。 */
   const servingOf = (model: CatalogModel): CatalogProvider[] =>
     model.providers.map((id) => byId.get(id)).filter((provider): provider is CatalogProvider => provider !== undefined);
@@ -106,7 +109,7 @@ export function ModelsPage() {
       if (!needle) return true;
       return (
         model.id.toLowerCase().includes(needle) ||
-        serving.some((provider) => provider.label.toLowerCase().includes(needle))
+        serving.some((provider) => nameOf(provider).toLowerCase().includes(needle))
       );
     });
     // servingOf 只读 byId 与 model，跟着 byId 走即可。
@@ -135,7 +138,7 @@ export function ModelsPage() {
               </span>
               {/* 窄屏的上游列藏起来了，这里补一份文字副本。 */}
               <span className="mt-0.5 block truncate text-[11px] text-muted-foreground md:hidden">
-                {serving.map((provider) => provider.label).join(' · ')}
+                {serving.map(nameOf).join(' · ')}
               </span>
             </>
           );
@@ -216,12 +219,13 @@ export function ModelsPage() {
           const serving = servingOf(row.original);
           const shown = serving.slice(0, 2);
           const rest = serving.length - shown.length;
-          const detail = serving.map((provider) => `${provider.label} · ${provider.host}`).join('\n');
+          // 没有标签时名字就是主机名，别写成「host · host」。
+          const detail = serving.map((provider) => (provider.label ? `${provider.label} · ${provider.host}` : provider.host)).join('\n');
           return (
             <div className="flex flex-wrap items-center gap-1">
               {shown.map((provider) => (
                 <Badge key={provider.id} variant="secondary" className="max-w-44 truncate font-normal" title={detail}>
-                  {provider.label}
+                  {nameOf(provider)}
                 </Badge>
               ))}
               {rest > 0 ? (
@@ -311,7 +315,7 @@ export function ModelsPage() {
                 <SelectItem value={ALL}>{t('md.filter_all_providers')}</SelectItem>
                 {providers.map((provider) => (
                   <SelectItem key={provider.id} value={provider.id}>
-                    {provider.label}
+                    {nameOf(provider)}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -366,8 +370,8 @@ export function ModelsPage() {
                 <Badge variant={provider.probed ? 'destructive' : 'outline'} className="font-normal">
                   {t(provider.probed ? 'md.probe_failed' : 'md.probe_unasked')}
                 </Badge>
-                <span className="max-w-40 truncate font-medium" title={provider.label}>
-                  {provider.label}
+                <span className="max-w-40 truncate font-medium" title={nameOf(provider)}>
+                  {nameOf(provider)}
                 </span>
                 <span className="font-mono text-[11px] text-muted-foreground">{provider.host}</span>
                 <Badge variant="outline" className="font-normal">

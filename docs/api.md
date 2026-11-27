@@ -125,7 +125,8 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
 ```jsonc
 // POST /api/v1/providers  → 201 { id }
 {
-  "label": "OpenAI 个人",                     // 必填，人看的名字；没有默认值
+  "label": "OpenAI 个人",                     // 可选，人看的名字。不填 / 空串 / null 都是
+                                            // 「没有标签」，库里存 NULL，页面改用主机名认它
   "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后只有本人能改。
                                             // deepseek / opencode-go 的基址由协议给定，
                                             // 不能也不用填
@@ -155,7 +156,9 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
 
 `PATCH /api/v1/providers/:id` 的字段全部可选：`label` / `protocol` / `enabled` /
 `base_url` / `provider_key` / `proxy_url`。`proxy_url` 有三种意思：字段不出现 = 保持原值、
-空串 = 拆掉这条代理、有值 = 换一条。基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
+空串 = 拆掉这条代理、有值 = 换一条。`label` 也有三种意思：不出现 = 保持原值、`null` 或空串 = 清掉标签、
+有值 = 换一个名字——**它从来不是必填项**，没有标签的上游照样选址、照样记账。
+基址仍由协议决定——固定基址的协议不接受另一个地址（`400 base_url_fixed`）；
 从固定基址换到通用方言时要带上新的 `base_url`，否则 `400 base_url_invalid`。
 
 响应里的每条上游提供商还带一个 `trusted` 布尔：`base_url` 的主机名是否在 Worker 的

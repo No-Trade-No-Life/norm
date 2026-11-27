@@ -310,8 +310,14 @@ export const COPY = {
     zh: '密钥经这一次请求交给服务端封装，之后只能看到前后各四位。',
     en: 'The key is handed to the server once for sealing. After that, only the first and last four characters remain visible.',
   },
-  'pr.field_label': { zh: '标签', en: 'Label' },
+  // 标签是唯一一个「不填也能用」的字段：它只影响回头认人，所以标出来可选，
+  // 并说清留空之后页面拿什么称呼这条上游。
+  'pr.field_label': { zh: '标签（可选）', en: 'Label (optional)' },
   'pr.field_label_placeholder': { zh: '例如 OpenAI 个人', en: 'e.g. OpenAI personal' },
+  'pr.field_label_hint': {
+    zh: '留空 = 没有标签，列表里改用主机名认这条上游。它不参与选址，也不进账本。',
+    en: 'Leave it empty to have no label — the list then names this provider by its host. It plays no part in routing or billing.',
+  },
   'pr.field_key': { zh: '上游提供商密钥', en: 'provider key' },
   'pr.field_key_hint': {
     zh: '只存在库里的一份 AES-256-GCM 密文；拖库拿不到明文，除非连 Worker secret 一起拿走。',
@@ -364,7 +370,7 @@ export const COPY = {
   'pr.saving': { zh: '保存中…', en: 'Saving…' },
   'pr.creating': { zh: '创建中…', en: 'Creating…' },
   'pr.created': { zh: '已创建', en: 'Created' },
-  'pr.missing': { zh: '名称与上游提供商密钥都要填；协议要 base_url 时也要填。', en: 'Name and provider key are required — plus a base URL when the protocol asks for one.' },
+  'pr.missing': { zh: '上游提供商密钥要填；协议要 base_url 时也要填。标签不必填。', en: 'A provider key is required — plus a base URL when the protocol asks for one. The label is optional.' },
 
   'co.title': { zh: '下游消费者', en: 'Consumers' },
   'co.desc': {

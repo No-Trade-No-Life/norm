@@ -60,6 +60,19 @@ export function safeHost(baseUrl: string): string {
   }
 }
 
+/**
+ * 上游在页面上叫什么：有标签用标签，没有就用主机名。
+ *
+ * 标签是可选的（`null` = 没填），但页面上总得有个能认人的字。主机名是这条上游自己的
+ * `base_url` 说了算的那一段，谁看都一样，也不会是空的——所以空标签退回它，而不是
+ * 编一个「未命名」出来占位。
+ */
+export function providerName(label: string | null | undefined, host: string): string {
+  const text = label?.trim() ?? '';
+  if (text !== '') return text;
+  return host.trim() !== '' ? host : '—';
+}
+
 /** 占比：`cached / input`。缓存命中率是账本上最值得盯的一个比值。 */
 export function percent(part: number | null | undefined, whole: number | null | undefined): string {
   if (!whole || whole <= 0 || part === null || part === undefined) return '0%';

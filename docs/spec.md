@@ -42,6 +42,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 
 ### 4.1 上游提供商密钥的存放
 
+- `label` 只是人看的名字，**可选、可空**（库里 `NULL` = 没有标签）：它不是选址依据，也不是信任依据，缺了它一条上游照样完整。
 - 添加一个上游提供商时明文只经过一次请求体。服务端立刻用 `NORM_MASTER_KEY`（Worker secret，32 字节）
   做 AES-256-GCM 封装，AAD 绑 `address|providerId`。库里存：label、base_url、
   `sealed_key`、`kdf`、`key_hint`（前 4 后 4），以及三个用户配置项（上游提供商协议、是否进公共池、启停）。
