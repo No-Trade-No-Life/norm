@@ -40,47 +40,20 @@
 ```
 X-Norm-Address   base58(publicKey)
 X-Norm-Timestamp 十进制 unix 秒
-X-Norm-Nonce     16 字节随机 → base58（22~24 字符）；语义是**这次请求的幂等键**（见下）
 X-Norm-Signature base58(64 字节签名)
 ```
 
 待签名串（UTF-8，`\n` 分隔，末尾无换行）：
 
 ```
-norm-v1\n{METHOD}\n{PATH}\n{timestamp}\n{nonce}\n{sha256hex(body)}
+norm-v1\n{METHOD}\n{PATH}\n{timestamp}\n{sha256hex(body)}
 ```
 
 - `METHOD` 大写；`PATH` 是 `new URL(request.url).pathname`（不含 query）。
 - `body` 是原始请求体字节；无 body 时用空字节串（`sha256hex("")` = `e3b0c442…`）。
 - 服务端校验顺序：头部齐全 → 时间戳在 ±`SIGNATURE_WINDOW_SECONDS`（60 秒）内 → 验签 → 放行。
   鉴权这一步**一行都不写**。
-
-### 2.1 时间窗与一次性是两件事
-
-| 问题 | 谁回答 | 怎么回答 |
-|---|---|---|
-| 这个签名新不新鲜？ | 时间窗（`SIGNATURE_WINDOW_SECONDS`，60 秒） | 时间戳离现在超过 60 秒 → 401 `timestamp_out_of_window` |
-| 这次改动做过没有？ | 请求自带的幂等键 `X-Norm-Nonce` | 见下：落在被改的那一行上，或派生新行的 id |
-
-**时间窗只管新鲜度，不管「做过没有」。** 一次性由幂等键保证，所以：
-
-- **读（GET / HEAD）不查也不写任何去重状态**：重放一次读没有副作用，直接按时间窗放行
-  （同一个签名再发一次仍然是 200）。这是省掉写入的大头——Web UI 每次轮询账户页，
-  旧做法都要写两行。
-- **创建类**（`POST /api/v1/providers`、`POST /api/v1/consumers`）的新行 id 由
-  `sha256(address ‖ METHOD ‖ PATH ‖ nonce)` 的前 22 位十六进制派生，配
-  `INSERT ... ON CONFLICT DO NOTHING`。第二次落空 → `200` + `replayed: true`，
-  **不会产生第二行**，也不会重跑连带动作（例如 `provider_models` 刷新）。
-- **修改 / 删除类**（上游的 scope / enabled / 编辑 / 撤销，下游 Token 的改名 / 吊销）
-  把幂等键写进这一行的 `last_nonce`，用
-  `UPDATE ... WHERE id=? AND address=? AND (last_nonce IS NULL OR last_nonce <> ?)`。
-  第二次落空 → 再读一次这一行：行不在 → `404`，nonce 相同 → `200`（已应用）。
-- **`POST /api/v1/consumers/:id/rotate`** 是唯一的例外：它的响应里有明文密钥，重放必须
-  `409 nonce_replayed`，**且绝不再签发第二把**——判重放发生在生成密钥之前。
-
-代价说清：同一把 nonce 用在不同端点上属于客户端误用，后果只是后一次被当成重放
-（`last_nonce` 存的是 `X-Norm-Nonce` 原值，不是派生出来的 id）。正常客户端每个请求
-现取一把随机 nonce，不会遇到。
+- 浏览器 ↔ Cloudflare Worker 全程走 TLS，不额外维护 nonce / 重放表；时间窗只保证签名新鲜度。
 
 ## 3. 上游提供商密钥的封装（拖库拿不到明文）
 

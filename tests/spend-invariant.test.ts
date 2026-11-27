@@ -312,9 +312,9 @@ describe('Gas 与 Token 分开结算及价值守恒不变量', () => {
     // 通过 Hono accountRoutes 验证 /me、/earnings 与 /usage/by-provider 返回结构
     const { Hono } = await import('hono');
     const makeApp = (address: string) => {
-      const app = new Hono<{ Bindings: Env; Variables: { principal: { address: string; nonce: string; opened: boolean } } }>();
+      const app = new Hono<{ Bindings: Env; Variables: { principal: { address: string; opened: boolean } } }>();
       app.use('*', async (c, next) => {
-        c.set('principal', { address, nonce: 'n', opened: false });
+        c.set('principal', { address, opened: false });
         await next();
       });
       app.route('/account', accountRoutes);

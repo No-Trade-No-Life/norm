@@ -2,14 +2,13 @@ import { Hono } from 'hono';
 import { canOwnPool, type Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
-import { nowSeconds } from '../ids';
+import { nowSeconds, uuidv4 } from '../ids';
 import { PROTOCOLS, isProtocol, protocolFor } from '../protocols';
 import { hostOf } from '../base-urls';
 import { syncProviderModels } from '../models';
 import { keyHintOf, sealProviderKey } from '../seal';
 import { parseProxyUrl, proxyHintOf } from '../proxy';
 import { findProvider, listProviders } from '../store';
-import { applyOnce, idempotentId, type ApplyOutcome } from '../idempotent';
 import {
   openaiAccountHint,
   openaiAuthorize,
@@ -120,9 +119,8 @@ providerRoutes.post('/', async (c) => {
 
   const now = nowSeconds();
   const address = c.get('principal').address;
-  // 新行的 id 由这把幂等键派生（见 src/idempotent.ts）：同一个签名请求打两次，两次算出
-  // 同一个 id，第二条 INSERT 落空——于是「只建一行」不需要任何额外的去重写。
-  const id = idempotentId({ address, method: 'POST', path: c.req.path, nonce: c.get('principal').nonce });
+  // 上游提供商不按时间被扫描，只是一个被引用的名字：UUID v4。
+  const id = uuidv4();
 
   // 明文只活在这几行里：封装后立刻丢弃，既不进 D1 也不进日志。
   const providerKey = body.provider_key.trim();
@@ -136,12 +134,11 @@ providerRoutes.post('/', async (c) => {
   const sealedProxy =
     proxyUrl === '' ? '' : await sealProviderKey({ env: c.env, address, providerId: id, providerKey: proxyUrl });
 
-  const inserted = await c.env.DB.prepare(
+  await c.env.DB.prepare(
     `INSERT INTO providers
        (id, address, label, base_url, key_hint, sealed_key, kdf,
         protocol, scope, enabled, created_at, sealed_proxy, proxy_hint)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (id) DO NOTHING`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       id,
@@ -159,12 +156,6 @@ providerRoutes.post('/', async (c) => {
       proxyHintOf(proxyUrl),
     )
     .run();
-
-  if (inserted.meta.changes === 0) {
-    // 这把 nonce 已经建过这一条：不再建第二行，也不重跑清单刷新（那会顺带写 provider_models）。
-    // 上面那次封装出来的密文随这次响应一起丢掉，库里仍是第一次那一份。
-    return c.json({ id, scope, replayed: true }, 200);
-  }
 
   // 清单在后台抓：新建一条上游不该为了「顺便问一句它有哪些模型」多等一个上游的响应，
   // 但选址要按模型筛，这张表就得有。抓不到也没关系——没有清单的上游仍然可被选中。
@@ -185,36 +176,30 @@ providerRoutes.post('/', async (c) => {
 providerRoutes.post('/:id/scope', async (c) => {
   const { scope } = await c.req.json<{ scope?: string }>();
   if (scope !== 'private' && scope !== 'pool') fail(400, 'scope_invalid', 'scope 只能是 private / pool');
-  const identity = c.get('principal');
-  if (scope === 'pool' && !canOwnPool(c.env, identity.address)) fail(403, 'pool_forbidden', '只有站点地址可以把上游放进公共池');
-  const outcome = await applyOnce({
-    env: c.env,
-    table: 'providers',
-    id: c.req.param('id'),
-    address: identity.address,
-    set: 'scope = ?',
-    values: [scope],
-    nonce: identity.nonce,
-  });
-  const state = settle(outcome);
-  return c.json({ id: c.req.param('id'), scope, ...(state === 'replayed' ? { replayed: true } : {}) });
+  const address = c.get('principal').address;
+  if (scope === 'pool' && !canOwnPool(c.env, address)) fail(403, 'pool_forbidden', '只有站点地址可以把上游放进公共池');
+  const id = c.req.param('id');
+  const updated = await c.env.DB.prepare(
+    'UPDATE providers SET scope = ? WHERE id = ? AND address = ? AND revoked_at IS NULL',
+  )
+    .bind(scope, id, address)
+    .run();
+  if (updated.meta.changes === 0) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
+  return c.json({ id, scope });
 });
 
 providerRoutes.post('/:id/enabled', async (c) => {
   const { enabled } = await c.req.json<{ enabled?: boolean }>();
   if (typeof enabled !== 'boolean') fail(400, 'enabled_invalid', 'enabled 必须是布尔值');
-  const identity = c.get('principal');
-  const outcome = await applyOnce({
-    env: c.env,
-    table: 'providers',
-    id: c.req.param('id'),
-    address: identity.address,
-    set: 'enabled = ?',
-    values: [enabled ? 1 : 0],
-    nonce: identity.nonce,
-  });
-  const state = settle(outcome);
-  return c.json({ id: c.req.param('id'), enabled: enabled ? 1 : 0, ...(state === 'replayed' ? { replayed: true } : {}) });
+  const address = c.get('principal').address;
+  const id = c.req.param('id');
+  const updated = await c.env.DB.prepare(
+    'UPDATE providers SET enabled = ? WHERE id = ? AND address = ? AND revoked_at IS NULL',
+  )
+    .bind(enabled ? 1 : 0, id, address)
+    .run();
+  if (updated.meta.changes === 0) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
+  return c.json({ id, enabled: enabled ? 1 : 0 });
 });
 
 /**
@@ -225,14 +210,9 @@ providerRoutes.post('/:id/enabled', async (c) => {
  * 必须给一个新地址，否则会把官方地址悄悄当成用户自己的上游。
  */
 providerRoutes.patch('/:id', async (c) => {
-  const identity = c.get('principal');
-  const address = identity.address;
+  const address = c.get('principal').address;
   const existing = await findProvider(c.env, address, c.req.param('id'));
   if (!existing) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
-
-  // 这把 nonce 已经改过这一条：直接说「已应用」。既不重封密钥，也不重抓清单——
-  // 重放不该产生第二次副作用。
-  if (existing.last_nonce === identity.nonce) return c.json({ id: existing.id, replayed: true });
 
   const body = await c.req.json<Body>();
   const label = body.label === undefined ? existing.label : body.label.trim();
@@ -282,16 +262,14 @@ providerRoutes.patch('/:id', async (c) => {
         : await sealProviderKey({ env: c.env, address, providerId: existing.id, providerKey: givenProxy });
   const proxyHint = givenProxy === undefined ? existing.proxy_hint : proxyHintOf(givenProxy);
 
-  const outcome = await applyOnce({
-    env: c.env,
-    table: 'providers',
-    id: existing.id,
-    address,
-    set: 'label = ?, base_url = ?, protocol = ?, enabled = ?, sealed_key = ?, key_hint = ?, kdf = ?, sealed_proxy = ?, proxy_hint = ?',
-    values: [label, baseUrl, protocol, enabled ? 1 : 0, sealedKey, keyHint, KDF, sealedProxy, proxyHint],
-    nonce: identity.nonce,
-  });
-  if (settle(outcome) === 'replayed') return c.json({ id: existing.id, replayed: true });
+  const updated = await c.env.DB.prepare(
+    `UPDATE providers
+        SET label = ?, base_url = ?, protocol = ?, enabled = ?, sealed_key = ?, key_hint = ?, kdf = ?, sealed_proxy = ?, proxy_hint = ?
+      WHERE id = ? AND address = ? AND revoked_at IS NULL`,
+  )
+    .bind(label, baseUrl, protocol, enabled ? 1 : 0, sealedKey, keyHint, KDF, sealedProxy, proxyHint, existing.id, address)
+    .run();
+  if (updated.meta.changes === 0) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
 
   // 换了协议、地址或密钥，这一条能跑的型号可能全变了：重新抓一次清单。
   background(
@@ -305,18 +283,15 @@ providerRoutes.patch('/:id', async (c) => {
 });
 
 providerRoutes.delete('/:id', async (c) => {
-  const identity = c.get('principal');
-  const outcome = await applyOnce({
-    env: c.env,
-    table: 'providers',
-    id: c.req.param('id'),
-    address: identity.address,
-    set: 'revoked_at = ?',
-    values: [nowSeconds()],
-    nonce: identity.nonce,
-  });
-  const state = settle(outcome);
-  return c.json({ id: c.req.param('id'), revoked: true, ...(state === 'replayed' ? { replayed: true } : {}) });
+  const address = c.get('principal').address;
+  const id = c.req.param('id');
+  const updated = await c.env.DB.prepare(
+    'UPDATE providers SET revoked_at = ? WHERE id = ? AND address = ? AND revoked_at IS NULL',
+  )
+    .bind(nowSeconds(), id, address)
+    .run();
+  if (updated.meta.changes === 0) fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
+  return c.json({ id, revoked: true });
 });
 
 /**
@@ -333,19 +308,6 @@ function credentialFor(oauth: boolean, providerKey: string): Extract<CredentialP
 /** 展示用提示：OAuth 凭据没有「前后四位」可言，能核对的是工作区 id。 */
 function hintOf(providerKey: string, oauth: Extract<CredentialParse, { ok: true }> | null): string {
   return oauth === null ? keyHintOf(providerKey) : openaiAccountHint(oauth.credential.account_id);
-}
-
-/**
- * 改一行没改着时，回什么由这一个函数决定：
- *   行不在 / 已撤销 → 404（「不存在或已撤销」是同一句话：撤销就是永久退场）
- *   并发抢同一行、重试一次仍没落上 → 409，让调用方重新发起
- *   同一把 nonce 改过 → 200/204 的「已应用」，由调用方补一句 `replayed: true`
- */
-function settle(outcome: ApplyOutcome): 'applied' | 'replayed' {
-  if (outcome.applied) return 'applied';
-  if (outcome.reason === 'replayed') return 'replayed';
-  if (outcome.reason === 'stale') fail(409, 'write_conflict', '这一行刚被另一个请求改动过，请重新发起');
-  fail(404, 'provider_not_found', '上游提供商不存在或已撤销');
 }
 
 /**

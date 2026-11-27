@@ -10,7 +10,7 @@ Base: `https://norm.ntnl.io`。
 | `/v1/*` | **只**接受 `Authorization: Bearer sk-norm-…`（`x-api-key` / `x-goog-api-key` 同义） | 转发面：消费。程序拿一条 Token 就能调用，没有任何 Norm 专有的头 |
 
 一句话：**身份只管资源，消费只用一个 api key。** 转发面没有签名入口——签名能管资源，不能花钱，
-所以 `POST /v1/chat/completions` 带着 `X-Norm-Address` 那四个头来，只会拿到 `401 consumer_key_required`。
+所以 `POST /v1/chat/completions` 带着 `X-Norm-Address` 那三个头来，只会拿到 `401 consumer_key_required`。
 下游 Token 不绑定上游提供商，消费侧也没有任何 Norm 专有的头：走哪条上游由服务端按
 「自己的上游优先、公共池兜底、会话粘住」自己挑。
 
@@ -19,22 +19,12 @@ Base: `https://norm.ntnl.io`。
 ## 签名
 
 ```
-message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce + "\n" + sha256hex(body)
+message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256hex(body)
 ```
 
-请求头：`X-Norm-Address`、`X-Norm-Timestamp`、`X-Norm-Nonce`、`X-Norm-Signature`（均为 base58）。
+请求头：`X-Norm-Address`、`X-Norm-Timestamp`、`X-Norm-Signature`（公钥与签名为 base58，时间戳为十进制 unix 秒）。
 
-签名格式不变，但 `X-Norm-Nonce` 的**语义**是「这次请求的幂等键」：
-
-| 请求 | 重放同一个签名会怎样 |
-|---|---|
-| 读（`GET` / `HEAD`） | 直接放行，仍然是 200 —— 时间窗只管新鲜度，读没有副作用 |
-| 创建（`POST /providers`、`POST /consumers`） | 200 + `replayed: true`；不会产生第二行（`consumers` 的明文密钥只在第一次响应里） |
-| 修改 / 删除（scope / enabled / `PATCH` / `DELETE` / 下游改名·吊销） | 200 + `replayed: true`（或 `DELETE` 的 204 → 本仓库一律 200 JSON）；不会产生第二次副作用 |
-| `POST /consumers/:id/rotate` | **409 `nonce_replayed`**，且不会再签发第二把密钥 |
-
-所以「客户端超时了再发一次」现在是安全的：同一个 nonce 就是同一个意图。换个意图请换一把 nonce。
-超过时间窗（60 秒）的签名一律 `401 timestamp_out_of_window`。
+超过时间窗（±60 秒）的签名一律 `401 timestamp_out_of_window`。传输层全程走 TLS，服务端不维护 nonce / 重放表。
 
 ## 公开
 
@@ -225,7 +215,7 @@ Anthropic 在 `message_start` + `message_delta`、Gemini 每帧累计、Response
 | `x-api-key: sk-norm-…` | 三选一（Anthropic SDK / Claude Code 的形状） |
 | `x-goog-api-key: sk-norm-…` | 三选一（Google SDK 的形状） |
 | `thread-id` / `session-id` | 可选：只影响「粘在哪条上游上」，不影响能不能调通 |
-| `X-Norm-Address` 等四个签名头 | 不收：本面没有签名入口 |
+| `X-Norm-Address` 等三个签名头 | 不收：本面没有签名入口 |
 
 上游提供商密钥始终由服务端解密，客户端不接触它。
 

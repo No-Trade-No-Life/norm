@@ -14,8 +14,8 @@ import { audioRoutes } from './routes/audio';
 import { relayRoutes } from './routes/relay';
 
 /**
- * 两个面各放一份身份：管理面是 `Identity`（地址 + 幂等键），转发面是 `Principal`
- * （地址 + 哪把下游 Token）。两者刻意不相互继承——转发面没有 nonce 可言。
+ * 两个面各放一份身份：管理面是 `Identity`（地址 + 是否新开户），转发面是 `Principal`
+ * （地址 + 哪把下游 Token）。两者刻意不相互继承。
  */
 type Variables = { principal: Identity | Principal };
 type App = { Bindings: Env; Variables: Variables };
@@ -29,9 +29,9 @@ app.route('/api/v1/pricing', pricingRoutes);
 /**
  * 登录只是「签名走通一次」：地址首次出现时由 authenticate 自动开户。
  *
- * 这条 POST 不需要幂等键，因为开户是行内幂等的：`principals` 的主键就是地址，
- * 授信那一条用 `WHERE voucher_nanos = 0` 兜住。重放既不会开出第二个账户，也不会
- * 再发一张券——`created` 只在这一**次**真的建了行时才是 true。
+ * 开户本身是行内幂等的：`principals` 的主键就是地址，授信那一条用
+ * `WHERE voucher_nanos = 0` 兜住，不会开出第二个账户，也不会再发一张券。
+ * `created` 只在真正建了新行时才是 true。
  */
 app.post('/api/v1/auth/login', async (c) => {
   const principal = await authenticate(c.req.raw, c.env);
