@@ -361,6 +361,41 @@ curl https://norm.ntnl.io/v1/images/generations \
 - **没有兜底价**：型号不在图像价目表里回 `400 image_model_unpriced`；没有一条上游能接这次
   调用（协议没有图像能力）回 `404 image_not_served`。
 
+## 联网搜索（只认 Bearer 消费者密钥）
+
+搜索是一条**独立端点**，不是 `/v1/responses` 上的 `tools`：DeepSeek 的 Search API 就是搜索
+引擎本身，一次请求一次应答，不跑模型、没有 tool 循环。上游今天只有一种搜法，入口因此不带
+方言参数——`deepseek` 协议自带这一条，选它就是「这台上游会搜索」。
+
+```bash
+curl https://norm.ntnl.io/v1/web-search \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"rust 1.93 release notes","max_results":5}'
+
+# → 200 {"created":1780000000,
+#        "sources":[{"url":"https://…","title":"…","snippet":"…","published_at":"…"}],
+#        "cost_usd_nanos":754000,
+#        "norm":{…}}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `query` | 必填，非空字符串；带上域名过滤之后不超过 128 个字符 |
+| `max_results` | 1–50，缺省 8（上游管这个叫 `count`） |
+| `need_content` | 缺省 false；true 时上游多回正文 |
+| `allowed_domains` | 裸域名数组，只在这些域名里搜（折成 `site:` 查询，多个是 OR） |
+| `blocked_domains` | 裸域名数组，排除这些域名（折成 `-site:`）；与 `allowed_domains` 不能同时给 |
+
+`sources[]` 每条必有 `url`，其余字段（`title` / `snippet` / `summary` / `content` /
+`published_at` / `site_name` / `authority` / `rerank_score`）上游给什么带什么；没有 `url` 的
+条目直接丢掉。信封与 DeepSeek LB 的 `/v1/web-search` 同一套，两条上游可以互换着用。
+
+**按成功的调用计价**：上游价目每 1,000 次 0.75 美元，即一次 `750,000` 纳美元；失败、超时与
+「一条结果都没有」的那次都不收 Token 费，只收 Gas（`X-Norm-Gas-Fee-Nanos`）。调用自有上游时
+Token 费记为 0，与文本、音频同一口径。成功的响应带 `cost_usd_nanos`（与 `norm.fee_nanos`
+同值）与四个回执头。
+
 ## 模型清单（只认 Bearer 消费者密钥）
 
 | 方法 | 路径 | 说明 |

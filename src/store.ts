@@ -496,6 +496,13 @@ export type ResolveRequest = {
    */
   audio?: AudioAsk;
   /**
+   * 这一次是一次联网搜索：只有自带搜索能力（`protocolFor(...).search`）的上游才进候选。
+   *
+   * 搜索没有模型可问：它不跑模型，也没有 token 用量，所以「跑不跑得了」由协议声明，
+   * 而不是由清单里某一行的型号决定。
+   */
+  search?: true;
+  /**
    * 这一次是一次图像调用：只有「图像方言做得了它」的上游才进候选（`images.ts` 的 `serves`）。
    * 与音频同一个理由——跑不了这次调用的上游连一次 400 的机会都不该有。
    */
@@ -534,6 +541,19 @@ export async function resolveProvider(
       return dialect !== undefined && audioCodecFor(dialect).serves(audio);
     });
     if (pool.length === 0) fail(404, 'audio_not_served', `没有上游能接这次音频调用：${audio.model}`);
+  }
+
+  // 搜索同理，而且更简单：这次调用没有模型可问，能问的只有「这条上游会不会搜索」。
+  // 不会的那条连一次上游请求都不该有——搜索是它的能力缺口，不是它的配置问题。
+  if (request.search === true) {
+    pool = pool.filter((row) => protocolFor(row.protocol).search === true);
+    if (pool.length === 0) {
+      fail(
+        404,
+        'search_not_served',
+        '没有上游能接这次联网搜索：搜索由协议声明（今天只有 deepseek 自带 Search API），启用一条 deepseek 上游后再试',
+      );
+    }
   }
 
   // 图像调用同理，而且更硬：只有声明了图像方言、且那条方言认得这个型号的上游才进候选。

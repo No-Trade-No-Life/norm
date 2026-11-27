@@ -23,6 +23,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: false,
       audio: [],
       image: false,
+      search: true,
     });
   });
 
@@ -45,6 +46,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: false,
       audio: [],
       image: false,
+      search: false,
     });
   });
 
@@ -58,6 +60,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: true,
       audio: [],
       image: true,
+      search: false,
     });
   });
 
@@ -88,6 +91,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: false,
       audio: ['transcriptions', 'speech'],
       image: false,
+      search: false,
     });
     expect(protocolUrlFor('qwen', 'https://dashscope.aliyuncs.com/', 'qwen-max', false)).toBe(
       'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
@@ -105,6 +109,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: false,
       audio: ['transcriptions', 'speech'],
       image: false,
+      search: false,
     });
   });
 

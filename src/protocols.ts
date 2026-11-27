@@ -119,6 +119,13 @@ export type ProtocolSchema = {
    * 入口只有一种线缆（OpenAI 的 Images），这里只说「能不能」，不说「说哪种方言」。
    */
   image: boolean;
+  /**
+   * 这条协议的上游自带搜索能力（`POST /v1/web-search` 会不会选它）。
+   *
+   * 与 `audio` / `image` 同一个口径：入口只有一种线缆、上游今天也只有一种搜索方言，
+   * 这里只说「能不能」，不说「说哪种方言」。
+   */
+  search: boolean;
 };
 
 /**
@@ -165,6 +172,13 @@ export type ProtocolProfile = {
    */
   audio?: AudioDialect;
   /**
+   * 这条协议的上游自带搜索能力（Search API）：`/v1/web-search` 只在声明了它的上游里选址。
+   *
+   * 不写 = 这条上游搜不了。这里声明的是「有没有」而不是「怎么说」：搜索**不是一次对话**，
+   * 它没有方言可翻——一次 JSON 请求、一页结果、按成功调用计费（见 `src/search.ts`）。
+   */
+  search?: true;
+  /**
    * 这条协议的上游图像方言（见 `src/images.ts`）。不写 = 这条上游没有图像能力，
    * `/v1/images/generations` 不会选它。与 `audio` 同一条纪律：方言名而不是编解码函数。
    */
@@ -193,6 +207,7 @@ export type ResolvedProtocol = {
   store_false?: true;
   audio?: AudioDialect;
   image?: ImageDialect;
+  search?: true;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -209,6 +224,8 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
   deepseek: {
     dialect: 'openai-responses',
     base_url: 'https://api.deepseek.com',
+    // 同一条基址上还挂着 Search API（`/v1/tools/search`）：搜索不走模型，直连就是一次调用。
+    search: true,
     pricing: {
       mode: {
         kind: 'time-tiered',
@@ -314,6 +331,7 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
     ...(profile.audio === undefined ? {} : { audio: profile.audio }),
     ...(profile.image === undefined ? {} : { image: profile.image }),
+    ...(profile.search === undefined ? {} : { search: profile.search }),
   };
 }
 
@@ -347,6 +365,7 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     stream_only: profile.stream_only === true,
     audio: profile.audio === undefined ? [] : ['transcriptions', 'speech'],
     image: profile.image !== undefined,
+    search: profile.search === true,
   };
 }
 
