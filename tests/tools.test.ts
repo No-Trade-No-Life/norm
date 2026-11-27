@@ -382,18 +382,10 @@ describe('流式：规范事件 → 入口帧', () => {
 
   it('openai-responses：先关文本 item，再开 function_call item，completed 里带全量参数', () => {
     const emitter = streamEmitter('openai-responses', 'req_1', 'm');
-    // 消息条目是懒开的：序号要留给可能先到的思考条目，所以这里也顺带把它开出来。
+    // 一句话不说、只调工具的回合不该凭空多出一条空消息条目：直接开 function_call。
     const opened = sse(emitter.toolStart(0, { id: 'call_1', name: 'get_weather' }));
-    expect(opened.map((frame) => frame.event)).toEqual([
-      'response.output_item.added',
-      'response.content_part.added',
-      'response.output_text.done',
-      'response.content_part.done',
-      'response.output_item.done',
-      'response.output_item.added',
-    ]);
-    expect(opened[0].json).toMatchObject({ output_index: 0, item: { type: 'message' } });
-    expect(opened[5].json).toMatchObject({ output_index: 1, item: { type: 'function_call', call_id: 'call_1', name: 'get_weather' } });
+    expect(opened.map((frame) => frame.event)).toEqual(['response.output_item.added']);
+    expect(opened[0].json).toMatchObject({ output_index: 0, item: { type: 'function_call', call_id: 'call_1', name: 'get_weather' } });
     sse(emitter.toolArgs(0, '{"city"'));
     const tail = sse(emitter.tail(answer, norm));
     const completed = tail[tail.length - 1].json.response;

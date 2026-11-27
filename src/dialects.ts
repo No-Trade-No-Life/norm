@@ -673,7 +673,8 @@ export function renderInbound(dialect: Dialect, answer: AnswerCore, norm: NormMe
               },
             ]
           : []),
-        ...(answer.text.length > 0 || calls.length === 0
+        // 没有正文就不发消息条目：不能把「上游没说话」写成「模型说了空话」。
+        ...(answer.text.length > 0
           ? [
               {
                 id: `msg_${norm.request_id}`,
@@ -944,8 +945,9 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
       ];
     },
     toolStart: (index, call) => {
-      // 序号必须按「谁会先出现在输出里」发：先关思考、再把消息条目开出来，最后才轮到这次调用。
-      const opened = [...closeReasoning(), ...openMessage(), ...closeText()];
+      // 只调工具、一句话不说的回合不该凭空多出一条空消息：上游本来就没说话，
+      // 开一条 `content: [{text: ""}]` 的条目只会让下游把它当成「模型回了空」。
+      const opened = [...closeReasoning(), ...closeText()];
       callSeq += 1;
       const at = nextIndex++;
       const entry = { at, itemId: `fc_${id}_${callSeq}`, callId: call.id, name: call.name, args: '' };
@@ -988,7 +990,9 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
           }),
         );
       }
-      chunks.push(...closeReasoning(), ...openMessage(), ...closeText());
+      // 正文为空就不发消息条目：思考条目已经说明了这一轮上游想了什么。
+      if (text.length > 0) chunks.push(...openMessage(), ...closeText());
+      chunks.push(...closeReasoning());
       for (const entry of calls.values()) chunks.push(...closeCall(entry));
       chunks.push(
         named('response.completed', {
@@ -1001,9 +1005,7 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
             model: answer.model,
             output: [
               ...(reasoning.length > 0 ? [reasoningItem('completed')] : []),
-              ...(text.length > 0 || answer.toolCalls.length === 0
-                ? [message('completed', [{ type: 'output_text', text }])]
-                : []),
+              ...(text.length > 0 ? [message('completed', [{ type: 'output_text', text }])] : []),
               ...answer.toolCalls.map((call, index) => ({
                 id: `fc_${id}_${index + 1}`,
                 type: 'function_call',
