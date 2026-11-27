@@ -129,6 +129,34 @@ curl https://norm.ntnl.io/v1/audio/speech \
 计价，**没有兜底价**：认不出的型号在打出去之前就拒——按秒与按字符不是同一个单位，猜错方向
 会差几个数量级，而账单不能靠猜。
 
+### 联网搜索：一次 API 调用，不是一次工具调用
+
+搜索是**独立端点** `POST /v1/web-search`，不是 `/v1/responses` 上的一件 `tools`：
+
+```bash
+curl https://norm.ntnl.io/v1/web-search \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"rust 1.93 release notes","max_results":5,"need_content":false}'
+# → 200 {"created":1780000000,"sources":[{"url":"…","title":"…"}]…,"cost_usd_nanos":754000,"norm":{…}}
+```
+
+理由不是审美。DeepSeek 的 Search API（`/v1/tools/search`）本身就是搜索引擎：一次 JSON 请求
+进去、一页结构化结果出来，**不跑任何模型**。把它包进一次对话里，就得先让一个宿主模型读懂
+问题、决定搜什么、再写一段散文复述结果——多一次推理、多一份不确定性，而且同一次搜索还要
+按 token 再收一遍钱。所以这里不装那套：请求进、结果出，中间只有一次上游调用。
+
+- **入口**：`POST /v1/web-search`，body 是 `query`（必填）、`max_results`（1–50，缺省 8）、
+  `need_content`（缺省 false），以及可选的 `allowed_domains` / `blocked_domains`（裸域名，
+  二者不能同时给；转发前折成 Search API 的 `site:` / `-site:` 查询语法）。
+- **选址**：搜索没有模型可问，所以能力由**协议**声明——今天只有 `deepseek` 自带 Search API。
+  规则仍是「自有优先、公共池兜底、会话亲和」。
+- **计价**：按**成功的调用**算，不按 token。上游价目每 1,000 次 0.75 美元，即一次
+  `750,000` 纳美元（`pricing::SEARCH_CALL_NANOS`）；失败、超时、以及「一条结果都没有」的那次
+  都不收 Token 费，只收 Gas。调用自有上游时 Token 费仍记为 0（自己直接付给厂商）。
+- **信封**：`sources[]`，每条必有 `url`；与 DeepSeek LB 的 `/v1/web-search` 同一套，改一次
+  base_url 就能在「官方 API」与「一条 LB」之间换，调用方不必改代码。
+
 ### 服务端选址规则
 
 1. **按模型先筛**：依据 `provider_models` 排除已拉过清单但明确不含该模型的上游（未拉过清单的保留），筛空则直接返回 `404 model_not_served`；若上游仍回 400/404 称无该模型，则自动删掉错误快照、清亲和并换候选重试一次。
