@@ -29,6 +29,7 @@ import {
   type StreamEvent,
 } from './codecs';
 import type { AudioDialect, AudioKind } from './audio';
+import type { SearchDialect } from './search';
 import type { ImageDialect } from './images';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
 import { openaiHeaders } from './oauth';
@@ -53,7 +54,14 @@ export {
   type StreamEvent,
 };
 
-export type Protocol = Dialect | 'deepseek' | 'opencode-go' | 'openai-oauth' | 'openai-audio' | 'qwen';
+export type Protocol =
+  | Dialect
+  | 'deepseek'
+  | 'opencode-go'
+  | 'openai-oauth'
+  | 'openai-audio'
+  | 'openai-search'
+  | 'qwen';
 
 export const PROTOCOLS: Protocol[] = [
   ...DIALECTS,
@@ -61,6 +69,7 @@ export const PROTOCOLS: Protocol[] = [
   'opencode-go',
   'openai-oauth',
   'openai-audio',
+  'openai-search',
   'qwen',
 ];
 
@@ -122,8 +131,8 @@ export type ProtocolSchema = {
   /**
    * 这条协议的上游自带搜索能力（`POST /v1/web-search` 会不会选它）。
    *
-   * 与 `audio` / `image` 同一个口径：入口只有一种线缆、上游今天也只有一种搜索方言，
-   * 这里只说「能不能」，不说「说哪种方言」。
+   * 与 `audio` / `image` 同一个口径：入口只有一种线缆，这里只说「能不能」，不说「说哪条
+   * 方言」——方言是上游自己的事。
    */
   search: boolean;
 };
@@ -172,12 +181,15 @@ export type ProtocolProfile = {
    */
   audio?: AudioDialect;
   /**
-   * 这条协议的上游自带搜索能力（Search API）：`/v1/web-search` 只在声明了它的上游里选址。
+   * 这条协议的上游搜索方言（见 `src/search.ts`）：`/v1/web-search` 只在声明了它的上游里选址。
    *
-   * 不写 = 这条上游搜不了。这里声明的是「有没有」而不是「怎么说」：搜索**不是一次对话**，
-   * 它没有方言可翻——一次 JSON 请求、一页结果、按成功调用计费（见 `src/search.ts`）。
+   * 不写 = 这条上游搜不了。存的是**方言名**而不是一个布尔：搜索是对外一条线缆、对内可以
+   * 有多种实现的事（今天是 DeepSeek 的 Search API，将来任何搜索引擎都能包成同一条方言），
+   * 与 `audio` 存方言名同一个道理——编解码只能活在 `search.ts` 里。
+   *
+   * 它挂在协议上、不挂在模型上：搜索不跑模型，没有 token，也没有「这次用哪个型号」可问。
    */
-  search?: true;
+  search?: SearchDialect;
   /**
    * 这条协议的上游图像方言（见 `src/images.ts`）。不写 = 这条上游没有图像能力，
    * `/v1/images/generations` 不会选它。与 `audio` 同一条纪律：方言名而不是编解码函数。
@@ -207,7 +219,7 @@ export type ResolvedProtocol = {
   store_false?: true;
   audio?: AudioDialect;
   image?: ImageDialect;
-  search?: true;
+  search?: SearchDialect;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -225,7 +237,7 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     dialect: 'openai-responses',
     base_url: 'https://api.deepseek.com',
     // 同一条基址上还挂着 Search API（`/v1/tools/search`）：搜索不走模型，直连就是一次调用。
-    search: true,
+    search: 'deepseek-search',
     pricing: {
       mode: {
         kind: 'time-tiered',
@@ -304,6 +316,18 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    * 基址钉死为百炼的根，路径按能力分别给：兼容层带版本段，原生接口自带 `/api/v1`。
    * 音频型号与价目在 `qwen.ts` 与 `pricing.ts` 里，跟着代码进构建哈希。
    */
+  /**
+   * openai-search：一条把**宿主模型 + `web_search` 工具**包成搜索信封的上游（OpenAI LB 的
+   * `/v1/web-search` 就是这条）。基址由用户填：它可以是任何说这套信封的搜索服务。
+   *
+   * 宿主模型是这条上游的部署设置，不是调用方的参数——所以协议上只声明「会说这条搜索方言」，
+   * 一个字都不提型号。
+   */
+  'openai-search': {
+    dialect: 'openai-chat',
+    search: 'openai-search',
+  },
+
   qwen: {
     dialect: 'openai-chat',
     base_url: 'https://dashscope.aliyuncs.com',
@@ -344,6 +368,7 @@ const RESOLVED_PROTOCOLS: Record<Protocol, ResolvedProtocol> = {
   'opencode-go': resolveProtocol('opencode-go'),
   'openai-oauth': resolveProtocol('openai-oauth'),
   'openai-audio': resolveProtocol('openai-audio'),
+  'openai-search': resolveProtocol('openai-search'),
   qwen: resolveProtocol('qwen'),
 };
 
@@ -365,7 +390,7 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     stream_only: profile.stream_only === true,
     audio: profile.audio === undefined ? [] : ['transcriptions', 'speech'],
     image: profile.image !== undefined,
-    search: profile.search === true,
+    search: profile.search !== undefined,
   };
 }
 
