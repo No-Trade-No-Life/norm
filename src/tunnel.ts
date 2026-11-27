@@ -55,7 +55,15 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
     status = decoder.decode(merged.slice(0, end)).split('\r\n')[0];
     pending = merged.slice(end + 4);
   }
-  if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) throw new Error(`代理拒绝隧道：${status}`);
+  if (!/^HTTP\/1\.[01] 2\d\d/.test(status)) {
+    // 代理回的是它自己的话，不是上游的。401 与 407 要分开说：一个是「带了凭据但被拒」，
+    // 一个是「压根没带凭据」。把这两句原话交出去，比「代理拒绝隧道：HTTP/1.1 401」有用得多——
+    // 前者要人去改 proxy_url 里的密码，后者要人补上用户名与密码，两件事不该长得一样。
+    const code = Number(status.split(' ')[1] ?? 0);
+    if (code === 401) throw new Error(`代理拒绝了凭据（${status}）：proxy_url 里的用户名或密码不对，或代理那边的订阅已过期`);
+    if (code === 407) throw new Error(`代理要求认证（${status}）：proxy_url 里没有带用户名与密码`);
+    throw new Error(`代理拒绝隧道：${status}`);
+  }
 
   const queue = new LazyReadFunctionReadQueue(async () => {
     if (pending.length > 0) {
