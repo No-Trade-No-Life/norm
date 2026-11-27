@@ -60,7 +60,7 @@ describe('协议契约（protocol schema）', () => {
       stream_only: true,
       audio: [],
       image: true,
-      search: false,
+      search: true,
     });
   });
 
@@ -72,6 +72,15 @@ describe('协议契约（protocol schema）', () => {
   it('图像能力只落在 openai-oauth 上：订阅上游没有 Images 端点，出图走 image_generation 工具', () => {
     expect(PROTOCOL_SCHEMAS.filter((schema) => schema.image).map((schema) => schema.protocol)).toEqual(['openai-oauth']);
     expect(protocolFor('openai-oauth').image).toBe('openai-image-tool');
+  });
+
+  it('搜索能力落在三条协议上：deepseek 直连、openai-search 的信封、openai-oauth 自己包工具', () => {
+    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.search).map((schema) => schema.protocol)).toEqual([
+      'deepseek',
+      'openai-oauth',
+      'openai-search',
+    ]);
+    expect(protocolFor('openai-oauth').search).toBe('openai-search');
   });
 
   it('音频能力只落在 qwen 与 openai-audio 两条协议上', () => {

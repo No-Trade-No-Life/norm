@@ -16,12 +16,21 @@
  *                    的部署设置，不是调用方的参数——所以这里同样没有模型选项，只有用量：
  *                    上游报多少 token，就按 token 记多少。
  *
+ * `openai-search` 这条方言有两种上游。一种是把信封已经做好、整件事卖给我们的服务
+ * （`openai-search` 协议：基址由用户填，OpenAI LB 的 `/v1/web-search` 就是它）；另一种是
+ * 一条 ChatGPT 订阅（`openai-oauth`）——订阅端点没有 `/v1/web-search`，只有 `/responses`，
+ * 而 `web_search` 在那里是一个**工具**，于是 Norm 自己把「宿主模型 + `web_search`」包成
+ * 一次搜索。同一条方言、两种上游，所以编解码按**协议**取（`searchCodecForProtocol`），
+ * 不按方言名取：方言说的是「这是什么能力」，协议说的是「跟谁说、怎么说」。
+ *
  * 信封是下游的一件事：`sources[]`，`url` 必有。两条协议都把它说成同一个形状，于是调用方
  * 换一次 `source` 就能换一条路，代码不必改。
  */
 import { DEEPSEEK_SEARCH_CALL_NANOS } from './deepseek';
+import { HOST_MODELS } from './hosts';
 import { fail } from './http';
 import { quote, type Usage } from './pricing';
+import type { Protocol } from './protocols';
 
 /** 下游能选的搜索协议。 */
 export type SearchProtocol = 'deepseek' | 'openai';
@@ -69,12 +78,17 @@ export type SearchAnswer = {
  */
 export type SearchCodec = {
   dialect: SearchDialect;
-  /** 下游点的那条协议。 */
-  protocol: SearchProtocol;
+  /** 这条编解码对谁说：同一条方言可以有不止一条上游协议（见文件头）。 */
+  protocol: Protocol;
   /** 上游搜索路径，拼在协议基址之后。 */
   path: string;
+  /**
+   * 宿主模型候选：有它 = 这条方言要把搜索包成一次模型回合（工具 + 事件流），而不是把
+   * 一句话交给一台搜索引擎。宿主是谁与调用方无关，所以它在编解码里、不在请求里。
+   */
+  hostModels?: readonly string[];
   /** 规范化、校验这条协议自己的参数，并给出上游请求体（JSON 文本）。 */
-  encode: (ask: SearchAsk) => string;
+  encode: (ask: SearchAsk, hostModel?: string) => string;
   /** 上游的成功应答 → 一页结果；没有结果的那一次按失败处理，不收钱。 */
   read: (reply: Response) => Promise<SearchAnswer>;
   /** 这一次成功的搜索报多少 Token 费（纳美元）。 */
@@ -115,14 +129,20 @@ export function readSearchAsk(raw: string): SearchAsk {
   return { protocol: source, query, params };
 }
 
-/** 按方言名取 codec（协议里存的是方言名，编解码在这里取）。 */
-export function searchCodecFor(dialect: SearchDialect): SearchCodec {
-  return SEARCH_CODECS[dialect];
+/** 下游选的搜索协议 → 上游的方言名（选址按它筛）。 */
+export function searchDialectFor(protocol: SearchProtocol): SearchDialect {
+  return SEARCH_PROTOCOLS_TO_DIALECT[protocol];
 }
 
-/** 按下游选的协议取 codec。 */
-export function searchCodecForProtocol(protocol: SearchProtocol): SearchCodec {
-  return SEARCH_CODECS[SEARCH_PROTOCOLS_TO_DIALECT[protocol]];
+/**
+ * 按**上游协议**取 codec：null = 这条协议不会搜索。
+ *
+ * 按协议而不是按方言取，是因为一条方言可以有不止一条上游（`openai-search` 既有做好信封
+ * 的服务，也有由 Norm 自己包工具的订阅上游）。取到之后 `codec.dialect` 仍要说回下游要的
+ * 那一条方言——选址按方言筛过，两边对不上就是一个实现错误，路由会当场拒掉。
+ */
+export function searchCodecForProtocol(protocol: Protocol): SearchCodec | null {
+  return SEARCH_CODECS[protocol] ?? null;
 }
 
 // ─────────────────────────── deepseek-search ───────────────────────────
@@ -200,7 +220,7 @@ const OPENAI_PARAMS = ['search_context_size', 'filters', 'user_location'];
  */
 const OPENAI_SEARCH: SearchCodec = {
   dialect: 'openai-search',
-  protocol: 'openai',
+  protocol: 'openai-search',
   path: '/v1/web-search',
   encode: (ask) => {
     const params = onlyKnown(ask, OPENAI_PARAMS, 'max_results / need_content / allowed_domains / blocked_domains 是 deepseek 那条协议的语言');
@@ -223,9 +243,191 @@ const OPENAI_SEARCH: SearchCodec = {
   quote: (answer) => quote('', answer.usage).total_nanos,
 };
 
-const SEARCH_CODECS: Record<SearchDialect, SearchCodec> = {
-  'deepseek-search': DEEPSEEK_SEARCH,
+// ─────────────────────────── openai-oauth ───────────────────────────
+
+/** 让宿主模型只做一件事：把调用方的查询原样搬进工具参数，别自己改写。 */
+const SEARCH_INSTRUCTIONS =
+  "You are a web search engine. You MUST call web_search exactly once and return only that tool call. Mirror the user's request verbatim into the query argument.";
+
+/**
+ * `openai-search` 的第二条上游：ChatGPT 订阅（`openai-oauth`）。
+ *
+ * 订阅端点没有 `/v1/web-search`——它只有 `/responses`，而 `web_search` 在那里是一个**工具**。
+ * 所以「一次搜索」在这里被说成一次只调这个工具的 Responses 请求：宿主模型替调用方说出那次
+ * 工具调用，答是一条 SSE 流（见 `readSearchStream`）。`include` 要来源的完整清单：不带它，
+ * `web_search_call` 里只剩「搜过了」，没有搜到什么。
+ *
+ * 三个参数搬进工具对象而不是请求顶层：它们本来就是工具的字段（`searchTool`）。宿主模型由
+ * `hosts.ts` 的候选表给——它属于订阅，不属于这次调用。
+ */
+const OPENAI_OAUTH_SEARCH: SearchCodec = {
+  dialect: 'openai-search',
+  protocol: 'openai-oauth',
+  path: '/responses',
+  hostModels: HOST_MODELS,
+  encode: (ask, hostModel) => {
+    const params = onlyKnown(ask, OPENAI_PARAMS, 'max_results / need_content / allowed_domains / blocked_domains 是 deepseek 那条协议的语言');
+    return JSON.stringify({
+      model: hostModel ?? HOST_MODELS[0],
+      instructions: SEARCH_INSTRUCTIONS,
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: ask.query }] }],
+      tools: [searchTool(params)],
+      // 只调这一个工具：搜索是一次确定的调用，不该让宿主模型再决定要不要搜。
+      tool_choice: { type: 'web_search' },
+      include: ['web_search_call.action.sources'],
+      // 订阅只认流式（与文本、图像同一个契约），来源与用量都在事件流里。
+      stream: true,
+      store: false,
+    });
+  },
+  read: async (reply) => readSearchStream(await reply.text()),
+  // 与 `openai-search` 协议同一条记法：上游报的 token × 通用价目表。
+  quote: (answer) => quote('', answer.usage).total_nanos,
+};
+
+/**
+ * 三个参数 → 上游的 `web_search` 工具对象。
+ *
+ * 没给的字段不发：默认值是上游的默认值，替它填一个只会让「我没说」变成「我要这个」。
+ */
+function searchTool(params: Record<string, unknown>): Record<string, unknown> {
+  const tool: Record<string, unknown> = { type: 'web_search' };
+  for (const field of OPENAI_PARAMS) {
+    const value = params[field];
+    if (value !== undefined && value !== null) tool[field] = value;
+  }
+  return tool;
+}
+
+/**
+ * 读一条搜索的 responses 事件流。
+ *
+ * 来源出现在三处，都读、按 `url` 合成一条：
+ *
+ *   `web_search_call.action.sources[]`  上游真的搜到的来源（`include` 要来的；常常只有 url）
+ *   `message.content[].annotations[]`   宿主模型引用到的来源（`type: 'url_citation'`，带 title）
+ *   `response.output[]`                 收尾帧里的同一批条目（有的上游只在收尾帧里给全）
+ *
+ * 一条来源都没有就不是一次成功的搜索：零结果的那一笔不收 Token 费——与两条 JSON 方言
+ * 同一个口径。失败时要把上游的原话与最后一条事件带上：「200 + 空流」是这条路上最难查的
+ * 一种败法。
+ */
+export function readSearchStream(text: string): SearchAnswer {
+  const byUrl = new Map<string, SearchSource>();
+  let usage: Usage = { input: 0, cached: 0, output: 0 };
+  let eventCount = 0;
+  let lastEvent: string | null = null;
+  let upstreamError: string | null = null;
+  let completedOutput: unknown[] = [];
+
+  const noteUsage = (value: unknown) => {
+    const record = recordOf(value);
+    if (record === null || Object.keys(record).length === 0) return;
+    usage = {
+      input: numberOrZero(record.input_tokens),
+      cached: numberOrZero(recordOf(record.input_tokens_details)?.cached_tokens),
+      output: numberOrZero(record.output_tokens),
+    };
+  };
+
+  const noteError = (event: Record<string, unknown>) => {
+    if (upstreamError !== null) return;
+    const candidates = [
+      recordOf(event.error)?.message,
+      recordOf(recordOf(event.response)?.error)?.message,
+      recordOf(recordOf(event.response)?.incomplete_details)?.reason,
+      recordOf(recordOf(event.item)?.error)?.message,
+      // 有的上游把原因直接摊在事件顶上（`{"type":"error","message":"…"}`）。
+      event.message,
+    ];
+    for (const candidate of candidates) {
+      const message = typeof candidate === 'string' ? candidate.trim() : '';
+      if (message !== '') {
+        upstreamError = message;
+        return;
+      }
+    }
+  };
+
+  /** 同一来源的两种写法：一个只有 url，一个带 title——补齐，不覆盖已经有了的真值。 */
+  const add = (source: SearchSource | null) => {
+    if (source === null) return;
+    const existing = byUrl.get(source.url);
+    if (existing === undefined) {
+      byUrl.set(source.url, source);
+      return;
+    }
+    for (const [key, value] of Object.entries(source)) {
+      if (existing[key] === undefined) existing[key] = value;
+    }
+  };
+
+  const takeCitations = (item: Record<string, unknown>) => {
+    for (const block of arrayOf(item.content)) {
+      for (const annotation of arrayOf(recordOf(block)?.annotations)) {
+        const record = recordOf(annotation);
+        if (record === null || record.type !== 'url_citation') continue;
+        const url = typeof record.url === 'string' ? record.url.trim() : '';
+        if (url === '') continue;
+        const title = typeof record.title === 'string' ? record.title.trim() : '';
+        add(title === '' ? { url } : { url, title });
+      }
+    }
+  };
+
+  const takeItem = (item: unknown) => {
+    const record = recordOf(item);
+    if (record === null) return;
+    if (record.type === 'web_search_call') {
+      for (const source of arrayOf(recordOf(record.action)?.sources)) add(sourceOf(source));
+    }
+    if (record.type === 'message') takeCitations(record);
+  };
+
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('data: ')) continue;
+    const payload = line.slice('data: '.length).trim();
+    if (payload === '' || payload === '[DONE]') continue;
+    let event: Record<string, unknown> | null;
+    try {
+      event = recordOf(JSON.parse(payload));
+    } catch {
+      continue;
+    }
+    if (event === null) continue;
+    eventCount += 1;
+    const type = typeof event.type === 'string' ? event.type : '';
+    if (type !== '') lastEvent = type;
+    noteError(event);
+    noteUsage(event.usage);
+    noteUsage(recordOf(event.response)?.usage);
+    if (type === 'response.output_item.done') takeItem(event.item);
+    if (type === 'response.completed') {
+      const output = recordOf(event.response)?.output;
+      if (Array.isArray(output)) completedOutput = output;
+    }
+  }
+
+  // `output_item.done` 一条都没有时，收尾帧里的那份是唯一的来源。
+  if (byUrl.size === 0) for (const item of completedOutput) takeItem(item);
+
+  const sources = [...byUrl.values()];
+  if (sources.length === 0) {
+    if (eventCount === 0) {
+      fail(502, 'search_data_missing', '联网搜索失败：上游的回答不是一条事件流（一条可读事件都没有）');
+    }
+    const detail = upstreamError === null ? '' : ` 上游的原话：${upstreamError}。`;
+    const summary =
+      lastEvent === null ? '' : `最后一条事件是 ${lastEvent}，整段响应里有 ${eventCount} 条可读事件。`;
+    fail(502, 'search_empty', `联网搜索失败：这次搜索一条来源都没有。${detail}${summary}`);
+  }
+  return { sources, usage };
+}
+
+const SEARCH_CODECS: Partial<Record<Protocol, SearchCodec>> = {
+  deepseek: DEEPSEEK_SEARCH,
   'openai-search': OPENAI_SEARCH,
+  'openai-oauth': OPENAI_OAUTH_SEARCH,
 };
 
 const SEARCH_PROTOCOLS_TO_DIALECT: Record<SearchProtocol, SearchDialect> = {

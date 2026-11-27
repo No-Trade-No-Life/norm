@@ -385,7 +385,7 @@ curl https://norm.ntnl.io/v1/web-search \
 | `source` | 上游 | 这条协议认的参数 | 计价 |
 |---|---|---|---|
 | `deepseek` | DeepSeek Search API（`/v1/tools/search`） | `max_results`、`need_content`、`allowed_domains`、`blocked_domains` | 按成功的调用：一次 `750,000` 纳美元 |
-| `openai` | 一条把宿主模型 + `web_search` 工具包成搜索信封的上游（`openai-search` 协议） | `search_context_size`、`filters`、`user_location` | 按上游报的 token，通用价目表折价 |
+| `openai` | 一条把宿主模型 + `web_search` 工具包成搜索信封的上游（`openai-search` 协议），或一条 ChatGPT 订阅（`openai-oauth`，由 Norm 自己包同样的工具） | `search_context_size`、`filters`、`user_location` | 按上游报的 token，通用价目表折价 |
 
 | 公共字段 | 说明 |
 |---|---|
@@ -395,6 +395,11 @@ curl https://norm.ntnl.io/v1/web-search \
 `deepseek` 的参数：`max_results` 1–50（缺省 8，上游管它叫 `count`）、`need_content`（缺省
 false）、`allowed_domains` / `blocked_domains`（裸域名数组、互斥，转发前折成 `site:` /
 `-site:`）。`openai` 的参数原样转给上游，由那条上游校验。
+
+`openai` 这一条有两类上游，走势都一样：一类是把 `web_search` 工具已经包好的搜索服务
+（`openai-search` 协议，基址自己填），一类是一份 ChatGPT 订阅（`openai-oauth`）——订阅
+没有搜索端点，Norm 自己把同一个工具包成一次只调 `web_search` 的请求（宿主模型按候选表
+逐个试，只有上游说「这个型号不认」时才换下一个）。换的是上游是谁，不是这个接口。
 
 **给错协议给了别人的参数**回 `400 param_unsupported`，话里点名它属于哪条协议——静默忽略是
 最坏的一种：调用方以为过滤生效了，拿到的是没过滤的一页。

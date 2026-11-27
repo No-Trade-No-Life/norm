@@ -287,18 +287,29 @@ POST /v1/web-search   { source: "deepseek" | "openai", query, ...这条协议自
 | 方言 | 谁在用 | 怎么把搜索做出来 | 计价 |
 |---|---|---|---|
 | `deepseek-search` | `deepseek` 协议 | 直连 Search API：没有模型、没有 tool 循环 | 按成功的调用，一次 750,000 纳美元 |
-| `openai-search` | `openai-search` 协议（基址由用户填） | 上游把**宿主模型 + `web_search` 工具**包成同一条信封（OpenAI LB 的 `/v1/web-search`） | 按上游报的 token，通用价目表折价 |
+| `openai-search` | `openai-search` 协议（基址由用户填）· `openai-oauth` 订阅 | 上游把**宿主模型 + `web_search` 工具**包成同一条搜索信封（OpenAI LB 的 `/v1/web-search`）；订阅没有这个端点，由 Norm 自己包一次只调 `web_search` 的 Responses 请求 | 按上游报的 token，通用价目表折价 |
+
+**同一条方言，不止一条上游。** `openai-search` 有两个来源：一种是把信封已经做好、整件事
+卖给我们的服务（`openai-search` 协议，基址由用户填）；另一种是一条 ChatGPT 订阅
+（`openai-oauth`）——它只有 `/responses`，`web_search` 在那里是一个**工具**，于是 Norm
+自己把「宿主模型 + `web_search`」包成一次搜索（`tool_choice` 钉死、`include` 要
+`web_search_call.action.sources`，来源再从文本消息的 `url_citation` 注解里补齐 title）。
+所以编解码按**协议**取（`searchCodecForProtocol`），不按方言名取：方言说的是「这是什么
+能力」，协议说的是「跟谁说、怎么说」。对下游一个字都没变：`source` 仍是 `openai`。
 
 **为什么下游没有模型选项。** 搜索不挑型号，这不是「省掉了一步」，是这一步本来就不存在：
 `deepseek-search` 根本不跑模型；`openai-search` 的宿主模型是那条上游部署时定下的
-（`web_search_host_model`），不是调用方的参数。调用方能选的是**走哪条搜索协议**——这才是
-两条路的真实区别：一条直连搜索引擎，一条把模型回合封在上游那一侧。所以 `source` 写
-`deepseek` 还是 `openai`，写别的（比如一个模型名）回 `400 source_invalid`。
+（`web_search_host_model`），订阅那条则是 `hosts.ts` 里的一张候选表（同一个订阅里可达的
+型号不同，按序试，只有上游说「这个型号不认」时才换下一个）——两种都不是调用方的参数。调用
+方能选的是**走哪条搜索协议**——这才是两条路的真实区别：一条直连搜索引擎，一条把模型回合封
+在上游那一侧。所以 `source` 写 `deepseek` 还是 `openai`，写别的（比如一个模型名）回
+`400 source_invalid`。
 
-**为什么包成 `/v1/responses` 带 `tools` 是错的。** 那条路要求先有一个能调工具的宿主模型：
-模型读题、决定搜什么、再写一段散文把结果复述回来。代价是三重的——多一次推理（贵且慢）、
-多一份不确定性（同一句 query 两次可能搜出两页东西）、同一次搜索按 token 再收一遍钱。真要
-宿主模型那条路，`source: "openai"` 已经把它封在上游那一侧了，Norm 的接口不必跟着变形。
+**为什么对下游不暴露 `tools`。** 那条路要求先有一个能调工具的宿主模型：模型读题、决定搜
+什么、再写一段散文把结果复述回来。代价是三重的——多一次推理（贵且慢）、多一份不确定性
+（同一句 query 两次可能搜出两页东西）、同一次搜索按 token 再收一遍钱。宿主模型那条路只活
+在上游一侧（`openai-search` 协议），或者在订阅上游上由 Norm 替它包成**一次只调工具的**
+请求——两次都是「上游的形状」，`/v1/web-search` 的信封不变。
 
 **方言挂在协议上，不挂在模型上。** `ProtocolProfile.search` 存的是**方言名**，与 `audio`
 存方言名同一个道理：对外一条线缆，对内可以有多条实现。将来别的搜索引擎——Tavily、Exa、
@@ -308,9 +319,10 @@ Bing，或者一家自己的搜索服务——都可以包成同一条方言，�
 
 **计价按各自的方式。** `deepseek-search` 按**成功的调用**（`deepseek.ts` 的
 `DEEPSEEK_SEARCH_CALL_NANOS = 750_000`，每 1,000 次 0.75 美元，美元价、不经汇率折算）；
-`openai-search` 按上游回的 **token** 用通用价目表折价——那条上游的宿主模型 Norm 看不见，猜
-只会猜错，改价只改价目表。两条都不进 `pricing.ts` 里那张按 token 记价的通用模型表：搜索既
-没有模型也没有型号，硬塞进去只会让「这个模型花了多少钱」多出假答案。失败、超时与「一条
+`openai-search` 按上游回的 **token** 用通用价目表折价——宿主模型不在 `pricing.ts` 的模型表
+里（自有上游那条 Norm 看不见它，订阅那条虽然看得见名字，价目表里也没有那一行），猜只会猜
+错，改价只改价目表。两条都不进 `pricing.ts` 里那张按 token 记价的通用模型表：搜索既没有
+模型也没有型号，硬塞进去只会让「这个模型花了多少钱」多出假答案。失败、超时与「一条
 结果都没有」只收 Gas；调用自有上游时按真价记成**自转自**（余额只减 Gas），不记 0。
 
 ## 7. ZDR 与可信发布
