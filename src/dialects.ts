@@ -752,8 +752,12 @@ export type StreamEmitter = {
   toolStart(index: number, call: { id: string; name: string }): string[];
   /** 参数的增量片段（JSON 原文）。 */
   toolArgs(index: number, args: string): string[];
-  /** 收尾：停止标记、还没说完的工具调用与用量。此时才知道最终 token 数。 */
-  tail(answer: AnswerCore): string[];
+  /**
+   * 收尾：停止标记、还没说完的工具调用与用量。此时才知道最终 token 数，
+   * 所以费用也写在这一帧的用量里——客户端读用量时顺手读到，不必再问一次。
+   * （Chat 那条路的费用在 Norm 自己补的 `{"norm":…}` 帧上，不看这里。）
+   */
+  tail(answer: AnswerCore, norm: NormMeta): string[];
 };
 
 /** 带事件名的 SSE（Responses / Anthropic 都按 `type` 分派）。 */
@@ -968,7 +972,7 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
         }),
       ];
     },
-    tail: (answer) => {
+    tail: (answer, norm) => {
       const chunks: string[] = [];
       // 上游可能只在整段结束时才把思考给出来（非流式推理面就是这样）：收尾处补一条完整的思考条目。
       if (reasoning.length === 0 && answer.reasoning.length > 0) {
@@ -1014,6 +1018,7 @@ function responsesEmitter(id: string, model: string): StreamEmitter {
               input_tokens_details: { cached_tokens: answer.usage.cached },
               output_tokens: answer.usage.output,
               total_tokens: answer.usage.input + answer.usage.output,
+              cost_usd_nanos: norm.fee_nanos,
             },
           },
         }),
@@ -1109,7 +1114,7 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
         ? []
         : [named('content_block_delta', { type: 'content_block_delta', index: at, delta: { type: 'input_json_delta', partial_json: args } })];
     },
-    tail: (answer) => [
+    tail: (answer, norm) => [
       ...closeOpen(),
       named('message_delta', {
         type: 'message_delta',
@@ -1118,6 +1123,7 @@ function anthropicEmitter(id: string, model: string): StreamEmitter {
           output_tokens: answer.usage.output,
           input_tokens: Math.max(answer.usage.input - answer.usage.cached, 0),
           cache_read_input_tokens: answer.usage.cached,
+          cost_usd_nanos: norm.fee_nanos,
         },
       }),
       named('message_stop', { type: 'message_stop' }),
@@ -1135,7 +1141,7 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
     // Gemini 的流没有增量工具帧：参数攒到收尾，与这一段文本一起给出去。
     toolStart: () => [],
     toolArgs: () => [],
-    tail: (answer) =>
+    tail: (answer, norm) =>
       [
         bare({
           candidates: [
@@ -1158,6 +1164,7 @@ function geminiEmitter(_id: string, model: string): StreamEmitter {
             cachedContentTokenCount: answer.usage.cached,
             candidatesTokenCount: answer.usage.output,
             totalTokenCount: answer.usage.input + answer.usage.output,
+            cost_usd_nanos: norm.fee_nanos,
           },
           modelVersion: answer.model,
         }),
@@ -1357,6 +1364,65 @@ const EMITTERS: Record<Dialect, (id: string, model: string) => StreamEmitter> = 
   'anthropic-messages': anthropicEmitter,
   'google-gemini': geminiEmitter,
 };
+
+/* ── 费用：同方言直通时写进流尾那一帧 ─────────────────────────────── */
+
+/**
+ * 收尾帧里「用量」那一层，费用就写在它旁边；不是收尾帧就是 null。
+ *
+ * 只有两家的流里有这么一帧：Responses 的 `response.completed`、Anthropic 的
+ * `message_delta`——用量到它为止，费用也就能在这一刻算出来。`feeNanos` 为 null
+ * 时只做判断不写入，判定与写入共用同一处方言知识。
+ */
+function terminalEvent(dialect: Dialect, data: string, feeNanos: number | null): Raw | null {
+  let json: Raw;
+  try {
+    json = JSON.parse(data) as Raw;
+  } catch {
+    return null;
+  }
+  if (dialect === 'openai-responses') {
+    if (json.type !== 'response.completed') return null;
+    const response = obj(json.response);
+    const usage = obj(response.usage);
+    return { ...json, response: { ...response, usage: feeNanos === null ? usage : { ...usage, cost_usd_nanos: feeNanos } } };
+  }
+  if (dialect === 'anthropic-messages') {
+    if (json.type !== 'message_delta') return null;
+    const usage = obj(json.usage);
+    return { ...json, usage: feeNanos === null ? usage : { ...usage, cost_usd_nanos: feeNanos } };
+  }
+  return null;
+}
+
+/** 这一帧是不是「用量到此为止」的收尾帧：是就扣住它，等费用算出来再放行。 */
+export function carriesFinalUsage(dialect: Dialect, data: string): boolean {
+  return terminalEvent(dialect, data, null) !== null;
+}
+
+/** 把费用补进收尾帧的用量里，返回改好的 data 原文；不是收尾帧就返回 null。 */
+export function stampStreamCost(dialect: Dialect, data: string, meta: NormMeta): string | null {
+  const stamped = terminalEvent(dialect, data, meta.fee_nanos);
+  return stamped === null ? null : JSON.stringify(stamped);
+}
+
+/**
+ * 没有收尾帧的那一家（Gemini 的流到最后一个内容块就结束了）：费用补一条只带
+ * 用量的块——Gemini 自己的 API 也是这么收尾的。其余三家已经写进收尾帧，返回空串。
+ */
+export function closingCostFrame(dialect: Dialect, model: string, usage: Usage, meta: NormMeta): string {
+  if (dialect !== 'google-gemini') return '';
+  return bare({
+    usageMetadata: {
+      promptTokenCount: usage.input,
+      cachedContentTokenCount: usage.cached,
+      candidatesTokenCount: usage.output,
+      totalTokenCount: usage.input + usage.output,
+      cost_usd_nanos: meta.fee_nanos,
+    },
+    modelVersion: model,
+  });
+}
 
 export function streamEmitter(dialect: Dialect, id: string, model: string): StreamEmitter {
   return EMITTERS[dialect](id, model);
