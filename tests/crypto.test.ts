@@ -31,7 +31,7 @@ describe('base58', () => {
 });
 
 describe('签名', () => {
-  const fields = { method: 'post', path: '/v1/chat/completions', timestamp: '1700000000', nonce: 'abcdefghijk' };
+  const fields = { method: 'post', path: '/v1/chat/completions', timestamp: '1700000000' };
 
   it('接受正确签名，且大小写不敏感', () => {
     const { seed, address } = newIdentity();
@@ -41,12 +41,12 @@ describe('签名', () => {
     expect(verifySignature({ address, signature, message: signingMessage({ ...fields, bodySha256Hex: sha256Hex(encoder.encode('{"a":2}')) }) })).toBe(false);
   });
 
-  it('路径或 nonce 变化都会让签名失效', () => {
+  it('路径或时间戳变化都会让签名失效', () => {
     const { seed, address } = newIdentity();
     const body = sha256Hex(new Uint8Array());
     const signature = base58.encode(ed25519.sign(signingMessage({ ...fields, bodySha256Hex: body }), seed));
     expect(verifySignature({ address, signature, message: signingMessage({ ...fields, path: '/v1/models', bodySha256Hex: body }) })).toBe(false);
-    expect(verifySignature({ address, signature, message: signingMessage({ ...fields, nonce: 'other', bodySha256Hex: body }) })).toBe(false);
+    expect(verifySignature({ address, signature, message: signingMessage({ ...fields, timestamp: '1700000001', bodySha256Hex: body }) })).toBe(false);
   });
 
   it('坏地址、坏签名、错长度都返回 false 而不是抛错', () => {
@@ -63,7 +63,7 @@ describe('待签名串', () => {
   });
 
   it('字段顺序固定', () => {
-    const text = new TextDecoder().decode(signingMessage({ method: 'GET', path: '/x', timestamp: '1', nonce: 'n', bodySha256Hex: 'h' }));
-    expect(text).toBe('norm-v1\nGET\n/x\n1\nn\nh');
+    const text = new TextDecoder().decode(signingMessage({ method: 'GET', path: '/x', timestamp: '1', bodySha256Hex: 'h' }));
+    expect(text).toBe('norm-v1\nGET\n/x\n1\nh');
   });
 });

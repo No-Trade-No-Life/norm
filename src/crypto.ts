@@ -17,16 +17,14 @@ export function signingMessage({
   method,
   path,
   timestamp,
-  nonce,
   bodySha256Hex,
 }: {
   method: string;
   path: string;
   timestamp: string;
-  nonce: string;
   bodySha256Hex: string;
 }): Uint8Array {
-  return utf8(`norm-v1\n${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodySha256Hex}`);
+  return utf8(`norm-v1\n${method.toUpperCase()}\n${path}\n${timestamp}\n${bodySha256Hex}`);
 }
 
 /**

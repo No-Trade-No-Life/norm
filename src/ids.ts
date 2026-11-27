@@ -2,7 +2,7 @@ export function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** 22 字符左右的 base58 随机串：nonce、流水 id 用它。 */
+/** 22 字符左右的 base58 随机串：流水 id、消费者 id 用它。 */
 export function randomToken(bytes = 16): string {
   return base58.encode(crypto.getRandomValues(new Uint8Array(bytes)));
 }

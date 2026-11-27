@@ -95,20 +95,14 @@ export type ProviderRow = {
   enabled: number;
   created_at: number;
   revoked_at: number | null;
-  /**
-   * 上一次改动这条记录的幂等键（`X-Norm-Nonce` 原值）。`applyOnce` 拿它判「这次是不是
-   * 重放」：同一把 nonce 再来一次，条件更新落空，于是去重不需要任何单独的写入。
-   */
-  last_nonce: string | null;
 };
 
 /**
  * 地址第一次出现就开户并给演示授信。三条语句在同一个 batch 里，
  * 保证「给钱」与「记这笔钱」不会分叉；重复调用安全。
  *
- * 返回「这次是不是真的开了户」：开户本来就是行内幂等的（主键是地址，授信那一条用
- * `WHERE voucher_nanos = 0` 兜住），所以它不需要一把幂等键——重放既不会开出第二个
- * 账户，也不会再发一张券。调用方（`/auth/login`）用这个布尔诚实回答重放。
+ * 返回「这次是不是真的开了户」：主键是地址，授信那一条用 `WHERE voucher_nanos = 0`
+ * 兜住，重复调用既不会开出第二个账户，也不会再发一张券。
  */
 export async function ensurePrincipal(env: Env, address: string, at: number): Promise<boolean> {
   const grant = grantNanos(env);

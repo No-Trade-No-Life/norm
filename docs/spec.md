@@ -29,23 +29,14 @@ Norm 不是「一台你租给我的机器」，而是**一份公开可复现的�
 ```
 X-Norm-Address:   <base58 公钥>
 X-Norm-Timestamp: <unix 秒>
-X-Norm-Nonce:     <22 字符 base58 随机串>
 X-Norm-Signature: <base58 的 ed25519 签名>
 
-message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + nonce + "\n" + sha256hex(body)
+message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256hex(body)
 ```
 
-服务端校验：时间窗 ±60 秒、签名通过公钥验证。鉴权本身不写任何行。地址首次出现时自动开户。
+服务端校验：时间窗 ±60 秒、签名通过公钥验证。鉴权本身不写任何行；传输层全程走 TLS，不维护 nonce 或重放状态。地址首次出现时自动开户。
 
-`X-Norm-Nonce` 的语义是**这次请求的幂等键**，不是「一次性票据」：
-
-- 时间窗只管新鲜度，一次性由幂等键保证；
-- 读（GET / HEAD）不查也不写任何去重状态，重放仍然是 200；
-- 创建类的新行 id 由 `sha256(address‖METHOD‖PATH‖nonce)` 派生，重放落空即「已应用」；
-- 修改 / 删除类把幂等键写进被改那一行的 `last_nonce`，落空即「重放」；
-- `rotate` 的重放回 409，且不会再签发第二把密钥。
-
-细节见 `docs/crypto.md` 第 2.1 节。
+细节见 `docs/crypto.md` 第 2 节。
 
 ## 4. BYOK 与两侧身份
 

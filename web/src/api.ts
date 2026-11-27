@@ -26,24 +26,16 @@ export function signingMessage({
   method,
   path,
   timestamp,
-  nonce,
   bodySha256Hex,
 }: {
   method: string;
   path: string;
   timestamp: string;
-  nonce: string;
   bodySha256Hex: string;
 }): Uint8Array {
   return encoder.encode(
-    `norm-v1\n${method.toUpperCase()}\n${path}\n${timestamp}\n${nonce}\n${bodySha256Hex}`,
+    `norm-v1\n${method.toUpperCase()}\n${path}\n${timestamp}\n${bodySha256Hex}`,
   );
-}
-
-function randomNonce(): string {
-  // 16 字节随机 → base58，约 22 字符。它不是一个「一次性票据」，而是这次请求的幂等键：
-  // 服务端拿它判「这次改动做过没有」（见 docs/crypto.md 2.1）。重试请复用同一把。
-  return base58.encode(crypto.getRandomValues(new Uint8Array(16)));
 }
 
 export type SignedRequest = {
@@ -68,14 +60,12 @@ export async function signedFetch({ path, method = 'GET', body, headers, signal 
 
   const bodyBytes = body === undefined ? new Uint8Array(0) : encoder.encode(body);
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = randomNonce();
   // docs/crypto.md：PATH 取的是 URL 的 pathname，**不含 query**。
   // 签名用 pathname，请求用带 query 的完整路径，两者不能混。
   const message = signingMessage({
     method,
     path: path.split('?')[0],
     timestamp,
-    nonce,
     bodySha256Hex: sha256Hex(bodyBytes),
   });
   const signature = base58.encode(sign(stored.keypair, message));
@@ -89,7 +79,6 @@ export async function signedFetch({ path, method = 'GET', body, headers, signal 
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       'X-Norm-Address': address,
       'X-Norm-Timestamp': timestamp,
-      'X-Norm-Nonce': nonce,
       'X-Norm-Signature': signature,
       ...headers,
     },

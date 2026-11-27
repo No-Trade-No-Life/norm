@@ -86,7 +86,7 @@ pnpm exec wrangler d1 execute norm --remote --config wrangler.jsonc \
 |---|---|---|
 | `MIN_BALANCE_NANOS` | `10000` | 转发面入口安全余额阈值（纳美元）；低于此值直接 402 拒单，0 D1 写、0 上游请求。动态 Gas 单价表在 `src/gas.ts` 中 |
 | `GRANT_NANOS` | `1000000000` | 新地址的演示授信（纳美元，即 $1） |
-| `SIGNATURE_WINDOW_SECONDS` | `60` | 签名时间窗：只管新鲜度（一次性由请求自带的幂等键保证，见 `docs/crypto.md` 2.1） |
+| `SIGNATURE_WINDOW_SECONDS` | `60` | 签名时间窗（秒），超出窗口一律 `401 timestamp_out_of_window` |
 | `TRUSTED_BASE_URLS` | 见文件 | 信任清单：精确主机名，逗号分隔 |
 | `NORM_MASTER_KEY` | 无默认 | **Worker secret**，AES-256-GCM 封装上游提供商密钥用的 32 字节密钥 |
 
