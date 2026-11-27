@@ -54,7 +54,14 @@ export {
   type StreamEvent,
 };
 
-export type Protocol = Dialect | 'deepseek' | 'opencode-go' | 'openai-oauth' | 'openai-audio' | 'qwen';
+export type Protocol =
+  | Dialect
+  | 'deepseek'
+  | 'opencode-go'
+  | 'openai-oauth'
+  | 'openai-audio'
+  | 'openai-search'
+  | 'qwen';
 
 export const PROTOCOLS: Protocol[] = [
   ...DIALECTS,
@@ -62,6 +69,7 @@ export const PROTOCOLS: Protocol[] = [
   'opencode-go',
   'openai-oauth',
   'openai-audio',
+  'openai-search',
   'qwen',
 ];
 
@@ -308,6 +316,18 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    * 基址钉死为百炼的根，路径按能力分别给：兼容层带版本段，原生接口自带 `/api/v1`。
    * 音频型号与价目在 `qwen.ts` 与 `pricing.ts` 里，跟着代码进构建哈希。
    */
+  /**
+   * openai-search：一条把**宿主模型 + `web_search` 工具**包成搜索信封的上游（OpenAI LB 的
+   * `/v1/web-search` 就是这条）。基址由用户填：它可以是任何说这套信封的搜索服务。
+   *
+   * 宿主模型是这条上游的部署设置，不是调用方的参数——所以协议上只声明「会说这条搜索方言」，
+   * 一个字都不提型号。
+   */
+  'openai-search': {
+    dialect: 'openai-chat',
+    search: 'openai-search',
+  },
+
   qwen: {
     dialect: 'openai-chat',
     base_url: 'https://dashscope.aliyuncs.com',
@@ -348,6 +368,7 @@ const RESOLVED_PROTOCOLS: Record<Protocol, ResolvedProtocol> = {
   'opencode-go': resolveProtocol('opencode-go'),
   'openai-oauth': resolveProtocol('openai-oauth'),
   'openai-audio': resolveProtocol('openai-audio'),
+  'openai-search': resolveProtocol('openai-search'),
   qwen: resolveProtocol('qwen'),
 };
 

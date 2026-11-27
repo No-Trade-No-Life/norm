@@ -129,7 +129,7 @@ curl https://norm.ntnl.io/v1/audio/speech \
 计价，**没有兜底价**：认不出的型号在打出去之前就拒——按秒与按字符不是同一个单位，猜错方向
 会差几个数量级，而账单不能靠猜。
 
-### 联网搜索：一次 API 调用，不是一次工具调用
+### 联网搜索：选一条搜索协议，不选模型
 
 搜索是**独立端点** `POST /v1/web-search`，不是 `/v1/responses` 上的一件 `tools`：
 
@@ -137,30 +137,26 @@ curl https://norm.ntnl.io/v1/audio/speech \
 curl https://norm.ntnl.io/v1/web-search \
   -H "Authorization: Bearer sk-norm-…" \
   -H "Content-Type: application/json" \
-  -d '{"query":"rust 1.93 release notes","max_results":5,"need_content":false}'
-# → 200 {"created":1780000000,"sources":[{"url":"…","title":"…"}]…,"cost_usd_nanos":754000,"norm":{…}}
+  -d '{"source":"deepseek","query":"rust 1.93 release notes","max_results":5}'
+# → 200 {"created":1780000000,"source":"deepseek","sources":[{"url":"…","title":"…"}],…,"cost_usd_nanos":754000,"norm":{…}}
 ```
 
-理由不是审美。DeepSeek 的 Search API（`/v1/tools/search`）本身就是搜索引擎：一次 JSON 请求
-进去、一页结构化结果出来，**不跑任何模型**。把它包进一次对话里，就得先让一个宿主模型读懂
-问题、决定搜什么、再写一段散文复述结果——多一次推理、多一份不确定性，而且同一次搜索还要
-按 token 再收一遍钱。所以这里不装那套：请求进、结果出，中间只有一次上游调用。
+调用方选的只有 `source`——**一条搜索协议**，不是模型：
 
-- **入口**：`POST /v1/web-search`，body 是 `query`（必填）、`max_results`（1–50，缺省 8）、
-  `need_content`（缺省 false），以及可选的 `allowed_domains` / `blocked_domains`（裸域名，
-  二者不能同时给；转发前折成 Search API 的 `site:` / `-site:` 查询语法）。
-- **方言挂在协议上，不挂在模型上**：`ProtocolProfile.search` 存的是方言名（今天只有
-  `deepseek-search`），与音频那侧同一个道理——对外一条线缆，对内可以有多条实现。搜索**不
-  选模型**：它不跑模型、没有 token，也没有「这次用哪个型号」可问，能不能搜是这条上游的事实。
-  将来别的搜索引擎（或一家自己的搜索服务）都能包成同一条方言：一条路径、一个请求体、一个
-  读法、一个价，路由一个字都不用改。选址规则仍是「自有优先、公共池兜底、会话亲和」。
-- **计价**：按**成功的调用**算，不按 token。上游价目每 1,000 次 0.75 美元，即一次
-  `750,000` 纳美元——这个价是 DeepSeek 这一条协议的事实（`deepseek.ts` 的
-  `DEEPSEEK_SEARCH_CALL_NANOS`，随方言一起挂在 `SearchCodec.callNanos` 上），不进按 token
-  记价的通用表；别的搜索方言带自己的价。失败、超时、以及「一条结果都没有」的那次都不收
-  Token 费，只收 Gas。调用自有上游时 Token 费仍记为 0（自己直接付给厂商）。
-- **信封**：`sources[]`，每条必有 `url`；与 DeepSeek LB 的 `/v1/web-search` 同一套，改一次
-  base_url 就能在「官方 API」与「一条 LB」之间换，调用方不必改代码。
+| `source` | 上游怎么把搜索做出来 | 计价 |
+|---|---|---|
+| `deepseek` | DeepSeek 的 Search API（`/v1/tools/search`）直连：搜索引擎本身，**没有任何模型** | 按**成功的调用**：一次 750,000 纳美元（每 1,000 次 0.75 美元） |
+| `openai` | 上游把**宿主模型 + `web_search` 工具**包成同一条搜索信封（OpenAI LB 的 `/v1/web-search` 就是这样），宿主模型由那条上游部署时定下 | 按上游报的 **token**：Norm 看不到那条上游的宿主模型，所以按通用价目表折价 |
+
+**为什么不包成 `/v1/responses` 带 `tools` 的调用。** 那条路要先有一个能调工具的宿主模型：模型读题、决定搜什么、再写一段散文把结果复述回来。代价是三重的——多一次推理（贵且慢）、多一份不确定性、同一次搜索按 token 再收一遍钱。搜索本身已经是一次确定的 API 调用，不需要谁来「决定」；真要那条路，`source: "openai"` 已经把「宿主模型 + `web_search`」封在上游那一侧了，调用方仍然只选协议。
+
+- **入口**：`source`（`deepseek` / `openai`，必填）+ `query`（必填），其余参数是那条协议自己的语言：
+  - `deepseek`：`max_results`（1–50，缺省 8）、`need_content`、`allowed_domains` / `blocked_domains`（裸域名、互斥，转发前折成 `site:` / `-site:`）；
+  - `openai`：`search_context_size`、`filters.allowed_domains`、`user_location`，原样转给上游。
+  
+  给错协议给了别人的参数会 `400 param_unsupported` 并点名它属于谁——静默忽略是最坏的一种：调用方以为过滤生效了，拿到的是没过滤的一页。
+- **选址**：方言挂在**协议**上（`ProtocolProfile.search`），不挂在模型上——`deepseek` 协议说 `deepseek-search`，`openai-search` 协议说 `openai-search`；只有说同一条方言的上游才进候选。规则仍是自有优先、公共池兜底、会话亲和。
+- **信封**：`sources[]`，每条必有 `url`；两条协议说同一个形状，换 `source` 不必改代码。成功带 `cost_usd_nanos` 与四个回执头；失败、超时与「一条结果都没有」只收 Gas。
 
 ### 服务端选址规则
 

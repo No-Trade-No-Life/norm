@@ -2,6 +2,7 @@ import type { Env } from './env';
 import { audioCodecFor, type AudioAsk } from './audio';
 import { imageCodecFor, type ImageAsk } from './images';
 import { type Modalities, type ModelInfo, protocolFor, type Protocol } from './protocols';
+import type { SearchDialect } from './search';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
@@ -496,12 +497,13 @@ export type ResolveRequest = {
    */
   audio?: AudioAsk;
   /**
-   * 这一次是一次联网搜索：只有自带搜索能力（`protocolFor(...).search`）的上游才进候选。
+   * 这一次是一次联网搜索，且指定了要哪一条**搜索方言**（`ProtocolProfile.search`）。
    *
-   * 搜索没有模型可问：它不跑模型，也没有 token 用量，所以「跑不跑得了」由协议声明，
-   * 而不是由清单里某一行的型号决定。
+   * 搜索没有模型可问：它不跑模型，也没有「这次用哪个型号」这回事，所以「跑不跑得了」由
+   * 协议声明，而不是由清单里某一行的型号决定。下游选的 `source`（deepseek / openai）落到
+   * 这里就是一条方言名，只有说这条方言的上游才进候选。
    */
-  search?: true;
+  search?: SearchDialect;
   /**
    * 这一次是一次图像调用：只有「图像方言做得了它」的上游才进候选（`images.ts` 的 `serves`）。
    * 与音频同一个理由——跑不了这次调用的上游连一次 400 的机会都不该有。
@@ -545,13 +547,14 @@ export async function resolveProvider(
 
   // 搜索同理，而且更简单：这次调用没有模型可问，能问的只有「这条上游会不会搜索」。
   // 不会的那条连一次上游请求都不该有——搜索是它的能力缺口，不是它的配置问题。
-  if (request.search === true) {
-    pool = pool.filter((row) => protocolFor(row.protocol).search !== undefined);
+  if (request.search !== undefined) {
+    const dialect = request.search;
+    pool = pool.filter((row) => protocolFor(row.protocol).search === dialect);
     if (pool.length === 0) {
       fail(
         404,
         'search_not_served',
-        '没有上游能接这次联网搜索：搜索由协议声明（今天只有 deepseek 自带 Search API），启用一条 deepseek 上游后再试',
+        `没有上游能做 ${dialect} 这条搜索：搜索协议由上游的协议决定（deepseek 直连 Search API，openai-search 走封装了宿主模型的上游），启用一条对应的上游后再试`,
       );
     }
   }
