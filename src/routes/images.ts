@@ -206,10 +206,13 @@ imageRoutes.post('/images/generations', async (c: ImageContext) => {
         ? 'high'
         : ask.quality;
   const pixels = pixelsOf(answer.size) ?? pixelsOf(ask.size) ?? 0;
-  const quote =
-    provider.address === address
-      ? null
-      : quoteImage(ask.model, { count: answer.images.length, pixels, quality: quality as 'low' | 'medium' | 'high' });
+  // 自有上游也按真价记（自转自，余额只减 Gas）：一张图的价与上游归谁无关，折成 0 会让
+  // 账本说不出这次生成实际花了多少钱。
+  const quote = quoteImage(ask.model, {
+    count: answer.images.length,
+    pixels,
+    quality: quality as 'low' | 'medium' | 'high',
+  });
 
   const meta = await settleBill(accounting, {
     status: 'ok',

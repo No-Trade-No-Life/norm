@@ -406,7 +406,8 @@ false）、`allowed_domains` / `blocked_domains`（裸域名数组、互斥，�
 **计费**：`deepseek` 按成功的调用（外部价目每 1,000 次 0.75 美元，即一次 `750,000` 纳美元）；
 `openai` 按上游报的 token 折价（宿主模型是那条上游的部署设置，Norm 看不到型号）。失败、
 超时与「一条结果都没有」的那次都不收 Token 费，只收 Gas（`X-Norm-Gas-Fee-Nanos`）。调用
-自有上游时 Token 费记为 0，与文本、音频同一口径。
+自有上游时按真价记成**自转自**（`token_self_nanos`，余额只减 Gas），不记 0——与文本、音频
+同一口径。
 
 ## 模型清单（只认 Bearer 消费者密钥）
 

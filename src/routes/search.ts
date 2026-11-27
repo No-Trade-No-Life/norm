@@ -173,12 +173,13 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
     );
   }
 
-  // 自有上游只付 Gas：自己直接付给上游厂商，Norm 不在这两者之间转一笔钱。
-  // 报价由方言自己算：直连搜索按次（一次 750,000 纳美元），宿主模型那条按上游报的 token。
+  // 自有上游也按真价记（自转自，余额只减 Gas）：报价由方言自己算——直连搜索按次
+  // （一次 750,000 纳美元），宿主模型那条按上游报的 token。折成 0 会让账本说不出这次
+  // 搜索实际值多少钱（`billing.ts` 与 `store.settle` 的同一句话）。
   const meta = await settleBill(accounting, {
     status: 'ok',
     statusCode: reply.status,
-    tokenNanos: provider.address === address ? 0 : codec.quote(answer),
+    tokenNanos: codec.quote(answer),
     usage: answer.usage,
     audio: ZERO_AUDIO_USAGE,
   });
