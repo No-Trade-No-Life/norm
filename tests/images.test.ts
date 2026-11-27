@@ -191,7 +191,19 @@ describe('读事件流：图在 output_item.done 里，尺寸与质量按上游�
 
 describe('图像计价：按张、按质量、按像素折算', () => {
   it('价目表覆盖同一批型号，认不得的型号没有价', () => {
-    expect(IMAGE_RATES.map((rate) => rate.match)).toEqual(['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini', 'gpt-image-1']);
+    expect(IMAGE_RATES.map((rate) => rate.match)).toEqual([
+      'gpt-image-2.6-sunburst',
+      'gpt-image-2.6-flare',
+      'gpt-image-2.5-sunburst',
+      'gpt-image-2.5-flare',
+      'gpt-image-2',
+      'gpt-image-1.5',
+      'gpt-image-1-mini',
+      'gpt-image-1',
+    ]);
+    // 2.5 / 2.6 的长名字不能被 gpt-image-2 那一行吃掉。
+    expect(imageRateFor('gpt-image-2.6-sunburst')?.match).toBe('gpt-image-2.6-sunburst');
+    expect(imageRateFor('gpt-image-2.5-flare')?.match).toBe('gpt-image-2.5-flare');
     expect(imageRateFor('gpt-image-2')).not.toBeNull();
     // 最长匹配：1.5 不能被 gpt-image-1 那一行吃掉。
     expect(imageRateFor('gpt-image-1.5')?.match).toBe('gpt-image-1.5');

@@ -86,7 +86,16 @@ export const MAX_IMAGE_PROMPT_CHARS = 32_000;
  * 表（`pricing.ts` 的 `IMAGE_RATES`）是同一批名字——**没有价目的型号在入口就被拒**，
  * 所以「能不能出图」与「按什么算钱」在这里是同一个答案。
  */
-export const OPENAI_IMAGE_MODELS = ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1', 'gpt-image-1-mini'];
+export const OPENAI_IMAGE_MODELS = [
+  'gpt-image-2.6-sunburst',
+  'gpt-image-2.6-flare',
+  'gpt-image-2.5-sunburst',
+  'gpt-image-2.5-flare',
+  'gpt-image-2',
+  'gpt-image-1.5',
+  'gpt-image-1',
+  'gpt-image-1-mini',
+];
 
 const MODEL_SET = new Set(OPENAI_IMAGE_MODELS);
 

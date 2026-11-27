@@ -277,6 +277,12 @@ export type ImageRate = {
  * （低 $0.006 / 中 $0.053 / 高 $0.211）。
  */
 export const IMAGE_RATES: ImageRate[] = [
+  // 2.5 / 2.6 的分档价官方还没单列，先按同一代 gpt-image-2 的每张价收：
+  // 同一家的图片 token 价这几代没变过，宁可先与同代对齐，也不凭空发明一个数。
+  { match: 'gpt-image-2.6-sunburst', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
+  { match: 'gpt-image-2.6-flare', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
+  { match: 'gpt-image-2.5-sunburst', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
+  { match: 'gpt-image-2.5-flare', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
   { match: 'gpt-image-2', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
   { match: 'gpt-image-1.5', nanos: { low: 9_000_000, medium: 34_000_000, high: 133_000_000 } },
   { match: 'gpt-image-1-mini', nanos: { low: 5_000_000, medium: 11_000_000, high: 36_000_000 } },

@@ -38,9 +38,6 @@ describe('parseProxyUrl', () => {
     expect(parseProxyUrl('http://proxy.example.com')?.port).toBe(80);
   });
 
-  it('不接受 https 代理：隧道外面再套一层 TLS 只多一条路径', () => {
-    expect(parseProxyUrl('https://proxy.example.com:8888')).toBeNull();
-  });
 
   it('带路径的地址是把代理和转发器搞混了', () => {
     expect(parseProxyUrl('http://proxy.example.com:8888/v1')).toBeNull();
@@ -103,5 +100,27 @@ describe('untilEnd', () => {
   it('一直读到对端收尾', async () => {
     const source = createByteSource(readerOf([encoder.encode('abc'), encoder.encode('def')]));
     expect(await drain(untilEnd(source))).toBe('abcdef');
+  });
+});
+
+describe('https 代理：到代理这一跳也加密', () => {
+  it('scheme 决定 tls 与默认端口，其余形状不变', () => {
+    expect(parseProxyUrl('http://h.example:8080')).toEqual({ host: 'h.example', port: 8080, authorization: '' });
+    expect(parseProxyUrl('https://h.example')).toEqual({ host: 'h.example', port: 443, authorization: '', tls: true });
+    expect(parseProxyUrl('https://u:p@h.example:8443')).toEqual({
+      host: 'h.example',
+      port: 8443,
+      authorization: `Basic ${btoa('u:p')}`,
+      tls: true,
+    });
+  });
+
+  it('提示里保留 scheme：看到 https:// 就知道这一段是加密的', () => {
+    expect(proxyHintOf('https://u:p@h.example:8443')).toBe('https://***@h.example:8443');
+    expect(proxyHintOf('http://h.example:8080')).toBe('http://h.example:8080');
+  });
+
+  it('别的 scheme 仍然不认（隧道只实现 CONNECT）', () => {
+    expect(parseProxyUrl('socks5://h.example:1080')).toBeNull();
   });
 });
