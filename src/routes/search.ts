@@ -12,12 +12,14 @@ import {
   GAS_TOKEN_TRANSFER_NANOS,
   GasMeter,
 } from '../gas';
+import { MAX_HOST_ATTEMPTS } from '../hosts';
 import { HttpError, fail } from '../http';
 import { uuidv7 } from '../ids';
+import { isModelNotServed } from '../models';
 import { ZERO_AUDIO_USAGE } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
-import { readSearchAsk, searchCodecForProtocol, type SearchAnswer } from '../search';
+import { readSearchAsk, searchCodecForProtocol, searchDialectFor, type SearchAnswer } from '../search';
 import { resolveProvider } from '../store';
 import { failureHeaders, receiptHeaders, recordFailure, settleBill, type Accounting } from './billing';
 
@@ -32,7 +34,13 @@ import { failureHeaders, receiptHeaders, recordFailure, settleBill, type Account
  *
  * 与文本、音频同一条骨架：一个消费者 Token、一次选址、一笔 Gas、一笔转给上游提供方的钱。
  * 不同的只有两处——**没有模型**（搜索不跑模型，选址只看「这条上游会不会搜索」），以及
- * 计价单位是**次**：按上游价目，一次成功的搜索 750,000 纳美元，失败、超时与无结果不收。
+ * 计价不由调用方挑的型号决定：直连 Search API 按**成功的调用**（一次 750,000 纳美元），
+ * 把宿主模型包成搜索的那条按上游报的 **token**。失败、超时与无结果不收 Token 费。
+ *
+ * 唯一像例外的是订阅上游（`openai-oauth`）：它只有 `/responses`，`web_search` 在那里是
+ * 一个工具，于是 Norm 替它包**一次只调这个工具的**请求。那是上游的形状，不是把搜索变成
+ * 对话：`tool_choice` 钉死，宿主模型不替调用方做决定，回来的仍是 `sources[]`（见
+ * `src/search.ts` 的 `openai-oauth` 那一条）。
  */
 export const searchRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
@@ -46,7 +54,9 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
   const ask = readSearchAsk(await c.req.text());
   // 下游选的是**搜索协议**（deepseek / openai），不是模型：两条协议的区别在上游怎么把搜索
   // 做出来（直连搜索引擎，或把宿主模型 + `web_search` 工具包成同一条信封），而不在型号。
-  const codec = searchCodecForProtocol(ask.protocol);
+  // 协议只决定「要哪条方言」；具体跟谁说、怎么说，要等选出上游之后按**协议**取编解码
+  // （`openai-search` 这条方言有两条上游：做好信封的服务，与 Norm 自己包工具的订阅）。
+  const dialect = searchDialectFor(ask.protocol);
 
   const requestId = uuidv7();
   const startedAt = Date.now();
@@ -69,15 +79,17 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
 
   // 走哪条上游是 Norm 自己的决定：会搜索是前提，自己的上游优先、公共池兜底。
   const choice = await resolveProvider(c.env, address, affinityKeyOf(c.req.raw.headers), {
-    search: codec.dialect,
+    search: dialect,
     gas,
     pendingRequiredNanos: pendingTouch + GAS_SETTLE_NANOS,
     abortOnInsufficientBalance: true,
   });
   const provider = choice.provider;
   const profile = protocolFor(provider.protocol);
-  // 选址已经按方言筛过，走到了这里说明它确实说的是这一条。
-  if (profile.search !== codec.dialect) {
+  const codec = searchCodecForProtocol(provider.protocol);
+  // 选址按方言筛过，这里再按协议取编解码：取不到、或它说的不是同一条方言，就是一份与
+  // 选址规则不一致的协议声明——当场说清，别拿着别的方言的请求体打出去。
+  if (codec === null || codec.dialect !== dialect) {
     fail(404, 'search_not_served', `${provider.protocol} 不做 ${ask.protocol} 这条搜索协议`);
   }
 
@@ -124,53 +136,82 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
     rate: null,
   };
 
-  let reply: Response;
-  try {
-    reply = await sendUpstream({
-      env: c.env,
-      address: provider.address,
-      provider,
-      url: `${provider.base_url.replace(/\/+$/, '')}${codec.path}`,
-      init: {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey) },
-        body: codec.encode(ask),
-      },
-    });
-  } catch (error) {
-    const settled = await recordFailure(accounting, 'network_error', 502);
-    return c.json(
-      { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
-      502,
-      failureHeaders(requestId, settled),
-    );
+  // 宿主模型逐个试：同一个订阅里可达的文本模型不同（有的回 `model_not_found`，有的能用），
+  // 而宿主是谁与调用方无关。只在这一种错上换候选——内容被拒、额度用光，换宿主也没用。
+  const hosts: Array<string | undefined> =
+    codec.hostModels === undefined ? [undefined] : codec.hostModels.slice(0, MAX_HOST_ATTEMPTS);
+
+  let answer: SearchAnswer | null = null;
+  let failure: { status: number; contentType: string; text: string } | null = null;
+  let upstreamStatus = 200;
+
+  for (let index = 0; index < hosts.length; index += 1) {
+    const host = hosts[index];
+    let reply: Response;
+    try {
+      reply = await sendUpstream({
+        env: c.env,
+        address: provider.address,
+        provider,
+        url: `${provider.base_url.replace(/\/+$/, '')}${codec.path}`,
+        init: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...profile.headers(providerKey) },
+          body: codec.encode(ask, host),
+        },
+      });
+    } catch (error) {
+      const settled = await recordFailure(accounting, 'network_error', 502);
+      return c.json(
+        { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
+        502,
+        failureHeaders(requestId, settled),
+      );
+    }
+
+    if (reply.ok) {
+      upstreamStatus = reply.status;
+      try {
+        answer = await codec.read(reply);
+      } catch (error) {
+        // 上游回了 200，却没有一页结果（或回的不是搜索信封）：这次搜索不算成功，Token 费
+        // 不收，但那次上游请求真的发生过，Gas 照收——与文本、音频的失败同一口径。
+        const readFailure = error instanceof HttpError ? error : null;
+        const settled = await recordFailure(accounting, readFailure?.code ?? 'search_data_missing', 502);
+        return c.json(
+          {
+            error: readFailure?.code ?? 'search_data_missing',
+            message: readFailure?.message ?? '联网搜索失败',
+          },
+          502,
+          failureHeaders(requestId, settled),
+        );
+      }
+      break;
+    }
+
+    // Gas 照收，Token 不收：这次调用已经真的打出去了；上游的原话原样交回，它比一句概括有用。
+    const text = await reply.text();
+    failure = {
+      status: reply.status,
+      contentType: reply.headers.get('Content-Type') ?? 'application/json',
+      text,
+    };
+    if (host !== undefined && index + 1 < hosts.length && isModelNotServed(reply.status, text, host)) {
+      continue;
+    }
+    break;
   }
 
-  if (!reply.ok) {
-    // Gas 照收，Token 不收：这次调用已经真的打出去了；上游的原话原样交回，它比一句概括有用。
-    const settled = await recordFailure(accounting, 'provider_error', reply.status);
-    return new Response(await reply.text(), {
-      status: reply.status,
+  if (answer === null) {
+    const settled = await recordFailure(accounting, 'provider_error', failure?.status ?? 502);
+    return new Response(failure?.text ?? '', {
+      status: failure?.status ?? 502,
       headers: {
-        'Content-Type': reply.headers.get('Content-Type') ?? 'application/json',
+        'Content-Type': failure?.contentType ?? 'application/json',
         ...failureHeaders(requestId, settled),
       },
     });
-  }
-
-  let answer: SearchAnswer;
-  try {
-    answer = await codec.read(reply);
-  } catch (error) {
-    // 上游回了 200，却没有一页结果（或回的不是搜索信封）：这次搜索不算成功，Token 费不收，
-    // 但那次上游请求真的发生过，Gas 照收——与文本、音频的失败同一口径。
-    const failure = error instanceof HttpError ? error : null;
-    const settled = await recordFailure(accounting, failure?.code ?? 'search_data_missing', 502);
-    return c.json(
-      { error: failure?.code ?? 'search_data_missing', message: failure?.message ?? '联网搜索失败' },
-      502,
-      failureHeaders(requestId, settled),
-    );
   }
 
   // 自有上游也按真价记（自转自，余额只减 Gas）：报价由方言自己算——直连搜索按次
@@ -178,7 +219,7 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
   // 搜索实际值多少钱（`billing.ts` 与 `store.settle` 的同一句话）。
   const meta = await settleBill(accounting, {
     status: 'ok',
-    statusCode: reply.status,
+    statusCode: upstreamStatus,
     tokenNanos: codec.quote(answer),
     usage: answer.usage,
     audio: ZERO_AUDIO_USAGE,

@@ -18,6 +18,7 @@
  * 与它无关的可能。
  */
 import type { ModelInfo } from './codecs';
+import { HOST_MODELS } from './hosts';
 import { fail } from './http';
 import type { Usage } from './pricing';
 
@@ -234,19 +235,9 @@ export function readImageAsk(rawBody: string): ImageAsk {
   };
 }
 
-/**
- * 宿主模型候选。第一项是首选，其余是「这个账户没有它」时的退路：同一个订阅里可达的
- * 型号各不相同（实测 `gpt-5.4` 在某个账户上回 `model_not_found`，而 `gpt-6-luna` 可用），
- * 而宿主是谁与「调用方要哪张图」无关——它是 Norm 的实现细节。
- */
-const HOST_MODELS = ['gpt-6-luna', 'gpt-5.6-luna', 'gpt-6-sol'] as const;
-
 /** 让宿主模型只做一件事：把调用方的提示词原样搬进工具参数，别自己改写。 */
 const INSTRUCTIONS =
   "You are an image generator. You MUST call image_generation exactly once and return only that tool call. Mirror the user's request verbatim into the prompt argument.";
-
-/** 上游说「这个宿主模型不认」时能试几次（每条候选一次上游请求，别变成一次扫荡）。 */
-export const MAX_HOST_ATTEMPTS = 2;
 
 const openaiImageTool: ImageCodec = {
   dialect: 'openai-image-tool',

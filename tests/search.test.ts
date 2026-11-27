@@ -3,10 +3,19 @@ import { describe, expect, it } from 'vitest';
 import { HttpError } from '../src/http';
 import { quote } from '../src/pricing';
 import { protocolFor } from '../src/protocols';
-import { readSearchAsk, searchCodecFor, searchCodecForProtocol } from '../src/search';
+import type { Protocol } from '../src/protocols';
+import { readSearchAsk, searchCodecForProtocol, searchDialectFor } from '../src/search';
 
-const deepseek = searchCodecFor('deepseek-search');
-const openai = searchCodecFor('openai-search');
+/** 按上游协议取编解码：null 在这里是测试里的一份错声明，直接炸掉。 */
+const codecOf = (protocol: Protocol) => {
+  const codec = searchCodecForProtocol(protocol);
+  if (codec === null) throw new Error(`${protocol} 没有搜索编解码`);
+  return codec;
+};
+
+const deepseek = codecOf('deepseek');
+const openai = codecOf('openai-search');
+const oauth = codecOf('openai-oauth');
 const NO_USAGE = { input: 0, cached: 0, output: 0 };
 
 /** 把一次出错读成 `状态码 + 代码`：这一层的每个拒绝都是这两件事。 */
@@ -258,6 +267,13 @@ describe('两条协议各自报价：一条按次，一条按 token', () => {
     expect(openai.quote({ sources: [{ url: 'https://example.com' }], usage })).toBe(expected);
     expect(expected).toBeGreaterThan(0);
   });
+
+  it('openai-oauth：同一条记法——宿主在这里也是订阅的部署设置，不猜型号', () => {
+    const usage = { input: 900, cached: 0, output: 40 };
+    expect(oauth.quote({ sources: [{ url: 'https://example.com' }], usage })).toBe(
+      quote('', usage).total_nanos,
+    );
+  });
 });
 
 describe('方言挂在协议上，不挂在模型上', () => {
@@ -274,8 +290,121 @@ describe('方言挂在协议上，不挂在模型上', () => {
     }
   });
 
+  it('openai-oauth 也说自己做 openai-search：ChatGPT 没有搜索端点，但它有 web_search 工具', () => {
+    expect(protocolFor('openai-oauth').search).toBe('openai-search');
+  });
+
   it('下游选的 source 落到方言上，路由不必认识任何一家搜索引擎', () => {
+    expect(searchDialectFor('deepseek')).toBe('deepseek-search');
+    expect(searchDialectFor('openai')).toBe('openai-search');
+  });
+
+  it('同一条方言可以有不止一条上游：编解码按**协议**取，不是按方言名取', () => {
     expect(searchCodecForProtocol('deepseek')).toBe(deepseek);
-    expect(searchCodecForProtocol('openai')).toBe(openai);
+    expect(searchCodecForProtocol('openai-search')).toBe(openai);
+    expect(searchCodecForProtocol('openai-oauth')).toBe(oauth);
+    // 订阅那条虽然说自己做 openai-search，但它不是「做好信封的服务」：两条 codec 各说各的协议。
+    expect(oauth.dialect).toBe('openai-search');
+    expect(oauth).not.toBe(openai);
+    // 不会搜索的协议拿到 null，路由据此回 search_not_served。
+    expect(searchCodecForProtocol('openai-chat')).toBeNull();
+  });
+});
+
+describe('openai-oauth：订阅上游没有搜索端点，Norm 自己把 web_search 包成一次搜索', () => {
+  it('请求体是一次只调 web_search 的 Responses 调用；参数搬进工具对象，宿主模型来自候选表', () => {
+    const body = JSON.parse(
+      oauth.encode(
+        ask(
+          {
+            query: 'rust 1.93',
+            search_context_size: 'high',
+            filters: { allowed_domains: ['example.com'] },
+            user_location: { country: 'CN' },
+          },
+          'openai',
+        ),
+      ),
+    );
+    expect(body).toEqual({
+      model: 'gpt-6-luna',
+      instructions: expect.stringContaining('web_search'),
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'rust 1.93' }] }],
+      tools: [
+        {
+          type: 'web_search',
+          search_context_size: 'high',
+          filters: { allowed_domains: ['example.com'] },
+          user_location: { country: 'CN' },
+        },
+      ],
+      tool_choice: { type: 'web_search' },
+      include: ['web_search_call.action.sources'],
+      stream: true,
+      store: false,
+    });
+    // 没给的参数不进工具：默认值是上游的默认值，不是我们能替它填的。
+    expect(JSON.parse(oauth.encode(ask({ query: 'rust' }, 'openai'))).tools).toEqual([{ type: 'web_search' }]);
+  });
+
+  it('宿主模型可以换一个候选：它属于订阅，不属于这次调用', () => {
+    expect(JSON.parse(oauth.encode(ask({ query: 'rust' }, 'openai'), 'gpt-5.6-luna')).model).toBe('gpt-5.6-luna');
+    expect(oauth.hostModels?.length ?? 0).toBeGreaterThan(1);
+    expect(oauth.hostModels?.[0]).toBe('gpt-6-luna');
+    expect(oauth.path).toBe('/responses');
+  });
+
+  it('deepseek 那条协议的语言在这里被拒（两个参数的归属说清）', () => {
+    const failure = rejection(() => oauth.encode(ask({ query: 'rust', max_results: 3 }, 'openai')));
+    expect(failure).toMatchObject({ status: 400, code: 'param_unsupported' });
+    expect(failure.message).toContain('deepseek');
+  });
+
+  it('事件流里两处来源都读、按 url 合成一条：sources 只有 url，注解补上 title', async () => {
+    const stream = [
+      'event: response.output_item.done',
+      'data: {"type":"response.output_item.done","item":{"type":"web_search_call","status":"completed","action":{"type":"search","query":"rust","sources":[{"type":"url","url":"https://example.com/one"},{"type":"url","url":"https://example.com/two"}]}}}',
+      '',
+      'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"…","annotations":[{"type":"url_citation","url":"https://example.com/one","title":"One"},{"type":"url_citation","url":"https://example.com/three","title":"Three"}]}]}}',
+      '',
+      'data: {"type":"response.completed","response":{"output":[],"usage":{"input_tokens":1200,"input_tokens_details":{"cached_tokens":200},"output_tokens":80}}}',
+      '',
+    ].join('\n');
+    const answer = await oauth.read(new Response(stream));
+    expect(answer.sources).toEqual([
+      { url: 'https://example.com/one', title: 'One' },
+      { url: 'https://example.com/two' },
+      { url: 'https://example.com/three', title: 'Three' },
+    ]);
+    expect(answer.usage).toEqual({ input: 1200, cached: 200, output: 80 });
+  });
+
+  it('只给收尾帧的上游也读得到：来源在 response.completed 的 output 里', async () => {
+    const stream = [
+      'data: {"type":"response.completed","response":{"output":[{"type":"web_search_call","action":{"type":"search","sources":[{"type":"url","url":"https://example.com/late"}]}}],"usage":{"input_tokens":300,"output_tokens":20}}}',
+      '',
+    ].join('\n');
+    const answer = await oauth.read(new Response(stream));
+    expect(answer.sources).toEqual([{ url: 'https://example.com/late' }]);
+    expect(answer.usage).toEqual({ input: 300, cached: 0, output: 20 });
+  });
+
+  it('一条来源都没有 = 这次搜索不算成功；不是事件流的响应是上游违约', async () => {
+    const empty = await asyncRejection(() =>
+      oauth.read(
+        new Response(
+          [
+            'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"没搜到"}]}}',
+            '',
+            'data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":2}}}',
+            '',
+          ].join('\n'),
+        ),
+      ),
+    );
+    expect(empty).toMatchObject({ status: 502, code: 'search_empty' });
+
+    const notStream = await asyncRejection(() => oauth.read(new Response('<html>bad gateway</html>')));
+    expect(notStream).toMatchObject({ status: 502, code: 'search_data_missing' });
   });
 });

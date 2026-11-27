@@ -280,6 +280,11 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    *    `/images/generations`，出图走 Responses 的 `image_generation` 工具——宿主模型与
    *    事件流的读法都在 `src/images.ts` 里。
    *
+   * 5. 它同样能接 `openai-search`（`search: 'openai-search'`）：ChatGPT 也没有
+   *    `/v1/web-search`，`web_search` 在 Responses 上是一个工具，于是由 Norm 自己把
+   *    「宿主模型 + `web_search`」包成一次搜索（见 `src/search.ts` 的 `openai-oauth`
+   *    那一条）。下游仍然只写 `source: "openai"`，换的是上游是谁。
+   *
    * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
    * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
    * 原话）：选址把清单未知的上游当可用，一次跑错型号会被 `isModelNotServed` 划掉。
@@ -292,6 +297,8 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     stream_only: true,
     store_false: true,
     image: 'openai-image-tool',
+    // 同一条方言两种上游：`openai-search` 协议把信封做好卖给我们，这条自己包工具（见第 5 条）。
+    search: 'openai-search',
   },
 
   /**

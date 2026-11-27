@@ -13,7 +13,8 @@ import {
 } from '../gas';
 import { fail } from '../http';
 import { uuidv7 } from '../ids';
-import { imageCodecFor, MAX_HOST_ATTEMPTS, readImageAsk, type ImageAsk } from '../images';
+import { MAX_HOST_ATTEMPTS } from '../hosts';
+import { imageCodecFor, readImageAsk, type ImageAsk } from '../images';
 import { isModelNotServed } from '../models';
 import { quoteImage, ZERO_AUDIO_USAGE } from '../pricing';
 import { protocolFor } from '../protocols';
