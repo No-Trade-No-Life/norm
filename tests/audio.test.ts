@@ -99,7 +99,8 @@ describe('回执头：文本与音频同一套', () => {
     const headers = receiptHeaders({
       request_id: 'r1', fee_nanos: 80390, gas_fee_nanos: 4000, gas_billed_nanos: 4000,
       token_nanos: 76390, token_billed_nanos: 76390, input_tokens: 0, cached_tokens: 0,
-      output_tokens: 0, audio_ms: 2500, audio_characters: 0, unbilled_nanos: 0,
+      output_tokens: 0, audio_ms: 2500, audio_characters: 0, image_count: 0, image_pixels: 0,
+      unbilled_nanos: 0,
       balance_nanos: null, latency_ms: 820, host: 'h', pool: false,
     });
     expect(headers).toEqual({

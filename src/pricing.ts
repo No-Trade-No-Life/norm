@@ -251,3 +251,78 @@ export function quoteAudio(model: string, usage: AudioUsage): AudioQuote | null 
     nanos: nanos(Math.max(usage.input, 0), rate.input) + nanos(Math.max(usage.output, 0), rate.output),
   };
 }
+
+/* ── 图像：按张 ──────────────────────────────────────────────────────
+ *
+ * 一张图的价钱不是 token 的函数：上游的 Responses 里那个 `image_generation_call` 只回
+ * base64，用量只报宿主模型那几十个 token，图本身生成花了多少 token 根本不出现。按 token
+ * 计一笔图钱会得到「两万纳美元」这种数字，差着三四个数量级。
+ *
+ * 所以图像价目单独一张表，单位是**每张图**，按质量分档：上游的图片 token 与像素数成正比，
+ * 官方价目表也是按「质量 + 尺寸」给的。与音频同一条纪律——**没有兜底价**：认不出的型号在
+ * 转发之前就拒（`image_model_unpriced`）。
+ */
+
+/** 图像价目的一行：一个型号前缀，一张 1024×1024 的图的价（纳美元），按质量分档。 */
+export type ImageRate = {
+  match: string;
+  nanos: { low: number; medium: number; high: number };
+};
+
+/**
+ * 图像价目表。数值取 OpenAI 官方公布的每张价（2026-11，1024×1024、各质量档），
+ * 与 `AUDIO_RATES` 一样只做一件事：让账本里的钱与上游自己的账单在同一个量级上。
+ *
+ * `gpt-image-2` 是按 token 计价的新型号，这里取它被公开换算出来的每张价
+ * （低 $0.006 / 中 $0.053 / 高 $0.211）。
+ */
+export const IMAGE_RATES: ImageRate[] = [
+  { match: 'gpt-image-2', nanos: { low: 6_000_000, medium: 53_000_000, high: 211_000_000 } },
+  { match: 'gpt-image-1.5', nanos: { low: 9_000_000, medium: 34_000_000, high: 133_000_000 } },
+  { match: 'gpt-image-1-mini', nanos: { low: 5_000_000, medium: 11_000_000, high: 36_000_000 } },
+  { match: 'gpt-image-1', nanos: { low: 11_000_000, medium: 42_000_000, high: 167_000_000 } },
+];
+
+/** 一个型号的图像价；没收录就是 null（不是兜底价）。 */
+export function imageRateFor(model: string): ImageRate | null {
+  return longestMatch(IMAGE_RATES, model);
+}
+
+/** 一次图像调用的用量事实：画了几张、每张多少像素、按哪一档质量。 */
+export type ImageUsage = {
+  count: number;
+  /** 一张图的像素数（多张时取上游回显的那一张：一次调用只画一张）。 */
+  pixels: number;
+  quality: 'low' | 'medium' | 'high';
+};
+
+/** 没有任何用量的一笔（失败的调用、非图像调用都用它）。 */
+export const ZERO_IMAGE_USAGE: ImageUsage = { count: 0, pixels: 0, quality: 'medium' };
+
+/** 一笔图像账：按哪条规则、一张多少钱、一共收多少纳美元。 */
+export type ImageQuote = { match: string; unit: 'image'; per_image_nanos: number; nanos: number };
+
+/** 1K 方图的像素数：价目表里的那一档就是以它为基准的。 */
+const IMAGE_BASE_PIXELS = 1024 * 1024;
+
+/**
+ * 把一次图像调用的用量折成钱。型号没有图像价目就是 null——入口已经拒过一次，这里再回一次
+ * null 是让「先拒后算」这条路各自独立成立。
+ *
+ * 尺寸按像素数等比折算：上游的图片 token 与像素成正比，所以 1536×1024 不会被当成 1024×1024
+ * 的价。像素数只收在上限的 1/4 到 4 倍之间——再离谱的尺寸不是价格问题，是上游回了坏数据。
+ */
+export function quoteImage(model: string, usage: ImageUsage): ImageQuote | null {
+  const rate = imageRateFor(model);
+  if (rate === null) return null;
+  const perImage = rate.nanos[usage.quality];
+  const pixels = usage.pixels > 0 ? usage.pixels : IMAGE_BASE_PIXELS;
+  const clamped = Math.min(Math.max(pixels, IMAGE_BASE_PIXELS / 4), IMAGE_BASE_PIXELS * 4);
+  const scaled = Math.round((perImage * clamped) / IMAGE_BASE_PIXELS);
+  return {
+    match: rate.match,
+    unit: 'image',
+    per_image_nanos: scaled,
+    nanos: scaled * Math.max(usage.count, 0),
+  };
+}

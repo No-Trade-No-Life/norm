@@ -357,6 +357,9 @@ export const PROTOCOLS = [
   'google-gemini',
   'deepseek',
   'opencode-go',
+  'openai-oauth',
+  'openai-audio',
+  'qwen',
 ] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 

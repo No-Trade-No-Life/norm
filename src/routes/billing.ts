@@ -10,7 +10,14 @@ import type { NormMeta } from '../dialects';
 import type { Env } from '../env';
 import { D1_ROW_WRITES, type GasMeter } from '../gas';
 import { nowSeconds } from '../ids';
-import { ZERO_AUDIO_USAGE, type AudioUsage, type PriceAnchor, type Usage } from '../pricing';
+import {
+  ZERO_AUDIO_USAGE,
+  ZERO_IMAGE_USAGE,
+  type AudioUsage,
+  type ImageUsage,
+  type PriceAnchor,
+  type Usage,
+} from '../pricing';
 import { settle, type RequestRecord, type Settled } from '../store';
 
 /** 一次调用在记账时需要知道的一切，与它最终成功还是失败无关。 */
@@ -42,7 +49,10 @@ export type Accounting = {
   firstTokenMs?: number | null;
 };
 
-/** 一笔账要的用量：token 三项 + 音频三项。文本那一侧音频全零，音频那一侧 token 全零。 */
+/**
+ * 一笔账要的用量：token 三项 + 音频三项 + 图像两项。三条路各用一部分，其余留零——
+ * 「这次调用消耗了什么」是三个互不相干的量，硬折成一个只会让账本说不清。
+ */
 export type Receipt = {
   status: string;
   statusCode: number | null;
@@ -50,6 +60,8 @@ export type Receipt = {
   tokenNanos: number;
   usage: Usage;
   audio: AudioUsage;
+  /** 图像用量（张数与像素）；非图像调用留空，与音频同一个写法。 */
+  image?: ImageUsage;
 };
 
 /**
@@ -71,6 +83,8 @@ export function normMeta(accounting: Accounting, receipt: Receipt, billed: Settl
     output_tokens: receipt.usage.output,
     audio_ms: receipt.audio.milliseconds,
     audio_characters: receipt.audio.characters,
+    image_count: (receipt.image ?? ZERO_IMAGE_USAGE).count,
+    image_pixels: (receipt.image ?? ZERO_IMAGE_USAGE).pixels,
     unbilled_nanos: billed.unbilledNanos,
     balance_nanos: billed.balanceNanos,
     latency_ms: Date.now() - accounting.startedAt,
@@ -162,6 +176,8 @@ function requestRecord(
     outputTokens: parts.usage.output,
     audioMs: parts.audio.milliseconds,
     audioCharacters: parts.audio.characters,
+    imageCount: (parts.image ?? ZERO_IMAGE_USAGE).count,
+    imagePixels: (parts.image ?? ZERO_IMAGE_USAGE).pixels,
     gasFeeNanos: parts.gasFeeNanos,
     tokenNanos: parts.tokenNanos,
     // 由 settle 覆盖成「真正扣掉的」：成功是 Gas + token，失败只有 Gas。

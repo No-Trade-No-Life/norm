@@ -24,6 +24,8 @@ const norm: NormMeta = {
   output_tokens: 5,
   audio_ms: 0,
   audio_characters: 0,
+  image_count: 0,
+  image_pixels: 0,
   unbilled_nanos: 0,
   balance_nanos: null,
   latency_ms: 1,

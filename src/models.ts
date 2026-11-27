@@ -12,6 +12,7 @@
  * 它不扣费：列清单不是一次生成，没有 token，也没有人去改写它。
  */
 import { audioCodecFor } from './audio';
+import { imageCodecFor } from './images';
 import { dialectCodecFor, type ModelInfo } from './codecs';
 import type { Env } from './env';
 import { nowSeconds } from './ids';
@@ -116,13 +117,21 @@ export async function probeProviderModels({
   // 上游清单 + 协议替它补的型号：Qwen 的兼容层清单只列兼容层型号，转写与合成两条原生
   // 接口不在里面，而它们的型号表在代码里（`qwen.ts`）。不补这一步，音频调用会在选址时
   // 被「清单里没有它」划掉——那条规则本来是用来记住「上游自己承认跑不了」的。
-  return { ok: true, items: [...codec.decodeModels(parsed), ...declaredModels(provider.protocol)], latency_ms: Date.now() - startedAt };
+  return { ok: true, items: [...codec.decodeModels(parsed), ...declaredModelsFor(provider.protocol)], latency_ms: Date.now() - startedAt };
 }
 
-/** 这条协议替上游补进清单的型号（只有自带音频原生方言的协议才有）。 */
-function declaredModels(protocol: Protocol): ModelInfo[] {
-  const audio = protocolFor(protocol).audio;
-  return audio === undefined ? [] : audioCodecFor(audio).catalog();
+/**
+ * 这条协议替上游补进清单的型号。
+ *
+ * 两处能力会带自己的型号表：音频原生方言（Qwen，兼容层清单里没有那两条原生接口）与
+ * 图像工具方言（ChatGPT 的清单端点答不上话，型号表只能写在代码里）。直通方言由上游
+ * 自己列，这里不替它说。
+ */
+export function declaredModelsFor(protocol: Protocol): ModelInfo[] {
+  const profile = protocolFor(protocol);
+  const audio = profile.audio === undefined ? [] : audioCodecFor(profile.audio).catalog();
+  const image = profile.image === undefined ? [] : imageCodecFor(profile.image).catalog();
+  return [...audio, ...image];
 }
 
 /** 上游失败时压成一句话：状态码 + 上游原话的前一小段（换行压平，宁短勿长）。 */
