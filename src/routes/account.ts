@@ -43,7 +43,8 @@ accountRoutes.get('/me', async (c) => {
       streamed_requests: number;
     }>();
 
-  // 上游提供方收入聚合：只有在确实收到过跨用户 Token 收入时才查请求表，0 收入账户省掉一次扫描。
+  // 累计供给的明细（他人用你的上游）：只有在确实收到过跨用户 Token 供给时才查请求表，
+  // 0 供给账户省掉一次扫描。自有上游的自转自不在这里——那只是自己转给自己。
   const earnedTotals =
     principal.earn_nanos > 0
       ? await c.env.DB.prepare(
@@ -72,10 +73,15 @@ accountRoutes.get('/me', async (c) => {
     balance_nanos: availableNanos(principal),
     recharge_nanos: principal.recharge_nanos,
     voucher_nanos: principal.voucher_nanos,
+    // 累计供给 = 你的上游被调用（他人调用 + 你自己用自有上游）产生过的 Token 价值。
     earn_nanos: principal.earn_nanos,
     gas_spend_nanos: principal.gas_spend_nanos,
+    // 累计消费 = 你的下游调用（他人上游 + 自有上游）产生过的 Token 价值。
     token_spend_nanos: principal.token_spend_nanos,
     spend_nanos: totalSpendNanos(principal),
+    // 你对其他用户的净值 = 累计供给 − 累计消费。自己用自己的上游时两边同增，净值为 0。
+    // Gas 不在这条算式里：它是付给 Norm 的成本，不是用户之间的价值。
+    net_supply_nanos: principal.earn_nanos - principal.token_spend_nanos,
     withdraw_nanos: principal.withdraw_nanos,
     requests: totals?.n ?? 0,
     providers: providers.length,
@@ -92,7 +98,7 @@ accountRoutes.get('/me', async (c) => {
       token_billed_nanos: totals?.token_billed_nanos ?? 0,
       unbilled_nanos: totals?.unbilled_nanos ?? 0,
     },
-    // 作为上游提供方服务他人收到的 Token 价值转移汇总。
+    // 累计供给里「他人用你上游」那一部分的用量汇总（自有上游的自转自不重复计）。
     earned: {
       requests: earnedTotals?.n ?? 0,
       input_tokens: earnedTotals?.input_tokens ?? 0,

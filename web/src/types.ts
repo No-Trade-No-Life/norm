@@ -38,14 +38,19 @@ export type EarnedTotals = TokenTotals & {
 export type Me = {
   address: string;
   label: string;
-  /** 算出来的可用余额 = 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现。 */
+  /** 算出来的可用余额 = 充值 + 抵扣券 + 累计供给 − Gas 支出 − 累计消费 − 提现。 */
   balance_nanos: number;
   recharge_nanos: number;
   voucher_nanos: number;
+  /** 累计供给：你的上游被调用（他人调用 + 你自己用自有上游）产生过的 Token 价值。 */
   earn_nanos: number;
   gas_spend_nanos: number;
+  /** 累计消费：你的下游调用（他人上游 + 自有上游）产生过的 Token 价值。 */
   token_spend_nanos: number;
+  /** 累计花费 = Gas + Token（口径与请求表一致）。 */
   spend_nanos: number;
+  /** 你对其他用户的净值 = 累计供给 − 累计消费；Gas 不在其中。 */
+  net_supply_nanos: number;
   withdraw_nanos: number;
   requests: number;
   providers: number;
@@ -205,12 +210,14 @@ export type Attestation = {
 /** 一次调用的账单结论（响应里的 `norm` 字段，流式里是末帧）。 */
 export type CallBill = {
   request_id: string;
-  /** 真正从余额里扣掉的总额 = gas_billed + token_billed = gas_fee + token − unbilled。 */
+  /** 本次调用的真实价值 = gas_billed + token_billed = gas_fee + token − unbilled。 */
   fee_nanos: number;
   gas_fee_nanos: number;
   gas_billed_nanos?: number;
   token_nanos: number;
   token_billed_nanos?: number;
+  /** 其中自转自（自有上游）的部分：计进价值，但不动余额——余额只减 Gas。 */
+  token_self_nanos?: number;
   input_tokens: number;
   cached_tokens: number;
   output_tokens: number;
@@ -219,7 +226,7 @@ export type CallBill = {
   balance_nanos: number | null;
   latency_ms: number;
   host: string;
-  /** true = 这一单落到了公共池（他人上游），Token 费转给上游提供方；false = 自有上游，仅收 Gas。 */
+  /** true = 这一单落到了公共池（他人上游），Token 费转给别人；false = 自有上游，Token 费自转自。 */
   pool: boolean;
   /** 音频用量：转写覆盖的毫秒数、合成念的字数；文本调用没有这两项。 */
   audio_ms?: number;
@@ -449,6 +456,8 @@ export type Bill = {
   gas_fee_nanos?: number | null;
   token_billed_nanos?: number | null;
   token_nanos?: number | null;
+  /** 其中自转自（自有上游）的部分：计进总价，但不从余额里扣。 */
+  token_self_nanos?: number | null;
   balance_nanos?: number | null;
   latency_ms?: number | null;
   host?: string | null;

@@ -19,6 +19,8 @@ export function BillBar({ bill, empty }: { bill: Bill | null; empty: string }) {
 
   const gas = bill.gas_billed_nanos ?? bill.gas_fee_nanos ?? null;
   const token = bill.token_billed_nanos ?? bill.token_nanos ?? null;
+  // 自有上游的 Token 费是自转自：计进总价，但不从余额里扣。
+  const self = bill.token_self_nanos ?? 0;
   const audio = bill.audio_ms ?? 0;
   const characters = bill.audio_characters ?? 0;
 
@@ -36,7 +38,7 @@ export function BillBar({ bill, empty }: { bill: Bill | null; empty: string }) {
         </span>
       ) : null}
       {token !== null ? (
-        <span>
+        <span title={self > 0 ? t('us.own_upstream_no_token') : undefined}>
           {t('pg.token_fee')}{' '}
           <code className={token > 0 ? 'text-foreground' : 'text-muted-foreground'}>{usd(token)}</code>{' '}
           <span className="text-[10px]">

@@ -21,9 +21,9 @@ import type { ConsumerUsage, EarningRow, LedgerRow, ProviderUsage, RequestRow } 
 /**
  * 用量与账本。这一页按核对账单的顺序组织，并把 Gas 费（付给 Norm）与 Token 费（用户间价值转移）彻底分开：
  *
- *   1. 余额与六块只增累计数       —— 充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现
- *   2. Token 用量 / 费用构成 / 延迟 —— 区分付给 Norm 的 Gas 与转给上游提供方的 Token
- *   3. 消费请求记录               —— 逐条明细，Gas 与 Token 分列展示（自有上游仅收 Gas）
+ *   1. 余额与六块只增累计数       —— 充值 + 抵扣券 + 累计供给 − Gas 支出 − 累计消费 − 提现
+ *   2. Token 用量 / 费用构成 / 延迟 —— 区分付给 Norm 的 Gas 与用户之间的 Token 价值
+ *   3. 消费请求记录               —— 逐条明细，Gas 与 Token 分列展示（自有上游的 Token 记成自转自）
  *   4. 上游 Token 收入            —— 他人调用你上游时直接转入你账户的 Token 价值明细
  *   5. 按钥匙 / 按上游提供商       —— 谁花的、花在哪（Gas / Token 分列）
  *   6. 账户流水                   —— 券、充值、提现的账户级变动
@@ -41,7 +41,9 @@ export function UsagePage() {
   const billed = me.data?.billed;
   const earned = me.data?.earned;
 
-  // 余额是算出来的，六块累计数各自只增：充值 + 抵扣券 + 上游收入 − Gas 支出 − Token 支出 − 提现。
+  // 余额是算出来的，六块累计数各自只增：充值 + 抵扣券 + 累计供给 − Gas 支出 − 累计消费 − 提现。
+  // 累计供给与累计消费是同一把尺子的两端，差就是「你对其他用户的净值」：自己用自己的上游两边
+  // 同增，净值不变；Gas 不在这条算式里，它是付给 Norm 的成本。
   const cards = useMemo(
     () => [
       { label: t('us.balance'), value: usd(me.data?.balance_nanos), emphasis: true, positive: false, note: null as string | null },
@@ -53,6 +55,17 @@ export function UsagePage() {
         emphasis: false,
         positive: (me.data?.earn_nanos ?? 0) > 0,
         note: t('us.earn_note'),
+      },
+      {
+        label: t('us.net'),
+        value: me.data
+          ? me.data.net_supply_nanos === 0
+            ? usd(0)
+            : signedUsd(me.data.net_supply_nanos)
+          : '—',
+        emphasis: false,
+        positive: (me.data?.net_supply_nanos ?? 0) > 0,
+        note: t('us.net_note'),
       },
       { label: t('us.recharge'), value: usd(me.data?.recharge_nanos), emphasis: false, positive: false, note: null },
       { label: t('us.voucher'), value: usd(me.data?.voucher_nanos), emphasis: false, positive: false, note: t('us.voucher_note') },
@@ -593,7 +606,7 @@ function ByProviderTable({ rows }: { rows: ProviderUsage[] }) {
             <TableCell className="text-right text-xs tabular-nums">{usd(row.gas_fee_nanos)}</TableCell>
             <TableCell
               className={`text-right text-xs tabular-nums ${row.token_nanos === 0 ? 'text-muted-foreground' : ''}`}
-              title={row.is_own && row.token_nanos === 0 ? t('us.own_upstream_no_token') : undefined}
+              title={row.is_own ? t('us.own_upstream_no_token') : undefined}
             >
               {usd(row.token_nanos)}
             </TableCell>

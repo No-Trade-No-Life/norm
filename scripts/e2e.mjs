@@ -639,13 +639,17 @@ for (const [protocol, want] of Object.entries(expected)) {
   check(`${protocol} 文本翻译正确`, result.json?.choices?.[0]?.message?.content === want.text, result.json?.choices);
   const norm = result.json?.norm;
   check(`${protocol} 记下三项 token`, norm?.input_tokens === want.input && norm?.cached_tokens === want.cached && norm?.output_tokens === want.output, norm);
-  // 调用自有上游只付动态 Gas，不收 Token 费（Token 费只发生在跨用户/公共池价值转移）：
+  // 调用自有上游也按真价记 Token（自转自：自己转给上游=自己），Gas 与 Token 分列：
   // openai-chat 是这把钥匙当日首次调用（含 +1,000 consumer_touch = 3,420 纳）；
   // 后续三条同日调用免 touch，加 +100 跨方言桥接 CPU = 2,520 纳。
   const wantGas = protocol === 'openai-chat' ? 3420 : 2520;
   check(`${protocol} 动态 Gas 费 ${wantGas} 纳美元`, norm?.gas_fee_nanos === wantGas && norm?.gas_billed_nanos === wantGas, norm);
-  check(`${protocol} 自有上游不收 Token 费`, norm?.token_nanos === 0 && norm?.token_billed_nanos === 0, norm);
-  check(`${protocol} 自有上游总价 == Gas`, norm?.fee_nanos === norm?.gas_fee_nanos, norm);
+  check(
+    `${protocol} 自有上游 Token 费按真价记成自转自`,
+    norm?.token_nanos > 0 && norm?.token_billed_nanos === norm?.token_nanos && norm?.token_self_nanos === norm?.token_nanos,
+    norm,
+  );
+  check(`${protocol} 总价 == Gas + Token`, norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos, norm);
   check(`${protocol} 回带 host`, norm?.host === `127.0.0.1:${PROVIDER_PORT}`, norm);
 }
 
@@ -685,7 +689,11 @@ for (const protocol of Object.keys(expected)) {
   const norm = normOf(streamed.text);
   check('流式也记下三项 token', norm?.input_tokens === 30 && norm?.cached_tokens === 20 && norm?.output_tokens === 6, norm);
   check('流式直通动态 Gas 费 2,480 纳美元（同日免 touch，含 +60 流式 CPU）', norm?.gas_fee_nanos === 2480, norm);
-  check('自有上游流式仅收 Gas，不收 Token 费', norm?.token_nanos === 0 && norm?.fee_nanos === norm?.gas_fee_nanos, norm);
+  check(
+    '自有上游流式也按真价记 Token（自转自），总价 == Gas + Token',
+    norm?.token_nanos > 0 && norm?.token_billed_nanos === norm?.token_nanos && norm?.fee_nanos === norm?.gas_fee_nanos + norm?.token_nanos,
+    norm,
+  );
   check('客户端没要用量就不给用量帧', !streamed.text.includes('"prompt_tokens_details"'), streamed.text.slice(-300));
 
   const asked = await chat('openai-chat', { stream: true, stream_options: { include_usage: true } });
@@ -710,7 +718,11 @@ for (const protocol of Object.keys(expected)) {
     const rows = (await call(alice, 'GET', '/api/v1/account/usage?limit=50')).json.items;
     const row = rows.find((item) => item.id === requestId);
     check('同格式 responses 流记下三项 token', row?.input_tokens === 40 && row?.output_tokens === 5, row);
-    check('自有上游同格式 responses 流仅收 Gas', row?.token_nanos === 0 && row?.fee_nanos === row?.gas_fee_nanos, row);
+    check(
+      '自有上游同格式 responses 流也记真价 Token（自转自）',
+      row?.token_nanos > 0 && row?.token_billed_nanos === row?.token_nanos && row?.fee_nanos === row?.gas_fee_nanos + row?.token_nanos,
+      row,
+    );
   }
 
   const geminiStream = seen.find((entry) => entry.path.includes(':streamGenerateContent'));
@@ -754,7 +766,15 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
   check('requests 计数与实际记录一致', me.requests === rows.length, { counted: me.requests, rows: rows.length });
   check('记录里既有成功也有失败', okCalls > 0 && failures.length > 0, { okCalls, failures: failures.length });
   check('三项 token 合计可读', (me.usage?.input_tokens ?? 0) > 0 && (me.usage?.cached_tokens ?? 0) > 0 && (me.usage?.output_tokens ?? 0) > 0, me.usage);
-  check('自有上游调用只产生 Gas 支出，Token 支出为 0', (me.billed?.gas_billed_nanos ?? 0) > 0 && me.billed?.token_billed_nanos === 0 && me.gas_spend_nanos === me.spend_nanos && me.token_spend_nanos === 0, me.billed);
+  // 自有上游的 Token 费是自转自：支出与收入同额，所以 spend 含它、余额却只减 Gas。
+  check(
+    '自有上游的 Token 费自转自：Token 支出 == 上游收入，spend == Gas + Token',
+    (me.billed?.gas_billed_nanos ?? 0) > 0 &&
+      (me.billed?.token_billed_nanos ?? 0) > 0 &&
+      me.token_spend_nanos === me.earn_nanos &&
+      me.spend_nanos === me.gas_spend_nanos + me.token_spend_nanos,
+    me.billed,
+  );
 
   const ledger = (await call(alice, 'GET', '/api/v1/account/ledger?limit=200')).json;
   // 消费不在账本里：一次调用花掉多少是请求自己的事，账本只记账户级的钱。
@@ -789,13 +809,13 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
       withdraw: me.withdraw_nanos,
     },
   );
-  // 其余累计数各自只增：到这一节为止只发生过自有上游调用（Gas 支出）。
+  // 到这一节为止只发生过自有上游调用：动过的只有 Gas 支出与自转自那对（支出 == 收入）。
   check(
-    '只有 Gas 支出在动',
+    '只有 Gas 支出与自转自的 Token 在动',
     me.voucher_nanos === 1_000_000_000 &&
       me.recharge_nanos === 0 &&
-      me.earn_nanos === 0 &&
-      me.token_spend_nanos === 0 &&
+      me.earn_nanos > 0 &&
+      me.earn_nanos === me.token_spend_nanos &&
       me.withdraw_nanos === 0,
     {
       voucher: me.voucher_nanos,
@@ -806,12 +826,16 @@ console.log('8. 账本按 Token 记：三项 token、费用构成、打给谁、
     },
   );
   // 两本账各记一半：账本记进项（券 + 充值 − 提现），请求记消费，合起来才是可用余额。
+  // 自有上游的 Token 费是自转自：它同时进了「支出」与「供给」两本账，净额为 0，
+  // 所以余额 = 账本 + 累计供给 − 累计消费。
   const sum = ledger.items.reduce((total, row) => total + row.amount_nanos, 0);
-  check('账本求和 − 累计消费 == 当前余额', sum - me.spend_nanos === me.balance_nanos, {
+  check('账本求和 + 累计供给 − 累计消费 == 当前余额', sum + me.earn_nanos - me.spend_nanos === me.balance_nanos, {
     ledger: sum,
+    earn: me.earn_nanos,
     spend: me.spend_nanos,
     balance: me.balance_nanos,
   });
+  check('净值 == 累计供给 − 累计消费', me.net_supply_nanos === me.earn_nanos - me.token_spend_nanos, me);
   const charged = rows.reduce((total, row) => total + row.fee_nanos, 0);
   check('累计消费 == 请求扣费之和', me.spend_nanos === charged, { spend: me.spend_nanos, charged });
   // 这个账户只开过一次户：账本里就那一张券。
@@ -1547,7 +1571,14 @@ console.log('15. 协议契约：基址从哪来由协议决定，字段跟着协
   const schemas = (await (await fetch(`${BASE}/api/v1/protocols`)).json()).items;
   const byProtocol = new Map(schemas.map((item) => [item.protocol, item]));
 
-  check('协议清单公开且六种协议都在', schemas.length === 6, schemas.map((item) => item.protocol));
+  // 数个数会被「后来又加了一种协议」打脸，这里只钉住「该有的都在」。
+  check(
+    '协议清单公开且应有的协议都在',
+    ['openai-chat', 'openai-responses', 'anthropic-messages', 'google-gemini', 'deepseek', 'opencode-go'].every((id) =>
+      byProtocol.has(id),
+    ),
+    schemas.map((item) => item.protocol),
+  );
   check('deepseek 只要密钥，基址是官方地址', JSON.stringify(byProtocol.get('deepseek')?.fields) === '["provider_key"]'
     && byProtocol.get('deepseek')?.base_url === 'https://api.deepseek.com', byProtocol.get('deepseek'));
   check('通用方言要 base_url + 密钥', JSON.stringify(byProtocol.get('openai-chat')?.fields) === '["base_url","provider_key"]'

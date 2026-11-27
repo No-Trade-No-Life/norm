@@ -174,8 +174,8 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
   }
 
   const answer = await codec.read(ask, reply);
-  // 自有上游只付 Gas：自己直接付给上游厂商，Norm 不在这两者之间转一笔钱。
-  const quote = provider.address === address ? null : quoteAudio(ask.model, answer.usage);
+  // 自有上游也照真价记账（自转自，余额只减 Gas）：0 会让账本说不出实际花了多少钱。
+  const quote = quoteAudio(ask.model, answer.usage);
   const meta = await settleBill(accounting, {
     status: 'ok',
     statusCode: reply.status,
