@@ -130,55 +130,29 @@ describe('readGeminiImages', () => {
 });
 
 describe('readSearchOutcome', () => {
-  it('答案取自 message 条目，出处取自 url_citation 注记', () => {
+  it('读 Norm 自己的搜索信封：source + sources[]，重复页面只留一条', () => {
     const outcome = readSearchOutcome({
-      output: [
-        {
-          type: 'web_search_call',
-          action: { query: '上证指数 收盘' },
-        },
-        {
-          type: 'message',
-          content: [
-            {
-              type: 'output_text',
-              text: '今天收在 3200 点。',
-              annotations: [
-                { type: 'url_citation', url: 'https://a.example/1', title: 'A' },
-                { type: 'url_citation', url: 'https://a.example/1', title: 'A' },
-                { type: 'url_citation', url: 'https://b.example/2', title: '' },
-              ],
-            },
-          ],
-        },
+      source: 'deepseek',
+      sources: [
+        { url: 'https://a.example/1', title: 'A', snippet: '短摘要' },
+        { url: 'https://a.example/1', title: 'A', snippet: '同一个页面第二次命中' },
+        { url: 'https://b.example/2', title: '', summary: '上游没给 snippet，长摘要顶上' },
+        { title: '没有 url 的那条不是结果' },
       ],
     });
-    expect(outcome.answer).toBe('今天收在 3200 点。');
-    expect(outcome.queries).toEqual(['上证指数 收盘']);
-    // 同一个页面引两次只留一条；空标题留 null，由页面退回主机名。
+    expect(outcome.source).toBe('deepseek');
     expect(outcome.sources).toEqual([
-      { url: 'https://a.example/1', title: 'A' },
-      { url: 'https://b.example/2', title: null },
+      { url: 'https://a.example/1', title: 'A', snippet: '短摘要' },
+      { url: 'https://b.example/2', title: null, snippet: '上游没给 snippet，长摘要顶上' },
     ]);
   });
 
-  it('只有扁平 output_text 时也读得出答案', () => {
-    expect(readSearchOutcome({ output_text: '一句话' })).toEqual({
-      answer: '一句话',
-      queries: [],
+  it('回包里没有 sources 就当作没有结果，页面自己说清楚', () => {
+    expect(readSearchOutcome(null)).toEqual({ source: '', sources: [] });
+    expect(readSearchOutcome({ source: 'openai', sources: [] })).toEqual({
+      source: 'openai',
       sources: [],
     });
-  });
-
-  it('多轮检索的词都收下且去重', () => {
-    const outcome = readSearchOutcome({
-      output: [
-        { type: 'web_search_call', action: { queries: ['a', 'b'] } },
-        { type: 'web_search_call', action: { query: 'b' } },
-      ],
-    });
-    expect(outcome.queries).toEqual(['a', 'b']);
-    expect(outcome.answer).toBe('');
   });
 
   it('出处的主机名兜底', () => {
