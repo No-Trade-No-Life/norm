@@ -6,7 +6,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { useI18n } from '../i18n';
-import { latency, percent, safeHost, shortAddress, shortKey, signedUsd, tokens, usd, when } from '../lib/format';
+import { latency, nusd, percent, safeHost, shortAddress, shortKey, signedUsd, tokens, usd, when } from '../lib/format';
 import {
   PER_PAGE,
   useEarnings,
@@ -425,7 +425,7 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
               {/* 总消费 / Token 费 / Gas 费分列展示：单笔归因一目了然（总消费 = Token 费 + Gas 费）。 */}
               <TableCell
                 className="text-right text-xs font-medium tabular-nums"
-                title={`${t('us.col_token_fee')} ${usd(tokenPaid)} + ${t('us.col_gas')} ${usd(gasPaid)}${row.unbilled_nanos > 0 ? ` (${t('us.billed_unbilled')} ${usd(row.unbilled_nanos)})` : ''}`}
+                title={`${t('us.col_token_fee')} ${nusd(tokenPaid)} + ${t('us.col_gas')} ${nusd(gasPaid)}${row.unbilled_nanos > 0 ? ` (${t('us.billed_unbilled')} ${usd(row.unbilled_nanos)})` : ''}`}
               >
                 {usd(row.fee_nanos)}
               </TableCell>
@@ -434,23 +434,23 @@ function RequestTable({ rows, providers }: { rows: RequestRow[]; providers: Prov
                 title={
                   isOwn && tokenPaid === 0
                     ? t('us.own_upstream_no_token')
-                    : `${t('us.billed_tokens')}: ${usd(tokenPaid)}${row.token_nanos > tokenPaid ? ` / ${usd(row.token_nanos)}` : ''}`
+                    : `${t('us.billed_tokens')}: ${nusd(tokenPaid)}${row.token_nanos > tokenPaid ? ` / ${nusd(row.token_nanos)}` : ''}`
                 }
               >
                 {isOwn && tokenPaid === 0 ? (
                   <span className="text-muted-foreground">
-                    $0
+                    0 nUSD
                     <span className="ml-1 hidden text-[10px] sm:inline">{t('us.own_badge')}</span>
                   </span>
                 ) : (
-                  <span className={tokenPaid === 0 ? 'text-muted-foreground' : undefined}>{usd(tokenPaid)}</span>
+                  <span className={tokenPaid === 0 ? 'text-muted-foreground' : undefined}>{nusd(tokenPaid)}</span>
                 )}
               </TableCell>
               <TableCell
                 className="text-right text-xs tabular-nums text-muted-foreground"
-                title={`${t('us.billed_gas')}: ${usd(gasPaid)}${row.gas_fee_nanos > gasPaid ? ` / ${usd(row.gas_fee_nanos)}` : ''}`}
+                title={`${t('us.billed_gas')}: ${nusd(gasPaid)}${row.gas_fee_nanos > gasPaid ? ` / ${nusd(row.gas_fee_nanos)}` : ''}`}
               >
-                {usd(gasPaid)}
+                {nusd(gasPaid)}
               </TableCell>
               <TableCell className="hidden text-right text-xs tabular-nums text-muted-foreground md:table-cell">
                 {/* 累计消费：每一行自带「到这里一共花了多少」，不必去别处加总。 */}

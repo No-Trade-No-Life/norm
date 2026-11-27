@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { perMillion, signedUsd, usd } from '../web/src/lib/format';
+import { nusd, perMillion, signedUsd, usd } from '../web/src/lib/format';
 
 /**
  * 金额按**有效数字**给位数（三位），不按固定小数位：同一个账本里既有 $0.00075 的一次搜索、
@@ -42,5 +42,30 @@ describe('usd：三位有效数字', () => {
     expect(perMillion(15_000_000_000)).toBe('$15.00');
     expect(perMillion(400_000)).toBe('$0.0004');
     expect(perMillion(0)).toBe('$0');
+  });
+});
+
+/**
+ * 请求列表里 Token 费与 Gas 费给的是账本原值：这两列相加就该等于总消费，折算成美元
+ * （750,000 → $0.0008）会让读的人拿两列相加对不上总额。
+ */
+describe('nusd：整数纳美元（只用在请求列表的两个构成列）', () => {
+  it('不舍位、不折算，只加千分位与单位', () => {
+    expect(nusd(750_000)).toBe('750,000 nUSD');
+    expect(nusd(2_000)).toBe('2,000 nUSD');
+    expect(nusd(6_500_000)).toBe('6,500,000 nUSD');
+    expect(nusd(1)).toBe('1 nUSD');
+    expect(nusd(0)).toBe('0 nUSD');
+  });
+
+  it('缺值仍是破折号；非整数不做二次舍入以外的动作', () => {
+    expect(nusd(null)).toBe('—');
+    expect(nusd(undefined)).toBe('—');
+    expect(nusd(999.6)).toBe('1,000 nUSD');
+  });
+
+  it('合计仍走 usd()：同一个数在总消费那一列是美元', () => {
+    expect(usd(752_000)).toBe('$0.000752');
+    expect(nusd(750_000)).toBe('750,000 nUSD');
   });
 });

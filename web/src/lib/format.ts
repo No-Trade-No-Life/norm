@@ -30,6 +30,20 @@ export function usd(nanos: number | null | undefined): string {
   return `$${decimal(nanos / 1_000_000_000)}`;
 }
 
+/**
+ * 一笔费用**自己**的那一面：整数纳美元，不折算、不舍位。
+ *
+ * Token 费与 Gas 费是账本里两个「加起来等于总消费」的数（消费记录表就是这么排的）。它们
+ * 必须精确：750,000 折成美元印作 $0.0008，读的人再拿两列相加就对不上总消费了。所以这两列
+ * 直接给整数，单位写在值里（同一张表里还有 token 数与毫秒，不写单位的数字迟早被当美元）。
+ *
+ * 总费用、余额、收益这些**合计**仍用 `usd()`：那里要的是量级，不是最后一位。
+ */
+export function nusd(nanos: number | null | undefined): string {
+  if (nanos === null || nanos === undefined) return '—';
+  return `${Math.round(nanos).toLocaleString('en-US')} nUSD`;
+}
+
 /** 带符号：流水里 grant 是正、charge 是负。 */
 export function signedUsd(nanos: number): string {
   const body = usd(Math.abs(nanos));
