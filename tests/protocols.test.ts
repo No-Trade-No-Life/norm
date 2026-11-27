@@ -22,6 +22,7 @@ describe('协议契约（protocol schema）', () => {
       oauth: false,
       stream_only: false,
       audio: [],
+      image: false,
     });
   });
 
@@ -43,6 +44,7 @@ describe('协议契约（protocol schema）', () => {
       oauth: false,
       stream_only: false,
       audio: [],
+      image: false,
     });
   });
 
@@ -55,12 +57,18 @@ describe('协议契约（protocol schema）', () => {
       oauth: true,
       stream_only: true,
       audio: [],
+      image: true,
     });
   });
 
   it('钉死基址的协议只有 deepseek、opencode-go、openai-oauth 与 qwen：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
     expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'openai-oauth', 'qwen']);
+  });
+
+  it('图像能力只落在 openai-oauth 上：订阅上游没有 Images 端点，出图走 image_generation 工具', () => {
+    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.image).map((schema) => schema.protocol)).toEqual(['openai-oauth']);
+    expect(protocolFor('openai-oauth').image).toBe('openai-image-tool');
   });
 
   it('音频能力只落在 qwen 与 openai-audio 两条协议上', () => {
@@ -79,6 +87,7 @@ describe('协议契约（protocol schema）', () => {
       oauth: false,
       stream_only: false,
       audio: ['transcriptions', 'speech'],
+      image: false,
     });
     expect(protocolUrlFor('qwen', 'https://dashscope.aliyuncs.com/', 'qwen-max', false)).toBe(
       'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
@@ -95,6 +104,7 @@ describe('协议契约（protocol schema）', () => {
       oauth: false,
       stream_only: false,
       audio: ['transcriptions', 'speech'],
+      image: false,
     });
   });
 

@@ -3,7 +3,7 @@ import type { Env } from '../env';
 import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { nowSeconds } from '../ids';
-import { mergeCatalog, probeErrorText, syncProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
+import { declaredModelsFor, mergeCatalog, probeErrorText, syncProviderModels, type CatalogEntry, type CatalogModelRow } from '../models';
 import type { ModelInfo, Protocol } from '../protocols';
 import { listProviders, type ProviderScope, type ProviderView } from '../store';
 
@@ -90,7 +90,12 @@ modelCatalogRoutes.get('/', async (c: CatalogContext) => {
       latency_ms: probe.ok ? probe.latency_ms : null,
       error: probeErrorText(probe),
     });
-    if (probe.ok) merged.push({ provider_id: provider.id, protocol: provider.protocol, items: probe.items });
+    // 探测失败的那条也要贡献它**协议声明过的**型号：`openai-oauth` 的清单端点答不上话，
+    // 但它的图像型号是代码钉死的（`images.ts` 的型号表）。少了这一步，一个有图像能力的
+    // 上游在总表里一行都没有，前端也就无从推荐它。探测结果本身照实写（`ok: false` + 原话），
+    // 路由那边仍然把「清单未知」当成可用，两者说的是两件事。
+    const contributed = probe.ok ? probe.items : declaredModelsFor(provider.protocol);
+    if (contributed.length > 0) merged.push({ provider_id: provider.id, protocol: provider.protocol, items: contributed });
   });
 
   const items = mergeCatalog(merged);

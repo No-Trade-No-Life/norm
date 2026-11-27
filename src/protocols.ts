@@ -29,6 +29,7 @@ import {
   type StreamEvent,
 } from './codecs';
 import type { AudioDialect, AudioKind } from './audio';
+import type { ImageDialect } from './images';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
 import { openaiHeaders } from './oauth';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
@@ -113,6 +114,11 @@ export type ProtocolSchema = {
    * 音频入口只有一种线缆（OpenAI 的 `/v1/audio/*`），所以这里只说「能不能」，不说「说哪种方言」。
    */
   audio: AudioKind[];
+  /**
+   * 这条协议能不能接图像生成（`/v1/images/generations`）。与 `audio` 同一个口径：
+   * 入口只有一种线缆（OpenAI 的 Images），这里只说「能不能」，不说「说哪种方言」。
+   */
+  image: boolean;
 };
 
 /**
@@ -159,6 +165,11 @@ export type ProtocolProfile = {
    */
   audio?: AudioDialect;
   /**
+   * 这条协议的上游图像方言（见 `src/images.ts`）。不写 = 这条上游没有图像能力，
+   * `/v1/images/generations` 不会选它。与 `audio` 同一条纪律：方言名而不是编解码函数。
+   */
+  image?: ImageDialect;
+  /**
    * 上游只认 `store: false`（同一个端点：带上 `store` 为真、或干脆没写，回
    * `400 Store must be set to false`）。声明在这里，转发层发出去之前补上这一个字段——
    * 它是这条上游的请求契约，不是方言翻译。
@@ -181,6 +192,7 @@ export type ResolvedProtocol = {
   stream_only?: true;
   store_false?: true;
   audio?: AudioDialect;
+  image?: ImageDialect;
 };
 
 const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
@@ -235,6 +247,10 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    * 一页 HTML（实测：直连 200、从边缘出去 403、换成真实 IP 也一样），隧道里的字节由代理
    * 重新发出，这些头不存在。所以「打给谁」是协议的常量，「从哪儿出去」是这条上游的配置。
    *
+   * 4. 它也是唯一一条能出图的订阅上游（`image: 'openai-image-tool'`）：ChatGPT 没有
+   *    `/images/generations`，出图走 Responses 的 `image_generation` 工具——宿主模型与
+   *    事件流的读法都在 `src/images.ts` 里。
+   *
    * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
    * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
    * 原话）：选址把清单未知的上游当可用，一次跑错型号会被 `isModelNotServed` 划掉。
@@ -246,6 +262,7 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     oauth: true,
     stream_only: true,
     store_false: true,
+    image: 'openai-image-tool',
   },
 
   /**
@@ -296,6 +313,7 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     ...(profile.stream_only === undefined ? {} : { stream_only: profile.stream_only }),
     ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
     ...(profile.audio === undefined ? {} : { audio: profile.audio }),
+    ...(profile.image === undefined ? {} : { image: profile.image }),
   };
 }
 
@@ -328,6 +346,7 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     oauth: profile.oauth === true,
     stream_only: profile.stream_only === true,
     audio: profile.audio === undefined ? [] : ['transcriptions', 'speech'],
+    image: profile.image !== undefined,
   };
 }
 

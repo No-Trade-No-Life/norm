@@ -1,5 +1,6 @@
 import type { Env } from './env';
 import { audioCodecFor, type AudioAsk } from './audio';
+import { imageCodecFor, type ImageAsk } from './images';
 import { type Modalities, type ModelInfo, protocolFor, type Protocol } from './protocols';
 import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
@@ -231,6 +232,9 @@ export type RequestRecord = {
   /** 音频用量：转写覆盖的时长（毫秒）与合成的字符数；文本调用恒为 0。 */
   audioMs: number;
   audioCharacters: number;
+  /** 图像用量：这次画了几张、一张多少像素；非图像调用恒为 0。 */
+  imageCount: number;
+  imagePixels: number;
   gasFeeNanos: number;
   tokenNanos: number;
   feeNanos: number;
@@ -484,6 +488,11 @@ export type ResolveRequest = {
    * 传的是解析后的规范请求，因为「做不做得了」既看转写还是合成，也看跑不跑得了这个型号。
    */
   audio?: AudioAsk;
+  /**
+   * 这一次是一次图像调用：只有「图像方言做得了它」的上游才进候选（`images.ts` 的 `serves`）。
+   * 与音频同一个理由——跑不了这次调用的上游连一次 400 的机会都不该有。
+   */
+  image?: ImageAsk;
 };
 
 export async function resolveProvider(
@@ -518,6 +527,16 @@ export async function resolveProvider(
       return dialect !== undefined && audioCodecFor(dialect).serves(audio);
     });
     if (pool.length === 0) fail(404, 'audio_not_served', `没有上游能接这次音频调用：${audio.model}`);
+  }
+
+  // 图像调用同理，而且更硬：只有声明了图像方言、且那条方言认得这个型号的上游才进候选。
+  const image = request.image;
+  if (image !== undefined) {
+    pool = pool.filter((row) => {
+      const dialect = protocolFor(row.protocol).image;
+      return dialect !== undefined && imageCodecFor(dialect).serves(image);
+    });
+    if (pool.length === 0) fail(404, 'image_not_served', `没有上游能接这次图像调用：${image.model}`);
   }
 
   // 模型是硬约束，自有优先是偏好：先把「跑不了这个型号」的整批去掉，再在能跑的里面
@@ -747,9 +766,10 @@ function requestInsert(env: Env, row: RequestRecord, trail: SettlementTrail) {
     `INSERT INTO requests
        (id, address, provider_id, provider_user, consumer_id, consumer_user, base_url, model, status, status_code, latency_ms,
         input_tokens, cached_tokens, output_tokens, audio_ms, audio_characters,
+        image_count, image_pixels,
         gas_fee_nanos, gas_billed_nanos, token_nanos, token_billed_nanos, fee_nanos, unbilled_nanos,
         spend_before_nanos, spend_after_nanos, earn_before_nanos, earn_after_nanos, first_token_ms, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     row.requestId,
     row.address,
@@ -767,6 +787,8 @@ function requestInsert(env: Env, row: RequestRecord, trail: SettlementTrail) {
     row.outputTokens,
     row.audioMs,
     row.audioCharacters,
+    row.imageCount,
+    row.imagePixels,
     row.gasFeeNanos,
     trail.gasBilledNanos,
     row.tokenNanos,

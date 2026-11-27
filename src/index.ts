@@ -11,6 +11,7 @@ import { consumerRoutes } from './routes/consumers';
 import { modelCatalogRoutes } from './routes/model-catalog';
 import { modelRoutes } from './routes/models';
 import { audioRoutes } from './routes/audio';
+import { imageRoutes } from './routes/images';
 import { relayRoutes } from './routes/relay';
 
 /**
@@ -95,8 +96,9 @@ function relayOnly() {
     await next();
   });
   relay.route('/models', modelRoutes);
-  // 音频两个入口与聊天入口同属转发面：同一把 Token、同一份余额、同一本账。
+  // 音频两个入口、图像一个入口与聊天入口同属转发面：同一把 Token、同一份余额、同一本账。
   relay.route('/', audioRoutes);
+  relay.route('/', imageRoutes);
   relay.route('/', relayRoutes);
   return relay;
 }

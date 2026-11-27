@@ -67,6 +67,9 @@ export type NormMeta = {
   /** 音频用量：转写覆盖的毫秒数与合成的字符数；文本调用为 0。 */
   audio_ms: number;
   audio_characters: number;
+  /** 图像用量：这次画了几张、一张多少像素；非图像调用为 0。 */
+  image_count: number;
+  image_pixels: number;
   /** 余额不足时没能收上来的部分；正常为 0。 */
   unbilled_nanos: number;
   balance_nanos: number | null;

@@ -311,6 +311,39 @@ curl https://norm.ntnl.io/v1/audio/speech \
 
 上游回的错原话照回（状态码与响应体都不改），那一笔只收 Gas、不收 Token 费——与推理路径同一口径。
 
+## 图像（只认 Bearer 消费者密钥）
+
+下游只有一种形状：OpenAI 的 `/v1/images/generations`。上游不一定有这个概念——ChatGPT 订阅
+（`openai-oauth`）没有 Images 端点，Norm 把一次请求说成一次 `image_generation` 工具调用，
+从事件流里把图取出来，再按 Images 的形状交回去；这一层在 `src/images.ts`，调用方看不到。
+
+```bash
+# 文生图：model / prompt 必填，其余可选（默认 size=auto、quality=auto、output_format=png）
+curl https://norm.ntnl.io/v1/images/generations \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-image-2","prompt":"一只在机房里打盹的猫","size":"1024x1024","quality":"low"}'
+
+# → 200 {"created":…,"data":[{"b64_json":"…","revised_prompt":"…"}],
+#        "usage":{…},"cost_usd_nanos":…,"norm":{…}}
+#   图只在这次响应里存在一次（不落库、不留档）。norm 里多两项图像用量：
+#   image_count（这次画了几张）、image_pixels（一张图多少像素）。
+```
+
+字段口径：
+
+- **一次只画一张**：`n` 只接受 `1`，`stream` 与 `response_format=url` 一律拒绝
+  （`image_n_unsupported` / `image_stream_unsupported` / `image_response_format_unsupported`）。
+- **`size`**：`auto` 或 `WIDTHxHEIGHT`；两个数字是 16 的倍数、边长不超过 3840、像素数
+  655,360–8,294,400、宽高比不超过 3:1（上游的硬规则，在 Norm 这一侧先校验）。
+- **`quality`**：`auto` / `low` / `medium` / `high`；`background`、`output_format`、`moderation`
+  同样只认自己声明的枚举值，`reference_images` 最多 4 张 base64 data URL（PNG / JPEG / WEBP / GIF）。
+- **钱按张算**：一张图的价钱与上游回的那几十个 token 差着几个数量级，所以图像价目单独一张表
+  （`src/pricing.ts` 的 `IMAGE_RATES`，单位是「每张 1024×1024），`GET /api/v1/pricing` 的 `image`
+  段就是它的当前值。上回声显的质量与尺寸是算账依据——请求写 `auto` 时只有上游知道那张图多大。
+- **没有兜底价**：型号不在图像价目表里回 `400 image_model_unpriced`；没有一条上游能接这次
+  调用（协议没有图像能力）回 `404 image_not_served`。
+
 ## 模型清单（只认 Bearer 消费者密钥）
 
 | 方法 | 路径 | 说明 |
