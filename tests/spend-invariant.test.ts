@@ -87,7 +87,7 @@ function countersOf(db: DatabaseSync, address: string): PrincipalCounters {
 }
 
 describe('Gas 与 Token 分开结算及价值守恒不变量', () => {
-  it('调用自己的上游：只扣 Gas，Token 费恒为 0，不增不减 earn_nanos', async () => {
+  it('调用自己的上游：Token 费按真价记成自转自，余额只减 Gas', async () => {
     const db = new DatabaseSync(':memory:');
     migrate(db);
     db.prepare('INSERT INTO principals (address, created_at, recharge_nanos) VALUES (?, ?, ?)').run(
@@ -97,20 +97,24 @@ describe('Gas 与 Token 分开结算及价值守恒不变量', () => {
     );
 
     const env = { DB: d1(db) } as unknown as Env;
-    // 即使传入了 tokenNanos，只要 providerUser === address（调用自有上游），settle 也必须置 0。
+    // 调用自有上游不是免费：Token 费按真价记进两本账（自己转给上游=自己），
+    // 余额净额只减 Gas——这里传 50,000 纳的 Token 价值，账本必须留下它。
     const settled = await settle(env, record(ALICE, { gasFeeNanos: 2_420, tokenNanos: 50_000, providerUser: ALICE }));
     expect(settled).toEqual({
-      billedNanos: 2_420,
+      billedNanos: 52_420,
       gasBilledNanos: 2_420,
-      tokenBilledNanos: 0,
+      tokenBilledNanos: 50_000,
       unbilledNanos: 0,
       balanceNanos: 7_580,
     });
 
     const alice = countersOf(db, ALICE);
     expect(alice.gas_spend_nanos).toBe(2_420);
-    expect(alice.token_spend_nanos).toBe(0);
-    expect(alice.earn_nanos).toBe(0);
+    // 自转自：花掉的 Token 价值与记回的 Upstream 收入同额，余额里互相抵消。
+    expect(alice.token_spend_nanos).toBe(50_000);
+    expect(alice.earn_nanos).toBe(50_000);
+    expect(totalSpendNanos(alice)).toBe(52_420);
+    // 余额只减 Gas：10,000 − 2,420。
     expect(availableNanos(alice)).toBe(7_580);
 
     const row = db
@@ -119,13 +123,35 @@ describe('Gas 与 Token 分开结算及价值守恒不变量', () => {
     expect(row).toEqual({
       gas_fee_nanos: 2_420,
       gas_billed_nanos: 2_420,
-      token_nanos: 0,
-      token_billed_nanos: 0,
-      fee_nanos: 2_420,
+      token_nanos: 50_000,
+      token_billed_nanos: 50_000,
+      fee_nanos: 52_420,
       unbilled_nanos: 0,
       earn_before_nanos: 0,
-      earn_after_nanos: 0,
+      earn_after_nanos: 50_000,
     });
+  });
+
+  it('自有上游的 Token 费不占用余额：余额为 0 也照样按真价记满', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    // 一个一分钱都没有的账户：Gas 收不上来（如实记 unbilled），但自转自的 Token 价值照记。
+    db.prepare('INSERT INTO principals (address, created_at) VALUES (?, ?)').run(ALICE, 1_700_000_000);
+
+    const env = { DB: d1(db) } as unknown as Env;
+    const settled = await settle(env, record(ALICE, { gasFeeNanos: 2_420, tokenNanos: 30_000, providerUser: ALICE }));
+    expect(settled).toEqual({
+      billedNanos: 30_000,
+      gasBilledNanos: 0,
+      tokenBilledNanos: 30_000,
+      unbilledNanos: 2_420,
+      balanceNanos: 0,
+    });
+
+    const alice = countersOf(db, ALICE);
+    expect(alice.token_spend_nanos).toBe(30_000);
+    expect(alice.earn_nanos).toBe(30_000);
+    expect(availableNanos(alice)).toBe(0);
   });
 
   it('调用他人上游：Gas 付给 Norm，Token 等额转入上游提供方的 earn_nanos', async () => {

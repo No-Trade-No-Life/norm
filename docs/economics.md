@@ -39,7 +39,7 @@ Norm 在每次推理请求内维护一个纯内存 `GasMeter`：**从 300 纳（
 | | `retry_forget_affinity` | 忘掉错误会话粘性 `DELETE affinities`（`WITHOUT ROWID` = 1 行写） | +changes × 1,000 |
 | | `retry_attempt` | 二次候选转发基础 CPU | +100 |
 | **结算入账** | `settle` | `UPDATE principals`（消费方，1 行）+ `INSERT requests`（`WITHOUT ROWID`，0 二级索引 = 1 行）= 2 行写 | +2,000 |
-| | `token_transfer` | 跨用户/公共池 Token 价值转移时额外 `UPDATE principals`（上游提供方 `earn_nanos`，1 行）；自有上游或失败 +0 | +0 或 +1,000 |
+| | `token_transfer` | 跨用户/公共池 Token 价值转移时额外 `UPDATE principals`（上游提供方 `earn_nanos`，1 行）；自有上游的自转自与结算同一条 `UPDATE`、失败不计 = +0 | +0 或 +1,000 |
 
 ### 典型请求总 Gas 一览
 
@@ -52,7 +52,7 @@ Norm 在每次推理请求内维护一个纯内存 `GasMeter`：**从 300 纳（
 | 公共池/他人上游 · 同方言直通 · 非流式（同日稳态，含 Token 转账） | `2,420 + 1,000` | **3,420** | $0.00000342 |
 | 跨方言桥接 · 流式 + 当日首次 + 新会话写亲和（自有上游） | `2,580 + 1,000 + 1,000` | **4,580** | $0.00000458 |
 
-> **Gas 与 Token 价值分离**：Norm 只收取上述 Gas 费；调用自有上游时 `token_nanos = 0`（不收 Token 费）；调用他人/公共池上游时，Token 费直接从调用方转入上游提供方的 `earn_nanos`（价值转移，Norm 0 抽成）。
+> **Gas 与 Token 价值分离**：Norm 只收取上述 Gas 费。Token 费一律按真价记：调用自有上游时是同账户**自转自**（`token_spend_nanos` 与 `earn_nanos` 同增，余额只减 Gas，也不额外收转账 Gas——它和结算同一条 `UPDATE`），响应里 `token_self_nanos` 标出这部分；调用他人/公共池上游时，Token 费直接从调用方转入上游提供方的 `earn_nanos`（价值转移，Norm 0 抽成）。两条路的账本都留下真实金额，**不会因为「上游是自己的」就把这笔钱记成 0**——否则「这一次实际花了多少钱」就无从回答。
 
 默认入口安全阈值 `MIN_BALANCE_NANOS = 10,000` 余裕覆盖完整路径乃至偶发的模型纠偏重试（最高 8,680 纳）；$1.00 演示授信可发起约 **41 万次** 稳态推理调用。
 

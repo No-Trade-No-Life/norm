@@ -34,6 +34,7 @@ const norm: NormMeta = {
   gas_billed_nanos: 0,
   token_nanos: 0,
   token_billed_nanos: 0,
+  token_self_nanos: 0,
   input_tokens: 10,
   cached_tokens: 0,
   output_tokens: 5,

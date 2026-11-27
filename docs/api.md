@@ -55,7 +55,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/v1/account/me` | `{address, label, balance_nanos, recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, spend_nanos, withdraw_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,gas_billed_nanos,token_nanos,token_billed_nanos,unbilled_nanos}, earned:{requests,input_tokens,cached_tokens,output_tokens,token_nanos}}` |
+| GET | `/api/v1/account/me` | `{address, label, balance_nanos, recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, spend_nanos, net_supply_nanos, withdraw_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,gas_billed_nanos,token_nanos,token_billed_nanos,unbilled_nanos}, earned:{requests,input_tokens,cached_tokens,output_tokens,token_nanos}}` |
 | GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 消费请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
 | GET | `/api/v1/account/earnings?limit=50&before=<request_id>` | 上游 Token 收入记录（他人调用本账户上游转入的 Token 明细，含 `earn_before_nanos` / `earn_after_nanos`） |
 | GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 账户级记账流水（券 / 充值 / 提现），游标是上一页最后一行的 `cursor` |
@@ -68,9 +68,23 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 fee_nanos = gas_billed_nanos + token_billed_nanos = gas_fee_nanos + token_nanos − unbilled_nanos
 ```
 
-Gas 费（付给 Norm）与 Token 费（用户间价值转移）分开处理：
-- 调用**自己的上游**（`provider_user === address`）：只收 Gas，`token_nanos = 0`、`token_billed_nanos = 0`；
+Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处理：
+- 调用**自己的上游**（`provider_user === address`）：Token 费按真价记成**自转自**——同一账户的
+  `token_spend_nanos` 与 `earn_nanos` 同增，余额只减 Gas（所以 `token_nanos` 不是 0，账本才答得出
+  「这次实际花了多少钱」）；响应里 `norm.token_self_nanos` 就是其中自己转给自己的那一部分，
+  **余额变化 = `fee_nanos` − `token_self_nanos`**；
 - 调用**他人/公共池上游**（`provider_user !== address`）：先扣 Gas，余下余额扣 `token_billed_nanos` 并等额转入 `provider_user` 的 `earn_nanos`（记录在 `earn_before_nanos` / `earn_after_nanos`）。
+
+### 累计供给、累计消费与净值
+
+同一把尺子量两端：
+
+- **累计供给**（`earn_nanos`）：你的上游被调用产生过的 Token 价值——他人调用你的上游，或你自己用
+  自有上游（自转自）；
+- **累计消费**（`token_spend_nanos`）：你的下游调用产生过的 Token 价值——打到他人/公共池上游，或打到
+  你自己的上游；
+- **净值**（`net_supply_nanos = earn_nanos − token_spend_nanos`）：你给其他用户提供的净值。自己用自己的
+  上游时两边同增，净值不动；Gas 不进这条算式，它付给 Norm。
 
 `input_tokens` **含**缓存命中，`cached_tokens` 是其中命中上游提供商缓存的量（按便宜的价算），
 `output_tokens` 单独计价。余额不够时 `unbilled_nanos` 大于 0，上游提供方仅收到实际扣到的 `token_billed_nanos`。

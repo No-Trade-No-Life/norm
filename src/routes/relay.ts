@@ -394,8 +394,8 @@ async function upstreamFailure(c: RelayContext, accounting: Accounting, failure:
  * 交给 `billing.ts`——音频那条路用的是同一份，两条路不该各算一次钱。
  */
 async function bill(accounting: Accounting, answer: AnswerCore, statusCode: number): Promise<NormMeta> {
-  const tokenNanos =
-    accounting.providerUser === accounting.address ? 0 : quote(accounting.model, answer.usage, accounting.rate).total_nanos;
+  // 自有上游也照真价记账：那是「自己转给了自己」，不是免费。
+  const tokenNanos = quote(accounting.model, answer.usage, accounting.rate).total_nanos;
   return settleBill(accounting, {
     status: 'ok',
     statusCode,

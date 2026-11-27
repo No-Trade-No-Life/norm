@@ -26,6 +26,7 @@ const meta: NormMeta = {
   gas_billed_nanos: 2_420,
   token_nanos: 73_970,
   token_billed_nanos: 73_970,
+  token_self_nanos: 0,
   input_tokens: 11,
   cached_tokens: 3,
   output_tokens: 5,

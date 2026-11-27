@@ -187,21 +187,27 @@ export async function updateProviderSealedKey(
  *
  *   1. Gas 费（gas_fee_nanos → gas_billed_nanos）：付给 Norm，覆盖执行与落库成本；
  *      成功/失败、自有/他人上游都照收，优先从余额里扣。
- *   2. Token 费（token_nanos → token_billed_nanos）：用户间价值转移。
- *      - 调用自己的上游（providerUser === address 或空）：不产生跨用户价值转移，token 恒为 0；
+ *   2. Token 费（token_nanos → token_billed_nanos）：一律按**实际价值**记账，不为 0。
+ *      - 调用自己的上游（providerUser === address）：同账户「自转自」——扣 tokenBilled 的同时
+ *        等额加回自己的 earn_nanos，余额净额不变，但账本上留下了这次调用真实的 Token 价值；
  *      - 调用他人/公共池上游（providerUser !== address）：余下余额扣 tokenBilled，
  *        等额计入上游提供方的 earn_nanos（绝不凭空增发未扣到的钱）。
  *
  * 余额充足时 `unbilled_nanos` 恒为 0，`fee_nanos = gas_billed_nanos + token_billed_nanos`。
+ * 自转自不消耗余额，所以它的 Token 部分永远不会被记成 unbilled：`fee_nanos` 是这次调用的
+ * 真实价值，而**余额的变化**只等于其中的 Gas 部分。
  * 失败（上游提供商报错、网络不可达）也走这里：Gas 照收，token 那部分是 0。
  */
 
 export type Settled = {
-  /** 真正从消费方余额里扣掉的总数（= gasBilledNanos + tokenBilledNanos）。 */
+  /**
+   * 记进账本的总额（= gasBilledNanos + tokenBilledNanos），也是这次调用的真实价值。
+   * 注意它不等于余额变化：自有上游的 Token 部分是自转自，余额只减 Gas。
+   */
   billedNanos: number;
   /** 实际扣到的 Gas 费（付给 Norm）。 */
   gasBilledNanos: number;
-  /** 实际扣到并转给上游用户的 Token 费（调用自有上游或失败时恒为 0）。 */
+  /** 实际记进账本的 Token 费（含自有上游的自转自；失败时恒为 0）。 */
   tokenBilledNanos: number;
   /** 扣不满、未能收上来的部分。 */
   unbilledNanos: number;
@@ -660,8 +666,9 @@ async function failNoCandidate(env: Env, address: string): Promise<never> {
 export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
   const isExternal = Boolean(row.providerUser && row.providerUser !== row.address);
   const gasDue = row.gasFeeNanos;
-  // 调用自有上游只付 Gas，不产生跨用户 Token 扣费或转账。
-  const tokenDue = isExternal ? row.tokenNanos : 0;
+  // Token 费按真价记：自有上游不是免费，只是「自己转给了自己」。记成 0 会让账本说不出
+  // 这一次到底花了多少钱，所以自转自也照样记全额。
+  const tokenDue = row.providerUser ? row.tokenNanos : 0;
   const due = gasDue + tokenDue;
   const countersSql = 'recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, withdraw_nanos';
 
@@ -674,25 +681,38 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
     // 先扣 Gas（给 Norm），余额有剩再扣 Token（转给上游提供方）；差额记成 unbilled。
     const avail = Math.max(availableNanos(current), 0);
     const gasBilled = Math.min(gasDue, avail);
-    const tokenBilled = Math.min(tokenDue, Math.max(avail - gasBilled, 0));
+    // 自转自不需要余额：同一账户扣多少就加回多少，净额恒为 0，所以按真价全额记；
+    // 跨账户转移只能转出真正扣得到的钱。
+    const tokenBilled = isExternal ? Math.min(tokenDue, Math.max(avail - gasBilled, 0)) : tokenDue;
     const billed = gasBilled + tokenBilled;
 
-    // 消费方只增 gas_spend / token_spend；盯住所有减项计数器防并发透支。
+    // 消费方只增 gas_spend / token_spend；自转自的那笔 earn 在同一条语句里加回同一账户
+    // （仍只算 1 行写，不额外收 Gas）；盯住所有减项计数器防并发透支。
     const updated = await env.DB.prepare(
       `UPDATE principals
           SET gas_spend_nanos = gas_spend_nanos + ?,
-              token_spend_nanos = token_spend_nanos + ?
+              token_spend_nanos = token_spend_nanos + ?,
+              earn_nanos = earn_nanos + ?
         WHERE address = ?
           AND gas_spend_nanos = ?
           AND token_spend_nanos = ?
           AND withdraw_nanos = ?
         RETURNING ${countersSql}`,
     )
-      .bind(gasBilled, tokenBilled, row.address, current.gas_spend_nanos, current.token_spend_nanos, current.withdraw_nanos)
+      .bind(
+        gasBilled,
+        tokenBilled,
+        isExternal ? 0 : tokenBilled,
+        row.address,
+        current.gas_spend_nanos,
+        current.token_spend_nanos,
+        current.withdraw_nanos,
+      )
       .first<PrincipalCounters>();
     if (!updated) continue;
 
     // 跨用户 Token 价值转移：只有实际从消费方扣到的那部分才转给上游提供方，保证全站价值守恒。
+    // 自转自的那一半已经在上面的 UPDATE 里加回同一账户，这里只读出来记进收入链。
     let earnBefore = 0;
     let earnAfter = 0;
     if (isExternal && tokenBilled > 0 && row.providerUser) {
@@ -708,6 +728,9 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
         earnAfter = credited.earn_nanos;
         earnBefore = credited.earn_nanos - tokenBilled;
       }
+    } else if (tokenBilled > 0) {
+      earnAfter = updated.earn_nanos;
+      earnBefore = updated.earn_nanos - tokenBilled;
     }
 
     const settled: Settled = {

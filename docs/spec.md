@@ -88,7 +88,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 | 项 | 归属 | 怎么算 | 为什么 |
 |---|---|---|---|
 | `gas_fee_nanos` / `gas_billed_nanos` | **付给 Norm**（基础设施费） | 动态 Gas：从 300 纳美元（Worker 调用）起步，按实际经过的付费点逐项累加，结算前冻结，见 `src/gas.ts` 与 `GET /api/v1/pricing` | 如实覆盖 Cloudflare Serverless 侧的边际资源成本（Worker 调用、D1 行写、日志、CPU）——当前 1.0× 纯成本价，与 token 无关、与成败无关 |
-| `token_nanos` / `token_billed_nanos` | **用户间价值转移**（转给上游提供方） | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | **调用自有上游（`provider_user === address`）只付 Gas、`token_nanos = 0`**（你自己直接付给上游厂商）；**调用他人/公共池上游（`provider_user !== address`）时，实扣的 `token_billed_nanos` 直接转入上游提供方的 `earn_nanos`**，Norm 不截留任何 Token 费用 |
+| `token_nanos` / `token_billed_nanos` | **上游那边的 Token 价值**（自有上游 = 自转自；他人/公共池 = 价值转移） | 三项 token 各自乘单价，见 `src/pricing.ts` 与 `GET /api/v1/pricing` | **调用自有上游（`provider_user === address`）也按真价记**：`token_spend_nanos` 与 `earn_nanos` 同增（自己转给了自己），余额只减 Gas，`token_self_nanos` 标出这部分，记账结果绝不写成 0；**调用他人/公共池上游（`provider_user !== address`）时，实扣的 `token_billed_nanos` 直接转入上游提供方的 `earn_nanos`**，Norm 不截留任何 Token 费用 |
 
 三种 token 分开记，因为它们的价不同、含义也不同：
 

@@ -95,10 +95,10 @@ describe('Qwen 的原生音频接口（Qwen LB 那一层适配）', () => {
 });
 
 describe('回执头：文本与音频同一套', () => {
-  it('四个头把这次的钱与请求 ID 说全', () => {
+  it('五个头把这次的钱与请求 ID 说全', () => {
     const headers = receiptHeaders({
       request_id: 'r1', fee_nanos: 80390, gas_fee_nanos: 4000, gas_billed_nanos: 4000,
-      token_nanos: 76390, token_billed_nanos: 76390, input_tokens: 0, cached_tokens: 0,
+      token_nanos: 76390, token_billed_nanos: 76390, token_self_nanos: 0, input_tokens: 0, cached_tokens: 0,
       output_tokens: 0, audio_ms: 2500, audio_characters: 0, image_count: 0, image_pixels: 0,
       unbilled_nanos: 0,
       balance_nanos: null, latency_ms: 820, host: 'h', pool: false,
@@ -108,6 +108,8 @@ describe('回执头：文本与音频同一套', () => {
       'X-Norm-Fee-Nanos': '80390',
       'X-Norm-Gas-Billed-Nanos': '4000',
       'X-Norm-Token-Billed-Nanos': '76390',
+      // 自有上游时它等于 Token 费（自转自）；这一条是他人上游，所以是 0。
+      'X-Norm-Token-Self-Nanos': '0',
     });
   });
 });
