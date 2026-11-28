@@ -144,24 +144,35 @@ export function useLedger(enabled: boolean, cursor: number | undefined) {
   });
 }
 
-/** 按下游消费者密钥聚合的用量：账本要能回答「这把钥匙花了多少」。 */
-export function useUsageByConsumer(enabled: boolean) {
+/**
+ * 按下游消费者密钥聚合的用量：账本要能回答「这把钥匙花了多少」。
+ *
+ * `days` 是聚合的时间窗（0 = 全部历史）。它进 key：切换窗口就是另一份数据，不能复用。
+ * 聚合本身要把窗口内的请求扫一遍，所以默认只给近 30 天，而不是「一进来就全量」。
+ */
+export function useUsageByConsumer(enabled: boolean, days: number) {
   return useQuery({
-    queryKey: ['usage-by-consumer'],
+    queryKey: ['usage-by-consumer', days],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: ConsumerUsage[] }>({ path: '/api/v1/account/usage/by-consumer' }),
+    queryFn: () =>
+      requestJson<{ items: ConsumerUsage[] }>({
+        path: `/api/v1/account/usage/by-consumer${days > 0 ? `?days=${days}` : ''}`,
+      }),
     select: (data) => data.items,
   });
 }
 
-/** 按上游提供商聚合的用量：钱花在哪个上游提供商。 */
-export function useUsageByProvider(enabled: boolean) {
+/** 按上游提供商聚合的用量：钱花在哪个上游提供商。时间窗同 `useUsageByConsumer`。 */
+export function useUsageByProvider(enabled: boolean, days: number) {
   return useQuery({
-    queryKey: ['usage-by-provider'],
+    queryKey: ['usage-by-provider', days],
     enabled,
     retry: false,
-    queryFn: () => requestJson<{ items: ProviderUsage[] }>({ path: '/api/v1/account/usage/by-provider' }),
+    queryFn: () =>
+      requestJson<{ items: ProviderUsage[] }>({
+        path: `/api/v1/account/usage/by-provider${days > 0 ? `?days=${days}` : ''}`,
+      }),
     select: (data) => data.items,
   });
 }

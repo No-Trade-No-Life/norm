@@ -138,6 +138,11 @@ export type RequestRow = {
   token_nanos: number;
   token_billed_nanos: number;
   fee_nanos: number;
+  /**
+   * 这条上游的名字，跟着明细一起回来（服务端按 `providers` 主键顺带查的）。
+   * 明细页要显示「打给谁」，但不该为了几个名字去拉一次全量聚合。
+   */
+  provider_label?: string | null;
   unbilled_nanos: number;
   /** 这一笔之前 / 之后的累计消费：delta 就是 fee，最后一条的 after 就是这个账户花掉的总数。 */
   spend_before_nanos: number;

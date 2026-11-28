@@ -466,6 +466,11 @@ export const COPY = {
   'trust.untrusted': { zh: '清单外', en: 'Off trust list' },
 
   'us.title': { zh: '用量与账本', en: 'Usage & Ledger' },
+  'us.tab_overview': { zh: '总览', en: 'Overview' },
+  'us.tab_requests': { zh: '消费明细', en: 'Requests' },
+  'us.tab_earnings': { zh: '上游收入', en: 'Revenue' },
+  'us.tab_ledger': { zh: '账户流水', en: 'Ledger' },
+  'us.tab_breakdown': { zh: '聚合', en: 'Breakdown' },
   'us.desc': {
     zh: 'Gas 费与 Token 费分开结算：Gas 付给 Norm（覆盖执行与写库成本）；Token 费是用户间的价值转移——调用自有上游仅收 Gas，调用他人/公共池上游时 Token 费直接转入该上游提供方的账户。',
     en: 'Gas and token fees are billed separately: Gas goes to Norm (covering execution and D1 writes), while token fees are a value transfer between users — calling your own upstream only costs Gas, and calling a public-pool upstream transfers the token fee directly to that provider owner.',
@@ -511,6 +516,24 @@ export const COPY = {
   'us.ttft': { zh: '首字', en: 'first' },
   'us.total': { zh: '总', en: 'total' },
   'us.requests_title': { zh: '消费请求记录', en: 'Outbound requests' },
+  'us.requests_desc': {
+    zh: '逐条明细：Gas 付给 Norm、Token 转给上游，两笔钱分列，总消费是它们的和。',
+    en: 'One row per call: Gas to Norm and Token to the provider are listed separately; the total is their sum.',
+  },
+  'us.ledger_desc': {
+    zh: '账户级的进项：抵扣券、充值、提现。消费不在这张表里，它记在每一条请求上。',
+    en: 'Account-level entries only: credits, top-ups, withdrawals. Spending lives on the request rows.',
+  },
+  'us.breakdown_title': { zh: '用量聚合', en: 'Usage breakdown' },
+  'us.breakdown_desc': {
+    zh: '谁花的（按钥匙）、花在哪（按上游）。这一页按时间窗聚合，默认近 30 天，不会去扫全量历史。',
+    en: 'Who spent it (by key) and where it went (by provider). Aggregated over a time window — 30 days by default, never the whole history.',
+  },
+  'us.window': { zh: '时间窗', en: 'Window' },
+  'us.window_7': { zh: '近 7 天', en: '7 days' },
+  'us.window_30': { zh: '近 30 天', en: '30 days' },
+  'us.window_90': { zh: '近 90 天', en: '90 days' },
+  'us.window_all': { zh: '全部', en: 'All' },
   'us.earnings_title': { zh: '上游 Token 收入', en: 'Upstream token revenue' },
   'us.earnings_desc': {
     zh: '累计供给里「他人用你上游」的那一半：其他用户调用你的上游时，Token 费用直接转入你的账户（不经 Norm 抽成）。你自己用自己的上游不进这个列表——那只是自己转给自己。',

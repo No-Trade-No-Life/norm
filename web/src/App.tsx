@@ -20,6 +20,10 @@ import { TranscriptionsPage } from './pages/transcriptions';
 import { WebSearchPage } from './pages/web-search';
 import { ProvenancePage } from './pages/provenance';
 import { UsagePage } from './pages/usage';
+import { UsageBreakdownPage } from './pages/usage-breakdown';
+import { UsageEarningsPage } from './pages/usage-earnings';
+import { UsageLedgerPage } from './pages/usage-ledger';
+import { UsageRequestsPage } from './pages/usage-requests';
 
 /**
  * 身份就位后才允许发签名请求；登录失败时把错误留在页面顶部，
@@ -96,7 +100,12 @@ const ROUTES: Array<{ path: string; element: ReactNode }> = [
   { path: '/providers', element: <ProvidersPage /> },
   { path: '/models', element: <ModelsPage /> },
   { path: '/consumers', element: <ConsumersPage /> },
+  // 账本拆成五页：每页只请求自己那一段数据。聚合最贵（要扫时间窗），单独一页。
   { path: '/usage', element: <UsagePage /> },
+  { path: '/usage/requests', element: <UsageRequestsPage /> },
+  { path: '/usage/earnings', element: <UsageEarningsPage /> },
+  { path: '/usage/ledger', element: <UsageLedgerPage /> },
+  { path: '/usage/breakdown', element: <UsageBreakdownPage /> },
   { path: '/provenance', element: <ProvenancePage /> },
   { path: '/attestation', element: <AttestationPage /> },
   { path: '/about', element: <AboutPage /> },

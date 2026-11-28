@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Identity } from '../auth';
+import { uuidv7 } from '../ids';
 import { availableNanos, findPrincipal, listProviders, totalSpendNanos } from '../store';
 
 export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Identity } }>;
@@ -121,15 +122,22 @@ accountRoutes.get('/me', async (c) => {
  *
  * 为什么按 id 而不是按时间翻：request_id 是 UUID v7，字典序就是时间序，
  * 一次走完索引，也不需要 `OFFSET` 那种越翻越慢的写法。
+ *
+ * 顺带把这条上游的名字查出来（`providers` 按主键命中，一页 50 条就是 50 行读）：
+ * 明细页要显示「打给谁」，但绝不该为了几个名字去拉一次全量聚合。
  */
 accountRoutes.get('/usage', async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 50), 1), 200);
   const before = c.req.query('before') ?? '';
   const address = c.get('principal').address;
 
-  const where = before ? 'address = ? AND id < ?' : 'address = ?';
+  const where = before ? 'r.address = ? AND r.id < ?' : 'r.address = ?';
   const statement = c.env.DB.prepare(
-    `SELECT * FROM requests WHERE ${where} ORDER BY id DESC LIMIT ?`,
+    `SELECT r.*, p.label AS provider_label
+       FROM requests r
+       LEFT JOIN providers p ON p.id = r.provider_id
+      WHERE ${where}
+      ORDER BY r.id DESC LIMIT ?`,
   );
   const { results } = await (before ? statement.bind(address, before, limit) : statement.bind(address, limit)).all();
 
@@ -203,10 +211,26 @@ accountRoutes.get('/ledger', async (c) => {
 });
 
 /**
+ * 聚合的时间窗：`days` 缺省或 <= 0 表示全部历史。
+ *
+ * 用 `id > uuidv7(截止点)` 而不是 `created_at >= ?`：`requests` 是 WITHOUT ROWID 聚簇表、
+ * 主键 `(address, id)`，id 是 UUID v7（前 48 位毫秒时间戳），所以「最近 N 天」正好是主键上的
+ * 一个区间——扫到边界就停，不会把更早的行也读一遍。`created_at` 上没有索引，拿它过滤
+ * 等于把该账户的全部历史读一遍再从结果里挑。
+ *
+ * 减 1 毫秒：同一毫秒内生成的 id 之间是随机位序，边界那一毫秒不能保证都大于截止点。
+ */
+function windowStartId(days: number): string | null {
+  if (!Number.isFinite(days) || days <= 0) return null;
+  return uuidv7(Date.now() - days * 86_400_000 - 1);
+}
+
+/**
  * 按下游消费者密钥聚合用量：账本要能回答「这把钥匙花了多少（Gas vs Token）」。
  * 只回 id、名字与合计，不含任何请求内容。
  */
 accountRoutes.get('/usage/by-consumer', async (c) => {
+  const start = windowStartId(Number(c.req.query('days') ?? '0'));
   const { results } = await c.env.DB.prepare(
     `SELECT requests.consumer_id AS consumer_id,
             consumers.name AS consumer_name,
@@ -220,11 +244,11 @@ accountRoutes.get('/usage/by-consumer', async (c) => {
             COALESCE(SUM(requests.fee_nanos), 0) AS fee_nanos
      FROM requests
      LEFT JOIN consumers ON consumers.id = requests.consumer_id
-     WHERE requests.address = ?
+     WHERE requests.address = ?${start ? ' AND requests.id > ?' : ''}
      GROUP BY requests.consumer_id
      ORDER BY fee_nanos DESC`,
   )
-    .bind(c.get('principal').address)
+    .bind(...(start ? [c.get('principal').address, start] : [c.get('principal').address]))
     .all();
 
   return c.json({ items: results });
@@ -232,6 +256,7 @@ accountRoutes.get('/usage/by-consumer', async (c) => {
 
 /** 按上游提供商聚合：钱花在哪个上游提供商（Gas 付给 Norm，Token 转给上游提供方）。 */
 accountRoutes.get('/usage/by-provider', async (c) => {
+  const start = windowStartId(Number(c.req.query('days') ?? '0'));
   const { results } = await c.env.DB.prepare(
     `SELECT requests.provider_id AS provider_id,
             providers.label AS provider_label,
@@ -245,11 +270,11 @@ accountRoutes.get('/usage/by-provider', async (c) => {
             COALESCE(SUM(requests.fee_nanos), 0) AS fee_nanos
      FROM requests
      LEFT JOIN providers ON providers.id = requests.provider_id
-     WHERE requests.address = ?
+     WHERE requests.address = ?${start ? ' AND requests.id > ?' : ''}
      GROUP BY requests.provider_id
      ORDER BY fee_nanos DESC`,
   )
-    .bind(c.get('principal').address)
+    .bind(...(start ? [c.get('principal').address, start] : [c.get('principal').address]))
     .all();
 
   return c.json({ items: results });
