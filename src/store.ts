@@ -660,7 +660,7 @@ export async function rememberAffinity(
  * 一条候选都没有：分「自己的都关了」与「压根没有」两种处境说清楚，并且都提到池子——
  * 池子也空着时，这两句话是调用方唯一能拿到的线索。
  */
-async function failNoCandidate(env: Env, address: string): Promise<never> {
+export async function failNoCandidate(env: Env, address: string): Promise<never> {
   const own = await env.DB.prepare(
     'SELECT COUNT(*) AS n FROM providers WHERE address = ? AND revoked_at IS NULL',
   )
@@ -670,6 +670,27 @@ async function failNoCandidate(env: Env, address: string): Promise<never> {
     fail(409, 'provider_disabled', '自己的上游提供商都已禁用，公共池里也没有可用的：到「上游提供商」页启用一条');
   }
   fail(400, 'provider_missing', '还没有上游提供商，公共池里也没有可用的：先去「上游提供商」页添加一条');
+}
+
+/**
+ * 列清单要问的那几条上游：启用中、本账户能用的那些。
+ *
+ * 与转发面的 `narrowToOwned` 同一条规矩——名下有启用中的上游就只问它们，一条都没有
+ * 才问公共池——区别只在这里**不挑一条**。清单要回答「能调什么」，而抽一条上游就是
+ * 抽一份残缺的答案：同一个账户连着问会拿到 15 条、50 条、甚至那条上游的 400。
+ *
+ * 纯读：不改 `last_used_at`、不动亲和、不计费。
+ */
+export async function catalogProviders(env: Env, address: string): Promise<ProviderRow[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT * FROM providers
+      WHERE revoked_at IS NULL AND enabled = 1 AND (address = ? OR scope = 'pool')
+      ORDER BY created_at, id`,
+  )
+    .bind(address)
+    .all<ProviderRow>();
+  const own = results.filter((row) => row.address === address);
+  return own.length > 0 ? own : results;
 }
 
 /**

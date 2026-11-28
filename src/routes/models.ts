@@ -4,8 +4,8 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { randomToken } from '../ids';
-import { mergeDeclaredModels, probeProviderModels, type ModelProbe } from '../models';
-import { listProviders, resolveProvider } from '../store';
+import { mergeDeclaredModels, probeProviderModels, unionModels, type ModelProbe } from '../models';
+import { catalogProviders, failNoCandidate, listProviders, resolveProvider } from '../store';
 import { affinityKeyOf } from '../routing';
 import { type ModelInfo, type Protocol } from '../protocols';
 
@@ -23,9 +23,13 @@ type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal 
  * 归一成 `{object:"list", data:[{id, object:"model", …}]}`——各家 SDK 里只有它
  * 是通用形状（`/v1/messages` 那种入口天生没有列模型的方法）。
  *
- * 一次只回答一条上游。账户的**全部**模型在哪里看：`/api/v1/models` 把每条的答案
- * 并成一张表（见 `model-catalog.ts`），两个面共用同一段探测（`src/models.ts`）。
- *
+ * 清单回答的是「这个账户现在能调什么」，所以是**逐条问、并成一条答**：账户里启用中
+ * 的每条上游各问一次，同名的合成一行（`unionModels`）。抽一条上游回答是不行的——
+ * 选址是 rendezvous 的，同一个账户连着问会拿到 15 条、50 条、甚至那条上游的 400，
+ * 而下游网关是拿这份清单同步模型行的：抽到哪一条，它就少掉其余几条上游的型号。
+ * 账户的**全部**模型在管理面上还有一张表：`/api/v1/models`（见 `model-catalog.ts`），
+ * 两个面共用同一段探测（`src/models.ts`）。
+
  * 「一次一条上游」说的是**问**：密钥只有一条，清单只能一条一条问。但清单要回答的是
  * 「这个上游能调什么」，而有些型号根本问不出来——图像工具方言与音频原生方言的型号表
  * 写在代码里（见 `mergeDeclaredModels`）。它们属于账户里启用的那些协议，所以按账户
@@ -34,13 +38,64 @@ type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal 
  */
 export const modelRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
+/**
+ * 一次列清单最多问几条上游：每条一次子请求，Worker 每次执行的子请求数有上限。
+ * 越过上限的那几条这一次不问——没问比截成一张看起来完整的表诚实。
+ */
+const MAX_CATALOG_PROBES = 8;
+
 modelRoutes.get('/', async (c: ModelsContext) => {
-  const resolved = await resolve(c);
-  if (!resolved.ok) return resolved.upstream;
+  const address = c.get('principal').address;
+  const startedAt = Date.now();
+  const providers = await catalogProviders(c.env, address);
+  if (providers.length === 0) return await failNoCandidate(c.env, address);
+  const reported = providers.slice(0, MAX_CATALOG_PROBES);
+  // 并发问：几条上游的清单互不相干，串着问只会让 `GET /v1/models` 慢成几条之和。
+  const probes = await Promise.all(
+    reported.map((provider) => probeProviderModels({ env: c.env, address: provider.address, provider })),
+  );
+
+  // 收进数组而不是「记住第一条」：闭包里给 `let` 赋值，读的那一侧看不出赋值发生过。
+  const items: ModelInfo[] = [];
+  const hosts: string[] = [];
+  const unreadable: string[] = [];
+  const unreachable: string[] = [];
+  const rejected: { status: number; content_type: string; body: string }[] = [];
+  probes.forEach((probe, index) => {
+    if (probe.ok) {
+      items.push(...probe.items);
+      hosts.push(hostOf(reported[index].base_url));
+      return;
+    }
+    if (probe.kind === 'local') unreadable.push(probe.message);
+    else if (probe.kind === 'unreachable') unreachable.push(probe.message);
+    else rejected.push(probe);
+  });
+
+  // 一条都没答上来才算这次列不出来：原话原样交回（与单条上游时同一套做法）。
+  // 答上来一条就照实答那一条——某条上游的 400 不该让整份清单消失。
+  if (items.length === 0) {
+    const first = rejected[0];
+    if (first !== undefined) {
+      return new Response(first.body, {
+        status: first.status,
+        headers: { 'Content-Type': first.content_type },
+      });
+    }
+    if (unreadable.length > 0) fail(500, 'provider_key_unreadable', unreadable[0]);
+    fail(502, 'upstream_unreachable', unreachable[0] ?? '没有一条上游答上了清单');
+  }
+
   return c.json({
     object: 'list',
-    data: resolved.items.map((item) => modelShape(item)),
-    norm: resolved.norm,
+    data: mergeDeclaredModels(unionModels(items), await enabledProtocols(c.env, address)).map((item) =>
+      modelShape(item),
+    ),
+    norm: zeroReceipt({
+      startedAt,
+      hosts,
+      pool: reported.every((provider) => provider.address !== address),
+    }),
   });
 });
 
@@ -108,23 +163,45 @@ async function resolve(c: ModelsContext, model?: string): Promise<Resolved> {
   return {
     ok: true,
     items: mergeDeclaredModels(probe.items, await enabledProtocols(c.env, address)),
-    // 全是 0 的账单：没有 Gas（没打出去一次生成）、没有 token、也没去读余额。
-    norm: {
-      request_id: `req_${randomToken(12)}`,
-      fee_nanos: 0,
-      gas_fee_nanos: 0,
-      gas_billed_nanos: 0,
-      token_nanos: 0,
-      token_billed_nanos: 0,
-      input_tokens: 0,
-      cached_tokens: 0,
-      output_tokens: 0,
-      unbilled_nanos: 0,
-      balance_nanos: null,
-      latency_ms: Date.now() - startedAt,
-      host: hostOf(provider.base_url),
+    norm: zeroReceipt({
+      startedAt,
+      hosts: [hostOf(provider.base_url)],
       pool: choice.via === 'pool',
-    },
+    }),
+  };
+}
+
+/**
+ * 一张全是 0 的账单：没有 Gas（没打出去一次生成）、没有 token、也没去读余额。
+ *
+ * `host` 只在整份清单来自一条上游时给一个名字；并了几条上游的答案时它留空，
+ * 由 `hosts` 说清这几行分别来自哪几条——这里编一个「那一条」只会在对账时对不上。
+ */
+function zeroReceipt({
+  startedAt,
+  hosts,
+  pool,
+}: {
+  startedAt: number;
+  hosts: string[];
+  pool: boolean;
+}): Record<string, unknown> {
+  return {
+    request_id: `req_${randomToken(12)}`,
+    fee_nanos: 0,
+    gas_fee_nanos: 0,
+    gas_billed_nanos: 0,
+    token_nanos: 0,
+    token_billed_nanos: 0,
+    input_tokens: 0,
+    cached_tokens: 0,
+    output_tokens: 0,
+    unbilled_nanos: 0,
+    balance_nanos: null,
+    latency_ms: Date.now() - startedAt,
+    host: hosts.length === 1 ? hosts[0] : '',
+    hosts,
+    pool,
   };
 }
 
