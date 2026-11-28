@@ -35,6 +35,13 @@ export type EarnedTotals = TokenTotals & {
   token_nanos: number;
 };
 
+/** 测试期领水的回执：这次记了多少、记完余额、今天还能领多少。 */
+export type FaucetResult = {
+  credited_nanos: number;
+  balance_nanos: number;
+  remaining_nanos: number;
+};
+
 export type Me = {
   address: string;
   label: string;

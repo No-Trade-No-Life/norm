@@ -9,6 +9,7 @@ import type {
   Consumer,
   ConsumerUsage,
   EarningRow,
+  FaucetResult,
   LedgerRow,
   LoginResponse,
   Me,
@@ -39,6 +40,23 @@ export function useMe(enabled: boolean) {
     enabled,
     retry: false,
     queryFn: () => requestJson<Me>({ path: '/api/v1/account/me' }),
+  });
+}
+
+/**
+ * 测试期领水：一次记一笔 $1 抵扣券（不可提现），每账户每天 $20。
+ *
+ * 成功后把 `me` 与账户流水作废：余额与那一笔券都要马上看得见，不能等下次刷新。
+ */
+export function useFaucet() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: () => requestJson<FaucetResult>({ path: '/api/v1/account/faucet', method: 'POST' }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['me'] });
+      void queryClient.invalidateQueries({ queryKey: ['ledger'] });
+    },
   });
 }
 

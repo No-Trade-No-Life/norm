@@ -1,9 +1,11 @@
 import { useMemo } from 'react';
 
 import { ErrorNote, Section } from '../components/page';
+import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { useI18n } from '../i18n';
 import { latency, percent, signedUsd, tokens, usd } from '../lib/format';
-import { useMe } from '../queries';
+import { useFaucet, useMe } from '../queries';
 import { UsageShell } from './usage-shell';
 
 /**
@@ -18,6 +20,7 @@ import { UsageShell } from './usage-shell';
 export function UsagePage() {
   const { t } = useI18n();
   const me = useMe(true);
+  const faucet = useFaucet();
 
   const tokens_ = me.data?.usage;
   const billed = me.data?.billed;
@@ -123,6 +126,31 @@ export function UsagePage() {
           </div>
         ))}
       </div>
+
+      {/*
+        测试期的虚拟充值：虚线边框 + 右上角「测试期」徽标，让它在一屏黑白卡片里一眼就是「临时」的。
+        按钮与结果/报错同在一行，报错不会掉到长列表末尾。
+      */}
+      <Section
+        title={t('us.faucet_title')}
+        description={t('us.faucet_desc')}
+        className="border-dashed"
+        actions={<Badge variant="outline">{t('us.faucet_badge')}</Badge>}
+      >
+        <div className="flex flex-wrap items-center gap-3 px-3 py-2.5">
+          <Button onClick={() => faucet.mutate()} disabled={faucet.isPending}>
+            {faucet.isPending ? t('us.faucet_pending') : t('us.faucet_action')}
+          </Button>
+          {faucet.isError ? <ErrorNote message={(faucet.error as Error).message} /> : null}
+          {faucet.data ? (
+            <p className="text-xs text-muted-foreground">
+              {t('us.faucet_done', { amount: usd(faucet.data.credited_nanos) })}
+              {' · '}
+              {t('us.faucet_remaining', { amount: usd(faucet.data.remaining_nanos) })}
+            </p>
+          ) : null}
+        </div>
+      </Section>
 
       {/* 三项 token、两项分离费用（Gas / Token）与两项延迟分行排布，一眼看清结构。 */}
       <Section title={t('us.billed')} description={t('us.billed_desc')}>

@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { Env } from '../env';
 import type { Identity } from '../auth';
-import { uuidv7 } from '../ids';
+import { fail } from '../http';
+import { nowSeconds, randomToken, uuidv7 } from '../ids';
 import { availableNanos, findPrincipal, listProviders, totalSpendNanos } from '../store';
 
 export type AccountRoutes = Hono<{ Bindings: Env; Variables: { principal: Identity } }>;
@@ -278,4 +279,74 @@ accountRoutes.get('/usage/by-provider', async (c) => {
     .all();
 
   return c.json({ items: results });
+});
+
+/* ── 测试期的虚拟充值（领水） ───────────────────────────────────────
+ * 这一节是临时的：测试阶段结束后，连同前端的「领水」按钮一起删掉。
+ *
+ * 它凭空发行**不可提现**的抵扣券（`voucher_nanos`），只为让人能反复验证转发链路而不必
+ * 真付钱。钱只能花在 Gas 与 Token 上，套不出现金——即使被滥用，损失的也只是本站的上游成本。
+ */
+
+/** 一次领多少：$1（1e9 纳）。不接金额参数——能指定金额的加水站等于没有上限。 */
+export const FAUCET_DRIP_NANOS = 1_000_000_000;
+/** 每个账户每个 UTC 自然日最多领多少：$20。 */
+export const FAUCET_DAILY_CAP_NANOS = 20_000_000_000;
+/** 领水记的券 id 前缀：日额度就按它统计，与开户赠额分开。 */
+const FAUCET_ID_PREFIX = 'faucet-';
+const SECONDS_PER_DAY = 86_400;
+
+/**
+ * 测试期领水：`POST /account/faucet`。
+ *
+ * 三条边界：
+ *   - 固定 $1 一次，不接受金额；
+ *   - 每账户每 UTC 自然日最多 $20，按 `ledger` 里 `faucet-` 前缀的券统计（走
+ *     `ledger_address_created` 索引，不扫全表）；并发两次可能都通过检查，测试期接受这个窗口；
+ *   - 记一笔 `voucher` 流水，`available_after_nanos` 与 `availableNanos()` 同一口径
+ *     （单测钉住），所以「账户流水」页能对上余额。
+ */
+accountRoutes.post('/faucet', async (c) => {
+  const address = c.get('principal').address;
+  const now = nowSeconds();
+  const dayStart = Math.floor(now / SECONDS_PER_DAY) * SECONDS_PER_DAY;
+
+  const today = await c.env.DB.prepare(
+    `SELECT COALESCE(SUM(amount_nanos), 0) AS given
+       FROM ledger
+      WHERE address = ? AND created_at >= ? AND id LIKE '${FAUCET_ID_PREFIX}%'`,
+  )
+    .bind(address, dayStart)
+    .first<{ given: number }>();
+  const given = today?.given ?? 0;
+  if (given + FAUCET_DRIP_NANOS > FAUCET_DAILY_CAP_NANOS) {
+    fail(
+      429,
+      'faucet_exhausted',
+      `今天的水领完了：每账户每天 $${FAUCET_DAILY_CAP_NANOS / 1e9}，UTC 零点重置`,
+    );
+  }
+
+  // 两条语句一个 batch：给钱与记账不会分叉。余额那一列在库里现算，取的是**更新后**的行，
+  // 与 `availableNanos()` 同一个算式（recharge + voucher + earn − gas − token − withdraw）。
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE principals SET voucher_nanos = voucher_nanos + ? WHERE address = ?').bind(
+      FAUCET_DRIP_NANOS,
+      address,
+    ),
+    c.env.DB.prepare(
+      `INSERT INTO ledger (id, address, kind, amount_nanos, available_after_nanos, created_at)
+       SELECT ?, ?, 'voucher', ?,
+              recharge_nanos + voucher_nanos + earn_nanos - gas_spend_nanos - token_spend_nanos - withdraw_nanos,
+              ?
+         FROM principals WHERE address = ?`,
+    ).bind(FAUCET_ID_PREFIX + randomToken(), address, FAUCET_DRIP_NANOS, now, address),
+  ]);
+
+  const principal = await findPrincipal(c.env, address);
+  return c.json({
+    credited_nanos: FAUCET_DRIP_NANOS,
+    balance_nanos: availableNanos(principal),
+    remaining_nanos: Math.max(FAUCET_DAILY_CAP_NANOS - given - FAUCET_DRIP_NANOS, 0),
+  });
 });

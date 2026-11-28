@@ -497,6 +497,16 @@ export const COPY = {
   'us.audio_ms': { zh: '音频 {value} 秒', en: 'audio {value}s' },
   'us.audio_chars': { zh: '合成 {value} 字', en: 'speech {value} chars' },
   'us.tokens_out': { zh: '输出 Token', en: 'Output tokens' },
+  'us.faucet_title': { zh: '虚拟充值（领水）', en: 'Virtual top-up (faucet)' },
+  'us.faucet_badge': { zh: '测试期功能 · 上线前移除', en: 'Test-only · removed at launch' },
+  'us.faucet_desc': {
+    zh: '测试阶段的临时接口：点一次记一笔 $1 抵扣券——不可提现，只能花在 Gas 与 Token 上，每账户每天最多 $20（UTC 零点重置）。',
+    en: 'A temporary endpoint for the test phase: one click credits $1 of non-withdrawable credit — spendable on Gas and Token only, up to $20 per account per day (resets at UTC midnight).',
+  },
+  'us.faucet_action': { zh: '领取 $1 测试额度', en: 'Claim $1 test credit' },
+  'us.faucet_pending': { zh: '领取中…', en: 'Claiming…' },
+  'us.faucet_done': { zh: '已到账 {amount}', en: 'Credited {amount}' },
+  'us.faucet_remaining': { zh: '今天还能领 {amount}', en: '{amount} left today' },
   'us.billed': { zh: '费用与用量构成', en: 'Usage & fee breakdown' },
   'us.billed_desc': {
     zh: 'Gas 费（付给 Norm）与 Token 价值转移（转给上游提供方）分开记账；调用自有上游不产生 Token 扣费。',

@@ -55,6 +55,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| POST | `/api/v1/account/faucet` | **测试期临时接口**：给自己记一笔 $1 抵扣券（不可提现，只能花在 Gas 与 Token 上）；每账户每 UTC 自然日最多 $20，超额 429 `faucet_exhausted`。回 `{credited_nanos, balance_nanos, remaining_nanos}`。测试结束即移除 |
 | GET | `/api/v1/account/me` | `{address, label, balance_nanos, recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, spend_nanos, net_supply_nanos, withdraw_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,gas_billed_nanos,token_nanos,token_billed_nanos,unbilled_nanos}, earned:{requests,input_tokens,cached_tokens,output_tokens,token_nanos}}` |
 | GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 消费请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页；每行顺带 `provider_label`（按 `providers` 主键查出），明细页不必再拉聚合 |
 | GET | `/api/v1/account/earnings?limit=50&before=<request_id>` | 上游 Token 收入记录（他人调用本账户上游转入的 Token 明细，含 `earn_before_nanos` / `earn_after_nanos`） |
