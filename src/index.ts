@@ -15,6 +15,7 @@ import { audioRoutes } from './routes/audio';
 import { imageRoutes } from './routes/images';
 import { searchRoutes } from './routes/search';
 import { relayRoutes } from './routes/relay';
+import { requestQueryRoutes } from './routes/requests';
 
 /**
  * 两个面各放一份身份：管理面是 `Identity`（地址 + 是否新开户），转发面是 `Principal`
@@ -104,6 +105,8 @@ function relayOnly() {
   relay.route('/', imageRoutes);
   relay.route('/', searchRoutes);
   relay.route('/', relayRoutes);
+  // 请求费用查询：网关按它结账。与上面几条同一把 Token、同一个账户，只是读而不写。
+  relay.route('/', requestQueryRoutes);
   return relay;
 }
 
