@@ -353,8 +353,8 @@ export const COPY = {
     en: 'A disabled provider is skipped when Norm picks a provider. Its key and history stay — flip it back anytime.',
   },
   'pr.field_protocol_hint': {
-    zh: '协议声明上游的线缆方言与厂商契约：四条通用方言要你填 base_url；deepseek（复用 OpenAI Responses + 分时计价）与 opencode-go（复用 OpenAI Chat + 自动会话头）的地址由协议固定、只要密钥。入口方言与上游方言一致时按原始字节直通，跨方言时经统一中间层自动桥接。',
-    en: 'The protocol declares the upstream wire dialect and vendor contract: the four generic dialects ask for a base URL, while deepseek (reusing OpenAI Responses + peak/off-peak tariffs) and opencode-go (reusing OpenAI Chat + session header) fix their official address and only want a key. Matching wire dialects pass through byte-for-byte; mismatched dialects bridge automatically.',
+    zh: '协议声明上游的线缆方言与厂商契约：四条通用方言要你填 base_url；deepseek（复用 OpenAI Responses + 分时计价）、opencode-go（复用 OpenAI Chat + 自动会话头）与 naive（复用 OpenAI Chat，发出去之前剥掉 service_tier）的地址由协议固定、只要密钥。入口方言与上游方言一致时按原始字节直通，跨方言时经统一中间层自动桥接。',
+    en: 'The protocol declares the upstream wire dialect and vendor contract: the four generic dialects ask for a base URL, while deepseek (reusing OpenAI Responses + peak/off-peak tariffs), opencode-go (reusing OpenAI Chat + session header) and naive (reusing OpenAI Chat, service_tier stripped before sending) fix their official address and only want a key. Matching wire dialects pass through byte-for-byte; mismatched dialects bridge automatically.',
   },
   'pr.protocol_loading': { zh: '正在读取这条协议的字段…', en: 'Loading this protocol’s fields…' },
   'pr.field_base_url_fixed': {
@@ -424,6 +424,7 @@ export const COPY = {
   'proto.opencode-go': { zh: 'OpenCode Go', en: 'OpenCode Go' },
   'proto.openai-oauth': { zh: 'OpenAI OAuth（ChatGPT 订阅）', en: 'OpenAI OAuth (ChatGPT plan)' },
   'proto.qwen': { zh: 'Qwen（百炼 · 文本 / 视觉 / 音频）', en: 'Qwen (DashScope: text / vision / audio)' },
+  'proto.naive': { zh: 'Naive（NaiveAI）', en: 'Naive (NaiveAI)' },
   'proto.openai-audio': { zh: 'OpenAI 音频（Qwen LB 等）', en: 'OpenAI audio (Qwen LB etc.)' },
 
   'pr.oauth_start': { zh: '连接 ChatGPT', en: 'Connect ChatGPT' },

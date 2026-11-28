@@ -42,7 +42,7 @@
     "POOL_ADMIN_ADDRESSES": "75A9RSbK1rvZUQ1ZA8Wp247AwutTJhUdTJ9dt77YtkY5",
     // 信任清单：只有落在这些主机上的上游提供商才会被前端标成「官方」。
     // 精确主机名匹配，不做后缀匹配（api.openai.com.evil.tld 不该被放进来）。
-    "TRUSTED_BASE_URLS": "api.openai.com,api.deepseek.com,api.anthropic.com,generativelanguage.googleapis.com,api.x.ai,api.moonshot.cn,open.bigmodel.cn,dashscope.aliyuncs.com,opencode.ai,chatgpt.com",
+    "TRUSTED_BASE_URLS": "api.openai.com,api.deepseek.com,api.anthropic.com,generativelanguage.googleapis.com,api.x.ai,api.moonshot.cn,open.bigmodel.cn,dashscope.aliyuncs.com,opencode.ai,chatgpt.com,api.naive.ai",
     // 可信发布证明：CI 在 deploy 时用 --var 覆盖，公开在 /api/v1/attestation。
     "ATTEST_COMMIT": "dev",
     "ATTEST_BUILT_AT": "dev",

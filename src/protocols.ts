@@ -61,7 +61,8 @@ export type Protocol =
   | 'openai-oauth'
   | 'openai-audio'
   | 'openai-search'
-  | 'qwen';
+  | 'qwen'
+  | 'naive';
 
 export const PROTOCOLS: Protocol[] = [
   ...DIALECTS,
@@ -71,6 +72,7 @@ export const PROTOCOLS: Protocol[] = [
   'openai-audio',
   'openai-search',
   'qwen',
+  'naive',
 ];
 
 export function isProtocol(value: string): value is Protocol {
@@ -201,6 +203,12 @@ export type ProtocolProfile = {
    * 它是这条上游的请求契约，不是方言翻译。
    */
   store_false?: true;
+  /**
+   * 这条上游吃 `service_tier` 却不回显档位（`naive` 的 `ultrafast` 贵 10 倍）：声明在这里，
+   * 转发层发出去之前把那个字段删掉。收下它等于让调用方一句话就把这条上游的成本乘十，
+   * 而账本还按标准价收——不认识的档位不该被当成默认档位发出去。
+   */
+  drop_service_tier?: true;
 };
 
 /** 补齐方言默认传输规则后的协议契约（仍不含任何翻译方法）。 */
@@ -217,6 +225,7 @@ export type ResolvedProtocol = {
   oauth?: true;
   stream_only?: true;
   store_false?: true;
+  drop_service_tier?: true;
   audio?: AudioDialect;
   image?: ImageDialect;
   search?: SearchDialect;
@@ -348,6 +357,26 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     modelsPath: () => '/compatible-mode/v1/models',
     audio: 'qwen-native',
   },
+
+  /**
+   * naive：NaiveAI（`api.naive.ai`）。官方只给 OpenAI Chat Completions 与 Anthropic Messages，
+   * 没有 Responses；所以这条协议复用 `openai-chat` 方言，钉死官方基址，只要一把密钥。
+   *
+   * 唯一的额外契约是 `drop_service_tier`：NaiveAI 的 `ultrafast` 贵 10 倍且不回显档位，
+   * 收下就无法核对，调用方一句话就能把这条上游的成本乘十而账本仍按标准价收
+   * （`naive-lb` 上做过同一个决定，理由在这里同样成立）。
+   *
+   * 别的都不必声明：`max_tokens` 只在调用方显式给了 `max_output_tokens` 时才发——`openai-chat`
+   * 编解码本来就是「没给就不写字段」，而 NaiveAI 把它当作「思考 + 正文」的总预算，补一个默认值
+   * 会把正文吃干净；内置工具（`image_generation` / `web_search` / `audio_transcription`）在
+   * 桥接时只会剩下 `function` 工具，没有 Chat 对等物的条目本来就发不出去。型号清单就是标准的
+   * `{base}/models`，没有隐藏型号要补。
+   */
+  naive: {
+    dialect: 'openai-chat',
+    base_url: 'https://api.naive.ai/v1',
+    drop_service_tier: true,
+  },
 };
 
 function resolveProtocol(protocol: Protocol): ResolvedProtocol {
@@ -366,6 +395,7 @@ function resolveProtocol(protocol: Protocol): ResolvedProtocol {
     ...(profile.oauth === undefined ? {} : { oauth: profile.oauth }),
     ...(profile.stream_only === undefined ? {} : { stream_only: profile.stream_only }),
     ...(profile.store_false === undefined ? {} : { store_false: profile.store_false }),
+    ...(profile.drop_service_tier === undefined ? {} : { drop_service_tier: profile.drop_service_tier }),
     ...(profile.audio === undefined ? {} : { audio: profile.audio }),
     ...(profile.image === undefined ? {} : { image: profile.image }),
     ...(profile.search === undefined ? {} : { search: profile.search }),
@@ -383,6 +413,7 @@ const RESOLVED_PROTOCOLS: Record<Protocol, ResolvedProtocol> = {
   'openai-audio': resolveProtocol('openai-audio'),
   'openai-search': resolveProtocol('openai-search'),
   qwen: resolveProtocol('qwen'),
+  naive: resolveProtocol('naive'),
 };
 
 /** 取一条上游协议的传输与计价契约（编解码请按 `.dialect` 调 `dialectCodecFor`）。 */

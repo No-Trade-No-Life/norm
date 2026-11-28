@@ -65,9 +65,9 @@ describe('协议契约（protocol schema）', () => {
     });
   });
 
-  it('钉死基址的协议只有 deepseek、opencode-go、openai-oauth 与 qwen：哪条协议不要 base_url 是数据，不是判断', () => {
+  it('钉死基址的协议只有 deepseek、opencode-go、openai-oauth、qwen 与 naive：哪条协议不要 base_url 是数据，不是判断', () => {
     const fixed = PROTOCOL_SCHEMAS.filter((schema) => schema.base_url !== null);
-    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'openai-oauth', 'qwen']);
+    expect(fixed.map((schema) => schema.protocol)).toEqual(['deepseek', 'opencode-go', 'openai-oauth', 'qwen', 'naive']);
   });
 
   it('图像能力只落在 openai-oauth 上：订阅上游没有 Images 端点，出图走 image_generation 工具', () => {
@@ -125,6 +125,28 @@ describe('协议契约（protocol schema）', () => {
       image: false,
       search: false,
     });
+  });
+
+  it('naive：基址是 NaiveAI 官方那一跳，只要密钥，方言是 openai-chat（NaiveAI 没有 Responses）', () => {
+    expect(schemaOf('naive')).toEqual({
+      protocol: 'naive',
+      dialect: 'openai-chat',
+      base_url: 'https://api.naive.ai/v1',
+      fields: ['provider_key'],
+      oauth: false,
+      stream_only: false,
+      audio: [],
+      image: false,
+      search: false,
+    });
+    expect(protocolUrlFor('naive', 'https://api.naive.ai/v1', 'naive-n0.5-flash', false)).toBe(
+      'https://api.naive.ai/v1/chat/completions',
+    );
+    expect(protocolUrlFor('naive', 'https://api.naive.ai/v1/', 'naive-n0.5-flash', true)).toBe(
+      'https://api.naive.ai/v1/chat/completions',
+    );
+    // 清单就是标准的 `{base}/models`：没有隐藏型号要协议补，也不用覆写路径。
+    expect(protocolFor('naive').modelsPath()).toBe('/models');
   });
 
   it('「OAuth 凭据」与「只认流式」各只落在 openai-oauth 一条协议上', () => {
@@ -263,5 +285,23 @@ describe('opencode-go 协议', () => {
 
   it('鉴权仍是 Bearer，与 openai-chat 同一套', () => {
     expect(protocolFor('opencode-go').headers('oc_sk_x')).toEqual(protocolFor('openai-chat').headers('oc_sk_x'));
+  });
+});
+
+/**
+ * NaiveAI 的请求契约：`ultrafast` 贵 10 倍且上游不回显档位，收下就无法核对——所以这条协议
+ * 声明「发出去之前把 `service_tier` 剥掉」。剥掉的动作在转发层（`src/routes/relay.ts`），
+ * 这里只钉住「哪条协议声明了它」，因为多声明一条就等于有人能悄悄把成本乘十。
+ */
+describe('naive 协议', () => {
+  it('只有 naive 声明 `drop_service_tier`，别的协议一个字节都不碰', () => {
+    const dropping = PROTOCOLS.filter((protocol) => protocolFor(protocol).drop_service_tier === true);
+    expect(dropping).toEqual(['naive']);
+  });
+
+  it('其余传输规则全部沿用 openai-chat 方言：鉴权头与 chat 同一套，没有会话头', () => {
+    const profile = protocolFor('naive');
+    expect(profile.headers('nv_sk_x')).toEqual(protocolFor('openai-chat').headers('nv_sk_x'));
+    expect(profile.session_header).toBeUndefined();
   });
 });

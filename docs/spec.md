@@ -170,6 +170,7 @@ Norm 把**线缆方言（`Dialect`）**和**上游协议契约（`Protocol`）**
 
 | `openai-audio` | `openai-chat` | `{base}/chat/completions`（同一个基址上还有音频） | 把一条**已经说 OpenAI 音频**的上游接进来（Qwen LB / OpenAI / 任何兼容实现）：`{base}/audio/transcriptions` 与 `{base}/audio/speech` 零翻译直通，基址由用户填——这正是 Qwen LB 接进 NormAI 的那种接法，只是换了个入口 |
 | `qwen` | `openai-chat` | `{base}/compatible-mode/v1/chat/completions` | 百炼：文本与视觉零翻译复用 `openai-chat`（`image_url` 内容块原样透传）；音频走 `qwen-native` 方言（原生多模态生成 / 语音合成器），因为兼容层没有转写端点 |
+| `naive` | `openai-chat` | `{base}/chat/completions` | NaiveAI（`api.naive.ai/v1`，官方只有 Chat Completions 与 Anthropic Messages，没有 Responses）：零翻译复用 `openai-chat`；钉死官方基址，并叠加一条请求契约 `drop_service_tier`——`ultrafast` 贵 10 倍且上游不回显档位，接住了就无法核对，转发层在发出去之前把它删掉 |
 
 四种方言都支持流式：同方言直通时上游 SSE 原样透传（仅 `openai-chat` 入口在流末补一条 `norm` 事件与 `data: [DONE]`）；跨方言时由 `src/codecs.ts` 拆成规范事件，再由 `src/dialects.ts` 渲染成入口方言自己的 SSE 帧。
 
@@ -177,7 +178,7 @@ Norm 把**线缆方言（`Dialect`）**和**上游协议契约（`Protocol`）**
 
 | 字段 | 取值 | 含义 |
 |---|---|---|
-| `protocol` | 上表六种（四种通用方言 + 厂商契约协议） | 上游提供商说哪种协议 |
+| `protocol` | 上表那些（四种通用方言 + 厂商契约协议） | 上游提供商说哪种协议 |
 | `enabled` | `true` / `false` | 这条上游提供商现在用不用。禁用后不参与选址 |
 | `scope` | `private` / `pool` | `private` 只给主人用；`pool` 进公共池，全站在自己的上游不可用时兜底用它。只有站点地址（`POOL_ADMIN_ADDRESSES`）能写 `pool` |
 

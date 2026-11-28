@@ -11,6 +11,7 @@ const PROTOCOL_KEYS: Record<string, CopyKey> = {
   'openai-oauth': 'proto.openai-oauth',
   'openai-audio': 'proto.openai-audio',
   qwen: 'proto.qwen',
+  naive: 'proto.naive',
 };
 
 /** 枚举值原样兜底，避免后端新增取值被前端吞掉。 */
