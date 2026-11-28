@@ -48,10 +48,36 @@ async function proxyTransport(proxy: ProxyTarget): Promise<Tunnel> {
     const { value, done } = await reader.read();
     return done ? undefined : value;
   });
-  const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => {
-    writer.write(data).catch(() => undefined);
-  });
-  return { read: () => outer.read(), write: (data) => outer.write(data) };
+  const sink = chainedSink({ write: (bytes) => writer.write(bytes) });
+  const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => sink.enqueue(data));
+  return { read: () => outer.read(), write: (data) => sink.writeThrough(outer, data) };
+}
+
+/**
+ * 隧道写请求体时的背压。
+ *
+ * 两件事必须同时成立：字节先过 TLS（`tls.write` 把明文交给协议层，密文由回调交给 socket），
+ * 以及块间等 socket 真的收下。只做前者（fire-and-forget）会在请求体变大时把 socket 的写队列
+ * 挤爆——现场边界：50KB 通、64KB 起必断，与响应大小无关；只做后者等于把明文直接写进 socket。
+ *
+ * 所以回调用一条 promise 链把 socket 写串起来（它是同步签名，等不了），对外按 16KiB 交给
+ * TLS、块间等那条链。等的是 `write()` 的 promise，不是 `writer.ready`：后者在 Workers 的
+ * socket writer 上不可依赖。
+ */
+function chainedSink(sink: { write: (data: Uint8Array) => Promise<unknown> }) {
+  let pending: Promise<unknown> = Promise.resolve();
+  return {
+    enqueue: (data: Uint8Array) => {
+      pending = pending.then(() => sink.write(data)).catch(() => undefined);
+    },
+    settled: () => pending,
+    writeThrough: async (tls: { write: (data: Uint8Array) => unknown }, data: Uint8Array) => {
+      for (let offset = 0; offset < data.length; offset += WRITE_CHUNK_BYTES) {
+        tls.write(data.subarray(offset, offset + WRITE_CHUNK_BYTES));
+        await pending;
+      }
+    },
+  };
 }
 
 async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
@@ -103,10 +129,9 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
     }
     return transport.read();
   });
-  const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => {
-    transport.write(data).catch(() => undefined);
-  });
-  return { read: () => tls.read(), write: (data) => tls.write(data) };
+  const sink = chainedSink({ write: (bytes) => transport.write(bytes) });
+  const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => sink.enqueue(data));
+  return { read: () => tls.read(), write: (data) => sink.writeThrough(tls, data) };
 }
 
 /**
