@@ -13,6 +13,9 @@
  *   CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID（缺省用 wrangler 的 OAuth 登录态；
  *   OAuth 访问令牌只有一小时寿命，过期就先让 wrangler 续一次再读回来）
  *
+ * 窗口内调用太少（<MIN_INVOCATIONS）时不判定、退出 0：没有流量就没有「实测 CPU」可比，
+ * 拿空窗口报「漂了」只会叫醒一个无事可做的修复线程。
+ *
  * 现行常数不在这里抄一份：直接读线上 `GET /api/v1/pricing` 的 `gas_fee.schedule`。
  * 抄一份的话，改价那天忘了改脚本就会拿两套价去比（#97 之后已经发生过一次），
  * 而真正决定收多少钱的只有线上那一份。
@@ -25,6 +28,7 @@ import { join } from 'node:path';
 const NORM_DIR = process.env.NORM_DIR ?? join(homedir(), 'Projects', 'norm');
 const PRICING_URL = process.env.NORM_PRICING_URL ?? 'https://norm.ntnl.io/api/v1/pricing';
 const WRANGLER_AUTH_FILE = process.env.WRANGLER_AUTH_FILE ?? join(homedir(), '.wrangler', 'config', 'default.toml');
+const MIN_INVOCATIONS = 20;       // 少于这么多调用就不判定（空窗口没有信噪比）
 const NANOS_PER_CPU_MS = 20;      // $0.02 / 1M CPU-ms
 const BYTES_PER_TOKEN = 4;        // JSON 文本的粗略密度
 
@@ -167,6 +171,14 @@ if (gql.errors?.length || !gql.data) {
 const buckets = gql.data.viewer.accounts[0].workersInvocationsAdaptive;
 const invocations = buckets.reduce((n, b) => n + b.sum.requests, 0);
 const cpuUs = buckets.reduce((n, b) => n + b.sum.cpuTimeUs, 0);
+
+// 空窗口 / 流量断档：没有调用就没有「实测 CPU」，判定不了定额是否漂移，直接跳过。
+if (invocations < MIN_INVOCATIONS) {
+  const skipped = { window_hours: hours, invocations, skipped: true };
+  if (asJson) console.log(JSON.stringify(skipped));
+  else console.log(`${hours}h 窗口内只有 ${invocations} 次调用（< ${MIN_INVOCATIONS}），样本不足，本轮不判定 CPU 定额。`);
+  process.exit(0);
+}
 
 // 体积只存在于账本里：把窗口内的 input_tokens 折成字节，再按 cpu_per_kb 计
 const epoch = Math.floor(start.getTime() / 1000);
