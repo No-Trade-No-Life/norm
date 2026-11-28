@@ -4,10 +4,10 @@ import type { Principal } from '../auth';
 import { hostOf } from '../base-urls';
 import { fail } from '../http';
 import { randomToken } from '../ids';
-import { probeProviderModels, type ModelProbe } from '../models';
-import { resolveProvider } from '../store';
+import { mergeDeclaredModels, probeProviderModels, type ModelProbe } from '../models';
+import { listProviders, resolveProvider } from '../store';
 import { affinityKeyOf } from '../routing';
-import { type ModelInfo } from '../protocols';
+import { type ModelInfo, type Protocol } from '../protocols';
 
 type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal } }>;
 
@@ -25,6 +25,12 @@ type ModelsContext = Context<{ Bindings: Env; Variables: { principal: Principal 
  *
  * 一次只回答一条上游。账户的**全部**模型在哪里看：`/api/v1/models` 把每条的答案
  * 并成一张表（见 `model-catalog.ts`），两个面共用同一段探测（`src/models.ts`）。
+ *
+ * 「一次一条上游」说的是**问**：密钥只有一条，清单只能一条一条问。但清单要回答的是
+ * 「这个上游能调什么」，而有些型号根本问不出来——图像工具方言与音频原生方言的型号表
+ * 写在代码里（见 `mergeDeclaredModels`）。它们属于账户里启用的那些协议，所以按账户
+ * 启用情况一并报出；否则下游网关永远发现不了图片型号，图像入口也就永远选不中真正的
+ * 那条上游。
  */
 export const modelRoutes = new Hono<{ Bindings: Env; Variables: { principal: Principal } }>();
 
@@ -101,7 +107,7 @@ async function resolve(c: ModelsContext, model?: string): Promise<Resolved> {
 
   return {
     ok: true,
-    items: probe.items,
+    items: mergeDeclaredModels(probe.items, await enabledProtocols(c.env, address)),
     // 全是 0 的账单：没有 Gas（没打出去一次生成）、没有 token、也没去读余额。
     norm: {
       request_id: `req_${randomToken(12)}`,
@@ -120,4 +126,14 @@ async function resolve(c: ModelsContext, model?: string): Promise<Resolved> {
       pool: choice.via === 'pool',
     },
   };
+}
+
+/**
+ * 账户里启用的那些上游的协议：清单要替它们报出问不出来、只能声明的型号。
+ *
+ * 纯读：与选址那次读同一张 `providers` 表，不写 `last_used_at`、不动亲和。
+ */
+async function enabledProtocols(env: Env, address: string): Promise<Protocol[]> {
+  const providers = await listProviders(env, address);
+  return providers.filter((provider) => provider.enabled === 1).map((provider) => provider.protocol);
 }

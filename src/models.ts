@@ -134,6 +134,30 @@ export function declaredModelsFor(protocol: Protocol): ModelInfo[] {
   return [...audio, ...image];
 }
 
+/**
+ * 把「问不出来、只能由协议声明」的型号并进一份清单。
+ *
+ * 问的是同一条上游的清单端点，可它答不了全部：图像工具方言没有 `/images/generations`
+ * 可列（型号表在 `OPENAI_IMAGE_MODELS` 里），音频原生方言的那两条原生接口也不在兼容层
+ * 清单里。这些型号属于账户里**启用的那些协议**，而不属于这一次恰好被选中的那一条——
+ * 图像入口自己按能力选址，所以清单里不报出来，下游网关就永远发现不了图片型号，只能靠
+ * 人照着价目表一行行抄进来（并对不上上游真正支持的那几个）。
+ *
+ * 只并声明过的那部分：直通方言的型号是上游自己列的，替它编就是撒谎。
+ */
+export function mergeDeclaredModels(items: ModelInfo[], protocols: readonly Protocol[]): ModelInfo[] {
+  const seen = new Set(items.map((item) => item.id));
+  const merged = [...items];
+  for (const protocol of protocols) {
+    for (const declared of declaredModelsFor(protocol)) {
+      if (seen.has(declared.id)) continue;
+      seen.add(declared.id);
+      merged.push(declared);
+    }
+  }
+  return merged;
+}
+
 /** 上游失败时压成一句话：状态码 + 上游原话的前一小段（换行压平，宁短勿长）。 */
 export function probeErrorText(probe: ModelProbe): string | null {
   if (probe.ok) return null;

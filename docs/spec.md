@@ -260,6 +260,12 @@ Worker 调用，那一笔由站点自己吃掉（SDK 常在启动时先问一次
 会差几个数量级。型号表还替上游补进清单（`provider_models`），所以 `/v1/models` 与模型总表上
 看得见 `qwen3-tts-flash` 这类型号，音频调用才选得中那条上游。
 
+同一条道理对图像也成立：ChatGPT 订阅没有 `/images/generations` 可列，图片型号表在
+`OPENAI_IMAGE_MODELS` 里。数据面清单因此不只看「这一次被选中的那条上游答了什么」——
+问不出来的型号按账户里启用的协议一并报出（`mergeDeclaredModels`）。漏掉这一步的代价是
+可观测的：下游网关同步模型时只看得见文本型号，图片调用在它自己那一侧就被判成
+「没有上游提供这个型号」，永远走不到 Norm 的图像入口。
+
 记账沿用同一本账：`gas_fee_nanos` 照收（这次执行真的发生过），`token_nanos` 仍是「转给上游
 提供方的价值」（调用自有上游时为 0），只是用量多了两列——`audio_ms` 与 `audio_characters`。
 音频的账单也随响应回去：转写把 `cost_usd_nanos` 写进响应体，合成挂在 `X-Norm-Fee-Nanos`
