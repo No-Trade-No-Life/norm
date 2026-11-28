@@ -111,7 +111,7 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
 | DELETE | `/api/v1/providers/:id` | 撤销 |
 
 基址从哪来由**协议**决定（见 `GET /api/v1/protocols` 的 `base_url` / `fields`）：四条通用方言
-要 `base_url` + `provider_key`；`deepseek` / `qwen` / `openai-oauth` 的基址由协议钉死，只填凭据。
+要 `base_url` + `provider_key`；`deepseek` / `qwen` / `naive` / `openai-oauth` 的基址由协议钉死，只填凭据。
 给固定基址的协议另填一个不同的 `base_url` 会被拒（`400 base_url_fixed`）——那不是在配置，
 是在以为它能选。
 
@@ -129,8 +129,8 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
   "label": "OpenAI 个人",                     // 可选，人看的名字。不填 / 空串 / null 都是
                                             // 「没有标签」，库里存 NULL，页面改用主机名认它
   "base_url": "https://api.openai.com/v1",    // 通用方言必填；创建后只有本人能改。
-                                            // deepseek / opencode-go 的基址由协议给定，
-                                            // 不能也不用填
+                                            // deepseek / opencode-go / naive 的基址由
+                                            // 协议给定，不能也不用填
   "provider_key": "sk-…",                     // 明文，只在这一次请求里；服务端立刻 AES-256-GCM 封装
 
   // 可选。protocol 默认最通用的 openai-chat；scope 默认 private，不写就绝不会进池子；
@@ -140,6 +140,9 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
                                      // | deepseek（说 Responses，按官方时段分两档计价）
                                      // | opencode-go（说 Chat，基址是 OpenCode Go 官方推理面，
                                      //    每个请求自动带 x-opencode-session）
+                                     // | naive（说 Chat，基址是 NaiveAI 官方的 /v1，
+                                     //    发出去之前剥掉 service_tier）
+                                     // | qwen / openai-oauth / openai-search / openai-audio
   "scope": "private",                // private | pool（pool = 公开：进公共池，全站兜底用它；
                                      // 只有 POOL_ADMIN_ADDRESSES 里的地址能写 pool）
   "enabled": true,                  // 禁用后不参与选址
@@ -191,7 +194,7 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
 
 线缆方言只有**四种**（入站与出站共用同一套方言名）；上游协议在方言之上声明厂商契约（`deepseek` 与 `openai-oauth` 复用 `openai-responses`、`opencode-go` 复用 `openai-chat`，新增厂商协议零新增翻译代码）。**直通判定只比线缆上的方言**（`entry.dialect === profile.dialect`）：
 
-| 入口 | 客户端 | 上游方言 `openai-chat`（含 `opencode-go`） | `openai-responses`（含 `deepseek`、`openai-oauth`） | `anthropic-messages` | `google-gemini` |
+| 入口 | 客户端 | 上游方言 `openai-chat`（含 `opencode-go`、`naive`） | `openai-responses`（含 `deepseek`、`openai-oauth`） | `anthropic-messages` | `google-gemini` |
 |---|---|---|---|---|---|
 | `POST /v1/chat/completions` | OpenAI SDK / curl | 直通 | 桥接 | 桥接 | 桥接 |
 | `POST /v1/responses` | Codex CLI | 桥接 | 直通 | 桥接 | 桥接 |
@@ -471,7 +474,7 @@ false）、`allowed_domains` / `blocked_domains`（裸域名数组、互斥，�
 
 | `upstream_protocol` | 问的上游路径 | 上游回什么 |
 |---|---|---|
-| `openai-chat` / `openai-responses` / `deepseek` | `{base}/models` | `data[].id` + `created` + `owned_by` |
+| `openai-chat` / `openai-responses` / `deepseek` / `naive` | `{base}/models` | `data[].id` + `created` + `owned_by` |
 | `opencode-go` | `{base}/openai/v1/models` | `data[].id` + `created` + `owned_by` |
 | `openai-oauth` | `{base}/models?client_version=<v>` | `models[].slug`：形状与四种方言都不同，而且按客户端版本发——版本太旧回一张空表。`v` 钉在 `oauth.ts` 的 `OAUTH_CLIENT_VERSION`，上游抬门槛时跟着抬 |
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |

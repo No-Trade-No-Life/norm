@@ -373,6 +373,7 @@ export const PROTOCOLS = [
   'openai-oauth',
   'openai-audio',
   'qwen',
+  'naive',
 ] as const;
 export type Protocol = (typeof PROTOCOLS)[number];
 

@@ -111,6 +111,18 @@ function usageOnlyFrame(payload: string): boolean {
  */
 const withStoreFalse = (body: string): string => JSON.stringify({ ...obj(JSON.parse(body)), store: false });
 
+/**
+ * 把 `service_tier` 剥掉：有的上游（`naive`）为高档位收 10 倍价钱却不回显档位，接住了就
+ * 无法核对，而账本仍按标准价收——那个字段对它只能是一个没人能验的成本放大器。
+ * 只对声明了 `drop_service_tier` 的协议生效；请求里本来没有它，就原样发出去，一个字节都不动。
+ */
+const withoutServiceTier = (body: string): string => {
+  const parsed = obj(JSON.parse(body));
+  if (!('service_tier' in parsed)) return body;
+  delete parsed.service_tier;
+  return JSON.stringify(parsed);
+};
+
 const withUsage = (body: Record<string, unknown>): string =>
   JSON.stringify({ ...body, stream_options: { ...obj(body.stream_options), include_usage: true } });
 
@@ -306,10 +318,16 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
         ? withUsage(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model) as Record<string, unknown>)
         : JSON.stringify(codec.encodeRequest(parseInbound(entry.dialect, raw, model, stream), model));
 
-    // 有的上游只认 `store: false`（ChatGPT 的 responses 端点：写 true 或干脆不写，回的都是
-    // `400 Store must be set to false`）。补在这一层，是因为它既可能是客户端的原始字节，
-    // 也可能是刚由桥重建出来的请求体——同一条路补一次，就不用两条路各写一遍。
-    const upstreamBody = foldInstructions(provider.protocol, profile.store_false === true ? withStoreFalse(outbound) : outbound);
+    // 两处请求契约都作用在「即将发出去的那份字节」上，所以只在这一层写一次：
+    //   1. 这条上游不认的档位先剥掉（`naive` 的 `ultrafast` 贵 10 倍且不回显，见 `withoutServiceTier`）；
+    //   2. 有的上游只认 `store: false`（ChatGPT 的 responses 端点：写 true 或干脆不写，回的都是
+    //      `400 Store must be set to false`）。它既可能是客户端的原始字节，也可能是刚由桥重建出来的
+    //      请求体——同一条路补一次，就不用两条路各写一遍。
+    const withoutTier = profile.drop_service_tier === true ? withoutServiceTier(outbound) : outbound;
+    const upstreamBody = foldInstructions(
+      provider.protocol,
+      profile.store_false === true ? withStoreFalse(withoutTier) : withoutTier,
+    );
 
     // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
     // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
