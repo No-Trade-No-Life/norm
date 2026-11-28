@@ -108,6 +108,20 @@ export function openaiHeaders(providerKey: string): Record<string, string> {
   };
 }
 
+/**
+ * ChatGPT 的转写端点（`/backend-api/transcribe`）是**桌面专属**的：它按 User-Agent 认客户端，
+ * `codex_cli_rs` 那一支会被挡在外面。这一行是 OpenAI-LB 上跑通的那个值，原样搬过来。
+ */
+const TRANSCRIPTION_USER_AGENT = 'Codex Desktop/26.519.81530 (macos; aarch64)';
+
+/**
+ * 转写的上游头：与文本同一份凭据（Bearer + 工作区 + originator），只把 User-Agent 换成
+ * 桌面那一个。名字留在 `oauth.ts`，因为「这条上游怎么认人」是凭据契约，不是音频编解码。
+ */
+export function openaiTranscriptionHeaders(providerKey: string): Record<string, string> {
+  return { ...openaiHeaders(providerKey), 'User-Agent': TRANSCRIPTION_USER_AGENT };
+}
+
 /** 展示用提示：OAuth 凭据没有「前四位」，能核对的是工作区 id。 */
 export function openaiAccountHint(accountId: string): string {
   return accountId.length <= 8 ? accountId : `${accountId.slice(0, 4)}…${accountId.slice(-4)}`;

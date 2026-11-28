@@ -335,6 +335,10 @@ export const COPY = {
     zh: '这条协议还接音频：/v1/audio/transcriptions 与 /v1/audio/speech，同一把 Token、同一本账。',
     en: 'This protocol also serves audio: /v1/audio/transcriptions and /v1/audio/speech, on the same Token and the same ledger.',
   },
+  'pr.audio_hint_transcriptions': {
+    zh: '这条协议还接转写：/v1/audio/transcriptions，同一把 Token、同一本账（它没有合成的路）。',
+    en: 'This protocol also serves transcription: /v1/audio/transcriptions, on the same Token and the same ledger (no speech path).',
+  },
   'pr.field_enabled': { zh: '启用这条上游提供商', en: 'Enable this provider' },
   'pr.field_proxy': { zh: '代理（可选）', en: 'Proxy (optional)' },
   'pr.field_proxy_placeholder': { zh: 'http://user:pass@1.2.3.4:8888', en: 'http://user:pass@1.2.3.4:8888' },

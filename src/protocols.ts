@@ -28,7 +28,7 @@ import {
   type ModelInfo,
   type StreamEvent,
 } from './codecs';
-import type { AudioDialect, AudioKind } from './audio';
+import { audioCodecFor, type AudioDialect, type AudioKind } from './audio';
 import type { SearchDialect } from './search';
 import type { ImageDialect } from './images';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
@@ -270,6 +270,10 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    *   2. 凭据是一对 OAuth 令牌（`oauth: true`）：转发前先换新，换完写回库；
    *   3. 上游只认流式（`stream_only: true`）：非流式调用在 Norm 这一侧就被挡住。
    *
+   * 它也是唯一一条能转写的订阅上游（`audio: 'chatgpt-desktop'`）：订阅额度里没有 OpenAI
+   * 平台的 `/v1/audio/transcriptions`，只有桌面客户端的 `/backend-api/transcribe`——地址在
+   * Codex 根旁边，身份也要换成桌面那一个（见 `audio.ts` 的 `chatgpt-desktop`）。只有转写。
+   *
    * 基址钉死为官方那一个：没有第二个合法的 ChatGPT 订阅地址，让人填只是把「该不该有出口」
    * 这个决定混进地址里。出站问题由另一维解决——`proxy_url`（`src/tunnel.ts`）：Worker 的
    * `fetch` 会在出站请求上盖 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接回 403
@@ -300,6 +304,7 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
     image: 'openai-image-tool',
     // 同一条方言两种上游：`openai-search` 协议把信封做好卖给我们，这条自己包工具（见第 5 条）。
     search: 'openai-search',
+    audio: 'chatgpt-desktop',
   },
 
   /**
@@ -396,7 +401,8 @@ export function schemaOf(protocol: Protocol): ProtocolSchema {
     fields: fixed === null ? ['base_url', 'provider_key'] : ['provider_key'],
     oauth: profile.oauth === true,
     stream_only: profile.stream_only === true,
-    audio: profile.audio === undefined ? [] : ['transcriptions', 'speech'],
+    // 音频能力是方言的事实：`openai-oauth` 只接转写，这里不另写一份「哪条协议能合成」。
+    audio: profile.audio === undefined ? [] : audioCodecFor(profile.audio).kinds,
     image: profile.image !== undefined,
     search: profile.search !== undefined,
   };

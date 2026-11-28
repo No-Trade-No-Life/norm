@@ -12,6 +12,15 @@ import {
   readQwenTranscription,
 } from '../src/qwen';
 
+const base64url = (value: string): string => btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+/** 造一份 OpenAI OAuth 凭据：`chatgpt_account_id` 在 access token 的 claim 里。 */
+const credentialText = (accountId: string): string =>
+  JSON.stringify({
+    access_token: `header.${base64url(JSON.stringify({ exp: 1, 'https://api.openai.com/auth': { chatgpt_account_id: accountId } }))}.signature`,
+    refresh_token: 'rt_123',
+  });
+
 describe('Qwen 的原生音频接口（Qwen LB 那一层适配）', () => {
   it('格式：MIME 与扩展名都认得，认不出就交回 null', () => {
     expect(audioFormatOf('audio/wav', 'clip.bin')).toBe('wav');
@@ -126,14 +135,66 @@ describe('上游音频方言', () => {
     expect(qwen.serves({ kind: 'speech', model: 'gpt-4o-mini-tts', input: 'x', voice: 'alloy' })).toBe(false);
   });
 
-  it('openai-audio 什么都接：请求体原样转发', () => {
+  it('openai-audio 什么都接：请求体原样转发，地址就是 {base}/audio/*', () => {
     const passthrough = audioCodecFor('openai-audio');
     const wire = { contentType: 'application/json', body: '{"model":"m","input":"hi","voice":"v"}' };
     expect(passthrough.serves({ kind: 'speech', model: 'anything', input: 'hi', voice: 'v' })).toBe(true);
-    expect(passthrough.encode({ kind: 'speech', model: 'anything', input: 'hi', voice: 'v' }, wire)).toEqual({
-      path: '/audio/speech',
+    expect(
+      passthrough.encode({ kind: 'speech', model: 'anything', input: 'hi', voice: 'v' }, wire, 'https://lb.example/v1/'),
+    ).toEqual({ url: 'https://lb.example/v1/audio/speech', wire });
+  });
+
+  it('chatgpt-desktop：地址在 Codex 根旁边（去掉 /codex 再 /transcribe），请求体原样', () => {
+    const desktop = audioCodecFor('chatgpt-desktop');
+    const wire = { contentType: 'multipart/form-data; boundary=test', body: new Uint8Array([0, 82, 73, 70, 70]) };
+    const ask = { kind: 'transcriptions' as const, model: 'gpt-4o-transcribe', language: null, file: {} as any };
+
+    expect(desktop.encode(ask, wire, 'https://chatgpt.com/backend-api/codex')).toEqual({
+      url: 'https://chatgpt.com/backend-api/transcribe',
       wire,
     });
+    // 没有 `/codex` 的基址原样用：这条路不靠猜，靠的是「转写与 Codex API 同一个根」。
+    expect(desktop.encode(ask, wire, 'https://chatgpt.com/backend-api')).toEqual({
+      url: 'https://chatgpt.com/backend-api/transcribe',
+      wire,
+    });
+    // 订阅额度里没有一条合成的路：合成的请求不能落到这条方言上。
+    expect(desktop.serves(ask)).toBe(true);
+    expect(desktop.serves({ kind: 'speech', model: 'tts-1', input: 'hi', voice: 'alloy' })).toBe(false);
+  });
+
+  it('chatgpt-desktop 的头：凭据照旧，User-Agent 换成桌面那一个（端点只认桌面客户端）', () => {
+    const credential = credentialText('acct_12345678');
+    const headers = audioCodecFor('chatgpt-desktop').headers?.(credential);
+    expect(headers).toEqual({
+      Authorization: `Bearer ${(JSON.parse(credential) as { access_token: string }).access_token}`,
+      'chatgpt-account-id': 'acct_12345678',
+      originator: 'codex_cli_rs',
+      'User-Agent': 'Codex Desktop/26.519.81530 (macos; aarch64)',
+    });
+  });
+
+  it('chatgpt-desktop 读转写应答：文本 + 上游报的时长，没报就是 0 毫秒', async () => {
+    const desktop = audioCodecFor('chatgpt-desktop');
+    const ask = { kind: 'transcriptions' as const, model: 'gpt-4o-transcribe', language: null, file: {} as any };
+
+    expect(await desktop.read(ask, Response.json({ text: '你好世界' }))).toEqual({
+      kind: 'transcriptions',
+      text: '你好世界',
+      usage: { ...ZERO_AUDIO_USAGE, milliseconds: 0 },
+    });
+    expect(await desktop.read(ask, Response.json({ text: '嗯', usage: { seconds: 2.5 } }))).toEqual({
+      kind: 'transcriptions',
+      text: '嗯',
+      usage: { ...ZERO_AUDIO_USAGE, milliseconds: 2500 },
+    });
+    await expect(desktop.read(ask, Response.json({}))).rejects.toThrow(/text/);
+  });
+
+  it('chatgpt-desktop 替订阅补一行转写型号：清单抓过之后，音频调用才选得中它', () => {
+    expect(audioCodecFor('chatgpt-desktop').catalog()).toEqual([
+      { id: 'gpt-4o-transcribe', owned_by: 'openai', modalities: { input: ['audio'], output: ['text'] } },
+    ]);
   });
 
   it('qwen-native 的清单：音频型号带 audio 模态，音频调用才选得中它', () => {

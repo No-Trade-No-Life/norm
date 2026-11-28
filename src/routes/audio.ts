@@ -125,7 +125,9 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
     return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
   }
 
-  const call = codec.encode(ask, wire);
+  // 地址由方言给：直通与原生方言是 `{base}/audio/*` 与 `{base}/api/v1/*`，ChatGPT 的转写
+  // 端点在文本基址旁边（`{base 去掉 /codex}/transcribe`）。谁家的路长什么样，只有它自己知道。
+  const call = codec.encode(ask, wire, provider.base_url);
   const accounting: Accounting = {
     env: c.env,
     address,
@@ -151,10 +153,11 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
       env: c.env,
       address: provider.address,
       provider,
-      url: `${provider.base_url.replace(/\/+$/, '')}${call.path}`,
+      url: call.url,
       init: {
         method: 'POST',
-        headers: { 'Content-Type': call.wire.contentType, ...profile.headers(providerKey) },
+        // 头默认属于协议；「同一个上游、另一套身份」的端点（ChatGPT 的桌面转写）由方言自己带一份。
+        headers: { 'Content-Type': call.wire.contentType, ...(codec.headers ?? profile.headers)(providerKey) },
         body: call.wire.body,
       },
     });
