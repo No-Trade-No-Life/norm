@@ -119,6 +119,34 @@ const MAX_ATTEMPTS = 2;
 /** 上游的原话：状态码 + 响应体。改写它只会让「为什么失败」更难查。 */
 type UpstreamFailure = { status: number; contentType: string; text: string };
 
+/**
+ * ChatGPT 的 codex 端点把 `instructions` **原样回显**进响应：写 48KB 进去，响应里就多出
+ * 约 190KB（实测 48KB → 197KB；同样的文字改成 developer 消息 → 7KB）。而 Norm 的隧道读
+ * 大响应时会断（现场：响应过 ~190KB 就「连接在响应读完之前就断了」）。
+ *
+ * 同一条指令换个位置——折成 `input` 里第一条 developer 消息——模型看到的是一样的，响应里
+ * 却不再回显。只对 `openai-oauth` 生效：别的上游回不回显都不影响链路，不改它们的语义。
+ */
+export function foldInstructions(protocol: string, body: string): string {
+  if (protocol !== 'openai-oauth') return body;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return body;
+  }
+  const instructions = parsed.instructions;
+  if (typeof instructions !== 'string' || instructions.trim() === '') return body;
+  const input = parsed.input;
+  // 只折数组形状的 input：字符串 input 是另一种说法，不在这里改它。
+  if (!Array.isArray(input)) return body;
+  delete parsed.instructions;
+  parsed.input = [{ role: 'developer', content: [{ type: 'input_text', text: instructions }] }, ...input];
+  return JSON.stringify(parsed);
+}
+
+
+
 async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   const principal = c.get('principal');
   const address = principal.address;
@@ -268,7 +296,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     // 有的上游只认 `store: false`（ChatGPT 的 responses 端点：写 true 或干脆不写，回的都是
     // `400 Store must be set to false`）。补在这一层，是因为它既可能是客户端的原始字节，
     // 也可能是刚由桥重建出来的请求体——同一条路补一次，就不用两条路各写一遍。
-    const upstreamBody = profile.store_false === true ? withStoreFalse(outbound) : outbound;
+    const upstreamBody = foldInstructions(provider.protocol, profile.store_false === true ? withStoreFalse(outbound) : outbound);
 
     // 分时价（DeepSeek 高峰 / 低谷）的档位在请求开始的这一刻定下，之后算账都用它：
     // 跨过档位边界的请求按起点算，不按收尾算（与 DeepSeek LB 同一口径）。
