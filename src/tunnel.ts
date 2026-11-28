@@ -51,7 +51,7 @@ async function proxyTransport(proxy: ProxyTarget): Promise<Tunnel> {
   const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => {
     writer.write(data).catch(() => undefined);
   });
-  return { read: () => outer.read(), write: (data) => writeInChunks(outer, writer, data) };
+  return { read: () => outer.read(), write: (data) => outer.write(data) };
 }
 
 async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
@@ -106,28 +106,27 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
   const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => {
     transport.write(data).catch(() => undefined);
   });
-  return { read: () => tls.read(), write: (data) => writeInChunks(tls, { ready: Promise.resolve() }, data) };
+  return { read: () => tls.read(), write: (data) => tls.write(data) };
 }
 
 /**
- * 一次 TLS 写会把整段字节摊成若干条 record，而每条 record 写进 socket 是**不等背压**的
- * （回调里只能 `.catch(() => undefined)`）。请求体一大，socket 的写队列就会被挤爆，而失败
- * 在回调里被吞掉——上游收到的是一份半截请求，于是不回响应直接断开，Norm 这一侧只好报
+ * 分块把一段字节交给一个异步写函数：一条 TLS record 的量级（16 KiB）为一块。
+ *
+ * 为什么必须切：一次把整个请求体交给 `subtls`，它会同步摊成若干条 record，而每条 record
+ * 写进 socket 的 promise 在回调里只能吞掉错误。几百 KB 一起塞进去时 socket 的写队列会爆，
+ * 失败被吞掉，上游收到的是一份半截请求——于是它不回响应直接断开，Norm 这一侧只能报
  * 「Provider 不可达：连接在响应读完之前就断了」，调用方连 4xx 都看不到。
  *
- * 分块 + 块间等 socket 消化：一块的量级取一条 TLS record（16 KiB），既不做无谓的小写，
- * 也不给写队列塞进超过它一次能吃掉的东西。
+ * 块间 `await` 一次，让上一块真正进了 socket 再写下一块。
  */
 const WRITE_CHUNK_BYTES = 16 * 1024;
 
 export async function writeInChunks(
-  tls: { write: (data: Uint8Array) => unknown },
-  upstream: { ready: Promise<void> },
+  write: (chunk: Uint8Array) => Promise<void>,
   data: Uint8Array,
 ): Promise<void> {
   for (let offset = 0; offset < data.length; offset += WRITE_CHUNK_BYTES) {
-    await tls.write(data.subarray(offset, offset + WRITE_CHUNK_BYTES));
-    await upstream.ready;
+    await write(data.subarray(offset, offset + WRITE_CHUNK_BYTES));
   }
 }
 
@@ -175,7 +174,7 @@ export async function fetchViaProxy({
   for (const [name, value] of Object.entries(init.headers)) lines.push(`${name}: ${value}`);
   if (body !== null) lines.push(`Content-Length: ${body.byteLength}`);
   await tunnel.write(encoder.encode(`${lines.join('\r\n')}\r\n\r\n`));
-  if (body !== null) await tunnel.write(body);
+  if (body !== null) await writeInChunks((chunk) => tunnel.write(chunk), body);
 
   return readResponse(tunnel);
 }
