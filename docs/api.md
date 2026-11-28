@@ -428,7 +428,7 @@ false）、`allowed_domains` / `blocked_domains`（裸域名数组、互斥，�
 |---|---|---|
 | `openai-chat` / `openai-responses` / `deepseek` | `{base}/models` | `data[].id` + `created` + `owned_by` |
 | `opencode-go` | `{base}/openai/v1/models` | `data[].id` + `created` + `owned_by` |
-| `openai-oauth` | `{base}/models` | **问不到**：它的清单端点要一个 `client_version`、回的是 `{models:[{slug}]}`，不在四种方言的清单形状里。这一版不探它——选址把「清单未知」的上游当可用，跑错型号会被上游的 400 划掉一行 |
+| `openai-oauth` | `{base}/models?client_version=<v>` | `models[].slug`：形状与四种方言都不同，而且按客户端版本发——版本太旧回一张空表。`v` 钉在 `oauth.ts` 的 `OAUTH_CLIENT_VERSION`，上游抬门槛时跟着抬 |
 | `anthropic-messages` | `{base}/v1/models` | `data[].id` + `created_at`（ISO 字符串 → unix 秒），没有 `owned_by` |
 | `google-gemini` | `{base}/v1beta/models` | `models[].name`，`models/` 前缀被剥掉 |
 

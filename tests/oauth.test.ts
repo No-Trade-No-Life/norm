@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  decodeOauthModels,
   openaiAccountHint,
   openaiAuthorize,
   openaiCredentialOf,
@@ -153,5 +154,27 @@ describe('OpenAI OAuth 授权', () => {
   it('展示提示取工作区 id 的首尾，不是密钥的首尾', () => {
     expect(openaiAccountHint('acct_abcdefgh')).toBe('acct…efgh');
     expect(openaiAccountHint('short')).toBe('short');
+  });
+});
+
+describe('ChatGPT 订阅的模型清单', () => {
+  it('只认 slug，别的字段一律不读：这份清单不是任何一种方言的形状', () => {
+    expect(
+      decodeOauthModels({
+        models: [
+          { slug: 'gpt-6.2-astra', prefer_websockets: true, input_modalities: ['text', 'image'] },
+          { slug: 'gpt-6.2-sol' },
+          { slug: '' },
+          {},
+        ],
+      }),
+    ).toEqual([{ id: 'gpt-6.2-astra' }, { id: 'gpt-6.2-sol' }]);
+  });
+
+  it('读不懂就是空清单，不猜', () => {
+    expect(decodeOauthModels({})).toEqual([]);
+    expect(decodeOauthModels({ models: 'nope' })).toEqual([]);
+    expect(decodeOauthModels(null)).toEqual([]);
+    expect(decodeOauthModels(undefined)).toEqual([]);
   });
 });
