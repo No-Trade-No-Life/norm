@@ -15,6 +15,7 @@ import {
 } from '../gas';
 import { fail } from '../http';
 import { uuidv7 } from '../ids';
+import { logError } from '../log';
 import { audioRateFor, quoteAudio } from '../pricing';
 import { protocolFor } from '../protocols';
 import { affinityKeyOf } from '../routing';
@@ -116,6 +117,11 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
   try {
     providerKey = await providerCredential({ env: c.env, address: provider.address, provider });
   } catch (error) {
+    logError('provider_credential_error', error, {
+      request_id: requestId,
+      provider_id: provider.id,
+      protocol: provider.protocol,
+    });
     return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
   }
 
@@ -153,6 +159,12 @@ async function proxyAudio(c: AudioContext, ask: AudioAsk, wire: AudioWire): Prom
       },
     });
   } catch (error) {
+    logError('upstream_network_error', error, {
+      request_id: requestId,
+      provider_id: provider.id,
+      protocol: provider.protocol,
+      host: accounting.host,
+    });
     const settled = await recordFailure(accounting, 'network_error', 502);
     return c.json(
       { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },

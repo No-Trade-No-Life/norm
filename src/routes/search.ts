@@ -15,6 +15,7 @@ import {
 import { MAX_HOST_ATTEMPTS } from '../hosts';
 import { HttpError, fail } from '../http';
 import { uuidv7 } from '../ids';
+import { logError } from '../log';
 import { isModelNotServed } from '../models';
 import { ZERO_AUDIO_USAGE } from '../pricing';
 import { protocolFor } from '../protocols';
@@ -113,6 +114,11 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
   try {
     providerKey = await providerCredential({ env: c.env, address: provider.address, provider });
   } catch (error) {
+    logError('provider_credential_error', error, {
+      request_id: requestId,
+      provider_id: provider.id,
+      protocol: provider.protocol,
+    });
     return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
   }
 
@@ -161,6 +167,12 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
         },
       });
     } catch (error) {
+      logError('upstream_network_error', error, {
+        request_id: requestId,
+        provider_id: provider.id,
+        protocol: provider.protocol,
+        host: accounting.host,
+      });
       const settled = await recordFailure(accounting, 'network_error', 502);
       return c.json(
         { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
@@ -177,6 +189,13 @@ searchRoutes.post('/web-search', async (c: SearchContext) => {
         // 上游回了 200，却没有一页结果（或回的不是搜索信封）：这次搜索不算成功，Token 费
         // 不收，但那次上游请求真的发生过，Gas 照收——与文本、音频的失败同一口径。
         const readFailure = error instanceof HttpError ? error : null;
+        if (readFailure === null) {
+          logError('search_read_error', error, {
+            request_id: requestId,
+            provider_id: provider.id,
+            host: accounting.host,
+          });
+        }
         const settled = await recordFailure(accounting, readFailure?.code ?? 'search_data_missing', 502);
         return c.json(
           {
