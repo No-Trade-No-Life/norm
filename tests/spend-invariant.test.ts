@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Env } from '../src/env';
 import { accountRoutes } from '../src/routes/account';
-import { availableNanos, settle, totalSpendNanos, type PrincipalCounters, type RequestRecord } from '../src/store';
+import {
+  availableNanos,
+  chargeSettlement,
+  totalSpendNanos,
+  writeSettlement,
+  type PrincipalCounters,
+  type RequestRecord,
+  type Settled,
+} from '../src/store';
 
 const MIGRATIONS = fileURLToPath(new URL('../migrations', import.meta.url));
 const ALICE = 'alice-spend-invariant';
@@ -18,24 +26,37 @@ function migrate(db: DatabaseSync): void {
   }
 }
 
-/** 只覆盖 settle / recordRequest 用到的那几个 D1 方法，跑的是真 SQLite。 */
+/** 只覆盖结算两段用到的那几个 D1 方法，跑的是真 SQLite；`meta` 用 SQLite 自己的计数。 */
 function d1(db: DatabaseSync): Env['DB'] {
+  const written = () => {
+    const row = db.prepare('SELECT changes() AS n').get() as { n: number } | undefined;
+    return Number(row?.n ?? 0);
+  };
   return {
     prepare(sql: string) {
       return {
         bind(...params: (string | number | null)[]) {
           return {
             first: async <T>() => (db.prepare(sql).get(...params) as T | undefined) ?? null,
-            all: async <T>() => ({ results: db.prepare(sql).all(...params) as T[] }),
+            all: async <T>() => ({
+              results: db.prepare(sql).all(...params) as T[],
+              meta: { rows_read: 0, rows_written: written() },
+            }),
             run: async () => {
               db.prepare(sql).run(...params);
-              return { success: true };
+              return { success: true, meta: { changes: written(), rows_written: written() } };
             },
           };
         },
       };
     },
   } as unknown as Env['DB'];
+}
+
+/** 结算两段连起来：先扣钱（这一段的行数由 meta 给出），再写请求行。 */
+async function settle(env: Env, row: RequestRecord): Promise<Settled> {
+  const charge = await chargeSettlement(env, row);
+  return writeSettlement(env, row, charge);
 }
 
 let sequence = 0;
