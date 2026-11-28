@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DIALECTS, dialectCodecFor } from '../src/codecs';
+import { OAUTH_CLIENT_VERSION } from '../src/oauth';
 import { PROTOCOL_SCHEMAS, PROTOCOLS, protocolFor, protocolUrlFor, schemaOf, streamPathFor } from '../src/protocols';
 
 /**
@@ -137,6 +138,11 @@ describe('协议契约（protocol schema）', () => {
  * `oauth.ts`（见 tests/oauth.test.ts）。少一条，线上拿到的都是上游一句不好查的 4xx。
  */
 describe('openai-oauth 协议', () => {
+  it('清单是它自己的端点：查询串必须带上钉住的客户端版本', () => {
+    // 版本不是可有可无的装饰：版本太旧上游回 `{models:[]}`，与「订阅里没有这个模型」同形。
+    expect(protocolFor('openai-oauth').modelsPath()).toBe(`/models?client_version=${OAUTH_CLIENT_VERSION}`);
+  });
+
   it('路径就是 Codex 的 /responses，拼在用户填的那一跳后面', () => {
     const profile = protocolFor('openai-oauth');
     expect(profile.path('gpt-5.6-luna')).toBe('/responses');

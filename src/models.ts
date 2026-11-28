@@ -16,6 +16,7 @@ import { imageCodecFor } from './images';
 import { dialectCodecFor, type ModelInfo } from './codecs';
 import type { Env } from './env';
 import { nowSeconds } from './ids';
+import { decodeOauthModels } from './oauth';
 import { ratesFor, type Rates } from './pricing';
 import { protocolFor, tariffFor, type Protocol } from './protocols';
 import { providerCredential } from './credentials';
@@ -117,7 +118,9 @@ export async function probeProviderModels({
   // 上游清单 + 协议替它补的型号：Qwen 的兼容层清单只列兼容层型号，转写与合成两条原生
   // 接口不在里面，而它们的型号表在代码里（`qwen.ts`）。不补这一步，音频调用会在选址时
   // 被「清单里没有它」划掉——那条规则本来是用来记住「上游自己承认跑不了」的。
-  return { ok: true, items: [...codec.decodeModels(parsed), ...declaredModelsFor(provider.protocol)], latency_ms: Date.now() - startedAt };
+  // 清单形状由协议决定：OAuth 那条回 `{models:[{slug}]}`，别的方言一律走 codec。
+  const read = provider.protocol === 'openai-oauth' ? decodeOauthModels : codec.decodeModels;
+  return { ok: true, items: [...read(parsed), ...declaredModelsFor(provider.protocol)], latency_ms: Date.now() - startedAt };
 }
 
 /**

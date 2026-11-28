@@ -32,7 +32,7 @@ import type { AudioDialect, AudioKind } from './audio';
 import type { SearchDialect } from './search';
 import type { ImageDialect } from './images';
 import { DEEPSEEK_HOLIDAYS, DEEPSEEK_PEAK_WEEKDAYS, DEEPSEEK_PEAK_WINDOWS_UTC, DEEPSEEK_TARIFFS } from './deepseek';
-import { openaiHeaders } from './oauth';
+import { OAUTH_CLIENT_VERSION, openaiHeaders } from './oauth';
 import { longestMatch, type PriceAnchor, type Tariff } from './pricing';
 import { SESSION_HEADER } from './sessions';
 
@@ -285,14 +285,15 @@ const PROTOCOL_PROFILES: Record<Protocol, ProtocolProfile> = {
    *    「宿主模型 + `web_search`」包成一次搜索（见 `src/search.ts` 的 `openai-oauth`
    *    那一条）。下游仍然只写 `source: "openai"`，换的是上游是谁。
    *
-   * 已知边界：它的清单端点要一个 `client_version`、回的形状是 `{models:[{slug}]}`——不是
-   * 任何一种方言的清单。本版不探它的清单（`modelsPath` 沿用方言默认，问出来就是上游的 400
-   * 原话）：选址把清单未知的上游当可用，一次跑错型号会被 `isModelNotServed` 划掉。
+   * 清单是它自己的一种形状，不是任何一种方言的：`GET {base}/models?client_version=<v>`
+   * 回 `{models:[{slug, …}]}`（解码见 `oauth.ts` 的 `decodeOauthModels`）。这一条必须问——
+   * 问不到清单的上游在选址那里只是「清单未知」，新模型不会出现在任何一张表里。
    */
   'openai-oauth': {
     dialect: 'openai-responses',
     base_url: 'https://chatgpt.com/backend-api/codex',
     headers: openaiHeaders,
+    modelsPath: () => `/models?client_version=${OAUTH_CLIENT_VERSION}`,
     oauth: true,
     stream_only: true,
     store_false: true,

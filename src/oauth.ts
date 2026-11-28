@@ -20,6 +20,7 @@
  * 授权的浏览器，回调回来时再一起送回来——换币要的正是 verifier，而它只存在于那只浏览器里。
  * 没有服务端流程表，就没有过期清理，也没有多实例一致性问题。
  */
+import type { ModelInfo } from './codecs';
 import { nowSeconds } from './ids';
 
 const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
@@ -200,4 +201,28 @@ function base64Url(bytes: Uint8Array): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+/**
+ * Codex CLI 的清单端点：`{base}/models?client_version=<version>`。
+ *
+ * 它按客户端版本发清单：版本太旧回一张空表（实测 `0.58.0` 得到 `{models:[]}`，与「这张
+ * 订阅真的没有模型」长得一模一样），省掉这个参数则直接 400。所以钉一个够新的版本，
+ * 而不是不传——空表和错误在选址那里是两种事实。
+ */
+export const OAUTH_CLIENT_VERSION = '1.0.0';
+
+/**
+ * 读这份清单：`{models:[{slug, …}]}`，不是任何一种方言的形状。
+ *
+ * 只取 `slug`。清单里还挂着几十条客户端行为参数（工具、截断、并发、沙箱），那是 Codex
+ * 自己的事；模态也不写——上游只声明了输入，输出那张表它没说，按方言同一套规矩宁缺勿猜。
+ */
+export function decodeOauthModels(json: unknown): ModelInfo[] {
+  const models = (json as { models?: unknown } | null)?.models;
+  if (!Array.isArray(models)) return [];
+  return models.flatMap((entry) => {
+    const slug = (entry as { slug?: unknown } | null)?.slug;
+    return typeof slug === 'string' && slug.length > 0 ? [{ id: slug }] : [];
+  });
 }
