@@ -321,9 +321,48 @@ curl https://norm.ntnl.io/v1/audio/speech \
 
 文本的非流式应答另有顶层 `cost_usd_nanos`（与 `norm.fee_nanos` 同值），方便只读体的网关。
 
-**费用永远随响应一起回来，没有事后回捞的接口。** 一个请求一次往返：没有第二个查询端点、
-没有后台轮询、没有「先记 pending 再对账」——那套形状在 Cloudflare Worker 上要多一次调用、
+**费用永远随响应一起回来**：一个请求一次往返，Norm 在回响应之前就把这一笔结完了。**没有
+后台轮询，也没有「先记 pending 再对账」**——那套形状在 Cloudflare Worker 上要多一次调用、
 多一次 D1 读，换来的还是同一个数。
+
+### 请求费用查询（只认 Bearer 消费者密钥）
+
+`POST /v1/requests/query`：给定一批请求 ID，回它们各自已经落库的金额。
+
+这个端点不是为了「回捞自己刚花掉的钱」——那笔钱就在响应体与回执头里。它服务的是**上层
+网关**：网关手里的 ID 来自那次响应，而它结账的时刻与那次 HTTP 响应的生命周期并不重合
+（Cybion 就是这么结算的）。形状与网关从自己上游收的那一份一致，所以一条 Norm 可以被当作
+上游直接接进去。
+
+```bash
+curl https://norm.ntnl.io/v1/requests/query \
+  -H "Authorization: Bearer sk-norm-…" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["01930000-…","01930000-…"]}'
+```
+
+```jsonc
+{
+  "requests": [{
+    "request_id": "01930000-…",
+    "status": "ok", "model": "deepseek-flash",
+    "input_tokens": 1200, "cached_tokens": 900, "output_tokens": 40,
+    "cost_usd_nanos": 80390,      // = norm.fee_nanos，这次实扣的总额
+    "settlement_pending": false,  // 恒为 false：Norm 在回响应之前已经结完账
+    "created_at": 1764…
+  }],
+  "missing": ["01930000-…"]        // 没记录过、或不属于这把 Token
+}
+```
+
+三条纪律：
+
+- **只认本消费者**：查询条件里带着 `address` 与 `consumer_id`，拿着别人的请求 ID 也读不到
+  别人的金额——同一个 ID 在另一个账户、或同一账户的另一把 Token 下都是 `missing`。
+- **`settlement_pending` 恒为 `false`**：没有「还没算完」的那一态。字段留着是因为契约里有它，
+  调用方按 `null` 判断时会自然通过。
+- **纯读**：不写 `consumers.last_used_at`、不动账本、不计 Gas。一次最多问 200 个 ID，
+  空数组与超量都是 `400`。
 
 两条限制都是硬拒绝，都在打上游之前：
 
