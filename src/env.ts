@@ -8,7 +8,6 @@ export type Env = {
    * 不做任何 D1 写入也不打上游。实际生效值不会低于单次最低执行 Gas（GAS_FLOOR_NANOS）。
    */
   MIN_BALANCE_NANOS?: string;
-  GRANT_NANOS: string;
   SIGNATURE_WINDOW_SECONDS: string;
   TRUSTED_BASE_URLS: string;
   /**
@@ -37,10 +36,6 @@ export function minBalanceNanos(env: Env): number {
   const configured = Number(env.MIN_BALANCE_NANOS);
   const threshold = Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_MIN_BALANCE_NANOS;
   return Math.max(threshold, GAS_FLOOR_NANOS);
-}
-
-export function grantNanos(env: Env): number {
-  return Number(env.GRANT_NANOS);
 }
 
 export function signatureWindowSeconds(env: Env): number {

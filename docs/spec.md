@@ -110,7 +110,7 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 - `ledger` 只记账户级的钱，纯追加：`voucher`（券）/ `recharge`（充值）/ `withdraw`（提现）。
 - 余额单位是**纳美元**（integer，1e9 = $1），不用浮点：一次便宜的调用可能只值几十纳美元，
   微美元会把它们四舍五入成 0，而浮点存钱迟早在某一次求和里差一分钱。
-  新地址自动获得 $1.00 演示授信（`GRANT_NANOS = 1000000000`）。
+  新地址开户**不再赠金**：测试期的余额由管理员的欠费开关（`principals.overdraft`）兜住，不给每个新地址发券。
 - 失败收 Gas、不收 token：上游提供商报错或不可达时 `token_nanos = 0`，
   `fee_nanos = gas_billed_nanos`。Gas 买的是「这次被执行」本身——上游回 500 不代表 Worker 没被调用过。
   没打到上游的请求（体不是 JSON、余额不足）不记账也不扣，因为那没有「执行」可言。

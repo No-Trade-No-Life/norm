@@ -164,6 +164,17 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(settleGauge(fullFirst)).toBe(5_875);
   });
 
+  it('测试期允许欠费：余额为 0 也放行，价格不变', () => {
+    // 部署常量 ALLOW_OVERDRAFT = true：一个余额为 0 的新账户照样能进转发面。
+    const broke = new GasMeter({ availableNanos: 0 });
+    expect(broke.canStart()).toBe(true);
+    expect(broke.canAfford(1_000_000)).toBe(true);
+    expect(settleGauge(broke)).toBe(3_715);
+
+    // 关掉欠费时，同一个账户会被闸门挡在门外。
+    expect(new GasMeter({ availableNanos: 0, allowOverdraft: false }).canStart()).toBe(false);
+  });
+
   it('约束 1：结算冻结后禁止再追加计费或重复结算，未冻结前禁止读最终值', () => {
     const gas = new GasMeter({ availableNanos: 50_000 });
     expect(() => gas.finalTotal()).toThrow();
@@ -186,7 +197,9 @@ describe('GasMeter 动态累加与四条硬约束', () => {
   });
 
   it('约束 3：入口安全阈值（闸门 A）与预算检查（闸门 B/C）提前拒绝省费', () => {
-    const low = new GasMeter({ availableNanos: 9_999 });
+    // 这几条验证的是「关掉欠费时闸门仍然拦得住」：测试期 ALLOW_OVERDRAFT = true，
+    // 所以这里显式传 false，闸门逻辑本身不许因为部署常量的取值而失效。
+    const low = new GasMeter({ availableNanos: 9_999, allowOverdraft: false });
     expect(low.canStart()).toBe(false);
 
     // 即使部署变量把 MIN_BALANCE_NANOS 设得比最低执行 Gas 还低，也会被抬到 GAS_FLOOR_NANOS
@@ -195,7 +208,7 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(minBalanceNanos({} as Env)).toBe(DEFAULT_MIN_BALANCE_NANOS);
 
     // 闸门 C：余额不够覆盖「删模型(3行) + 删亲和(1行) + 二次 CPU + 结算(2行)」时放弃重试
-    const tight = new GasMeter({ availableNanos: 6_000 });
+    const tight = new GasMeter({ availableNanos: 6_000, allowOverdraft: false });
     tight.chargeD1Writes(D1_ROW_WRITES.consumer_touch); // 1_715 + 1,000 = 2,715
     const retryEstimate =
       (D1_ROW_WRITES.provider_model_delete + D1_ROW_WRITES.affinity_delete) * GAS_SCHEDULE.d1_row_write +
@@ -298,7 +311,7 @@ describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
     ).run('prv_1', address, 'p1', 'https://api.openai.com/v1', 'sk-a…z', 'sealed', 'aes-256-gcm', 'openai-chat', 1_700_000_000);
 
     // 余额 3,000：虽大于稳态最低 Gas 3,015，但写亲和(1,000) + touch(1,000) + settle(2,000) = 4,420 > 3,000
-    const gas = new GasMeter({ availableNanos: 3_000, minBalanceNanos: GAS_FLOOR_NANOS });
+    const gas = new GasMeter({ availableNanos: 3_000, minBalanceNanos: GAS_FLOOR_NANOS, allowOverdraft: false });
     spy.resetCounts();
     let caught: unknown;
     try {

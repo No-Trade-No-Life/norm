@@ -120,6 +120,15 @@ export const D1_ROW_WRITES = {
 } as const;
 
 /**
+ * 测试期：允许欠费（余额可以为负）。
+ *
+ * **部署级别的常量，不是运维开关**：改它 = 改代码 = 一次可审查的合并 + 一次部署，和改价
+ * 走同一条路。打开时，入口的余额闸门（`canStart` / `canAfford`）与结算时的「扣不满就少扣」
+ * 都不生效——账户可以透支使用上游，测试阶段用它替代开户赠金。上线前改回 false。
+ */
+export const ALLOW_OVERDRAFT = true;
+
+/**
  * 毛利率（基点，10,000 bps = 100%）。
  * 目前定为 0（即 1.0× 纯成本价，维持不亏本）；未来调整只需改这一行。
  */
@@ -169,6 +178,12 @@ export type GasMeterOptions = {
   minBalanceNanos?: number;
   /** 毛利率（基点），默认取 GAS_MARGIN_BPS。 */
   marginBps?: number;
+  /**
+   * 是否允许欠费，默认取部署常量 `ALLOW_OVERDRAFT`。
+   *
+   * 生产路径永不传它；只有单测会传 `false` 来验证「闸门在关掉欠费时仍然拦得住」。
+   */
+  allowOverdraft?: boolean;
 };
 
 /**
@@ -181,6 +196,7 @@ export class GasMeter {
   readonly availableNanos: number;
   readonly minBalanceNanos: number;
   private readonly marginBps: number;
+  private readonly overdraft: boolean;
   private rawNanos: number = GAS_ENTRY_BASE_NANOS;
   private finalized = false;
   private frozenTotal = 0;
@@ -188,6 +204,7 @@ export class GasMeter {
   constructor(options: GasMeterOptions) {
     this.availableNanos = options.availableNanos;
     this.marginBps = options.marginBps ?? GAS_MARGIN_BPS;
+    this.overdraft = options.allowOverdraft ?? ALLOW_OVERDRAFT;
     const floor = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_NANOS, this.marginBps);
     this.minBalanceNanos = Math.max(options.minBalanceNanos ?? DEFAULT_MIN_BALANCE_NANOS, floor);
   }
@@ -199,7 +216,8 @@ export class GasMeter {
 
   /** 入口安全阈值检查：不达标即提前拒绝，避免发生任何 D1 写入与上游调用。 */
   canStart(): boolean {
-    return this.availableNanos >= this.minBalanceNanos;
+    // 测试期允许欠费：闸门整体旁路（见 ALLOW_OVERDRAFT）。
+    return this.overdraft || this.availableNanos >= this.minBalanceNanos;
   }
 
   /** 累加一项真实发生的原始成本（纳美元整数）。冻结后调用直接抛错。 */
@@ -263,7 +281,7 @@ export class GasMeter {
 
   /** 判断余额快照是否足以覆盖当前已累计 + 后续必经/待执行成本（用于中途中止省费）。 */
   canAfford(additionalRawNanos = 0): boolean {
-    return this.availableNanos >= this.projectedTotal(additionalRawNanos);
+    return this.overdraft || this.availableNanos >= this.projectedTotal(additionalRawNanos);
   }
 
   /**

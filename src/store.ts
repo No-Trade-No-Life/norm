@@ -3,12 +3,12 @@ import { audioCodecFor, type AudioAsk } from './audio';
 import { imageCodecFor, type ImageAsk } from './images';
 import { type Modalities, type ModelInfo, protocolFor, type Protocol } from './protocols';
 import type { SearchDialect } from './search';
-import { grantNanos } from './env';
 import { isTrusted } from './base-urls';
 import { affinityTtlSeconds } from './env';
 import { fail } from './http';
 import { nowSeconds, randomToken } from './ids';
 import {
+  ALLOW_OVERDRAFT,
   D1_ROW_WRITES,
   D1_SETTLE_WRITES,
   GAS_AFFINITY_UPSERT_NANOS,
@@ -103,26 +103,15 @@ export type ProviderRow = {
 };
 
 /**
- * 地址第一次出现就开户并给演示授信。三条语句在同一个 batch 里，
- * 保证「给钱」与「记这笔钱」不会分叉；重复调用安全。
+ * 地址第一次出现就开户。重复调用安全（主键是地址）。
  *
- * 返回「这次是不是真的开了户」：主键是地址，授信那一条用 `WHERE voucher_nanos = 0`
- * 兜住，重复调用既不会开出第二个账户，也不会再发一张券。
+ * 开户**不再发演示授信**：测试期靠管理员打开欠费开关（`principals.overdraft = 1`，
+ * 余额可以为负）来跑通链路，而不是给每个新地址发一笔券——发出去的券谁都能拿去烧上游。
  */
 export async function ensurePrincipal(env: Env, address: string, at: number): Promise<boolean> {
-  const grant = grantNanos(env);
-  const [opened] = await env.DB.batch([
-    env.DB.prepare('INSERT OR IGNORE INTO principals (address, created_at) VALUES (?, ?)').bind(address, at),
-    env.DB.prepare(
-      `INSERT INTO ledger (id, address, kind, amount_nanos, available_after_nanos, created_at)
-       SELECT ?, address, 'voucher', ?, ?, ? FROM principals
-       WHERE address = ? AND voucher_nanos = 0`,
-    ).bind(randomToken(), grant, grant, at, address),
-    env.DB.prepare(
-      `UPDATE principals SET voucher_nanos = ?
-       WHERE address = ? AND voucher_nanos = 0`,
-    ).bind(grant, address),
-  ]);
+  const opened = await env.DB.prepare('INSERT OR IGNORE INTO principals (address, created_at) VALUES (?, ?)')
+    .bind(address, at)
+    .run();
   return (opened.meta.changes ?? 0) > 0;
 }
 
@@ -801,7 +790,12 @@ export type SettlementCharge = {
  *   - 上游提供方的入账是纯加法 `SET earn_nanos = earn_nanos + ? RETURNING earn_nanos`，
  *     在 SQLite 里天然原子、可交换、无需乐观锁，且直接返回准确的 `earn_after_nanos`。
  */
-export async function chargeSettlement(env: Env, row: RequestRecord): Promise<SettlementCharge> {
+export async function chargeSettlement(
+  env: Env,
+  row: RequestRecord,
+  // 生产路径永不传第三个参数：默认取部署常量。单测传 false 验证「不欠费时会截断」。
+  allowOverdraft: boolean = ALLOW_OVERDRAFT,
+): Promise<SettlementCharge> {
   const isExternal = Boolean(row.providerUser && row.providerUser !== row.address);
   const gasDue = row.gasFeeNanos;
   // Token 费按真价记：自有上游不是免费，只是「自己转给了自己」。记成 0 会让账本说不出
@@ -816,11 +810,13 @@ export async function chargeSettlement(env: Env, row: RequestRecord): Promise<Se
     if (!current) throw new Error(`账户不存在：${row.address}`);
 
     // 先扣 Gas（给 Norm），余额有剩再扣 Token（转给上游提供方）；差额由第二段记成 unbilled。
+    // 测试期允许欠费时不做截断：该扣多少扣多少，余额可以是负数，
+    // `unbilled` 恒为 0——和入口的余额闸门是同一条开关。
     const avail = Math.max(availableNanos(current), 0);
-    const gasBilled = Math.min(gasDue, avail);
+    const gasBilled = allowOverdraft ? gasDue : Math.min(gasDue, avail);
     // 自转自不需要余额：同一账户扣多少就加回多少，净额恒为 0，所以按真价全额记；
-    // 跨账户转移只能转出真正扣得到的钱。
-    const tokenBilled = isExternal ? Math.min(tokenDue, Math.max(avail - gasBilled, 0)) : tokenDue;
+    // 跨账户转移只能转出真正扣得到的钱（欠费账户例外）。
+    const tokenBilled = allowOverdraft || !isExternal ? tokenDue : Math.min(tokenDue, Math.max(avail - gasBilled, 0));
 
     // 消费方只增 gas_spend / token_spend；自转自的那笔 earn 在同一条语句里加回同一账户
     // （仍只算 1 行写，不额外收 Gas）；盯住所有减项计数器防并发透支。
