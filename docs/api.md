@@ -56,11 +56,11 @@ message = "norm-v1\n" + METHOD + "\n" + PATH + "\n" + timestamp + "\n" + sha256h
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/v1/account/me` | `{address, label, balance_nanos, recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, spend_nanos, net_supply_nanos, withdraw_nanos, requests, providers, usage:{input_tokens,cached_tokens,output_tokens}, billed:{gas_fee_nanos,gas_billed_nanos,token_nanos,token_billed_nanos,unbilled_nanos}, earned:{requests,input_tokens,cached_tokens,output_tokens,token_nanos}}` |
-| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 消费请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页 |
+| GET | `/api/v1/account/usage?limit=50&before=<request_id>` | 消费请求记录（不含内容），按 `request_id`（UUID v7）倒序游标翻页；每行顺带 `provider_label`（按 `providers` 主键查出），明细页不必再拉聚合 |
 | GET | `/api/v1/account/earnings?limit=50&before=<request_id>` | 上游 Token 收入记录（他人调用本账户上游转入的 Token 明细，含 `earn_before_nanos` / `earn_after_nanos`） |
 | GET | `/api/v1/account/ledger?limit=50&cursor=<rowid>` | 账户级记账流水（券 / 充值 / 提现），游标是上一页最后一行的 `cursor` |
-| GET | `/api/v1/account/usage/by-consumer` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, gas_fee_nanos, token_nanos, fee_nanos}` |
-| GET | `/api/v1/account/usage/by-provider` | 按上游提供商聚合（同上，`provider_id` / `provider_label` / `is_own`） |
+| GET | `/api/v1/account/usage/by-consumer?days=30` | 按下游消费者密钥聚合：`{consumer_id, consumer_name, key_hint, requests, input_tokens, cached_tokens, output_tokens, gas_fee_nanos, token_nanos, fee_nanos}`。`days` 是时间窗（缺省或 `0` = 全部历史），服务端按 UUID v7 主键区间切，不扫窗外历史 |
+| GET | `/api/v1/account/usage/by-provider?days=30` | 按上游提供商聚合（同上，`provider_id` / `provider_label` / `is_own`），时间窗同 `by-consumer` |
 
 请求记录里每一行都能自己重算一遍：
 
