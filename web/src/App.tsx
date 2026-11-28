@@ -20,7 +20,8 @@ import { TranscriptionsPage } from './pages/transcriptions';
 import { WebSearchPage } from './pages/web-search';
 import { ProvenancePage } from './pages/provenance';
 import { UsagePage } from './pages/usage';
-import { UsageBreakdownPage } from './pages/usage-breakdown';
+import { UsageByConsumerPage } from './pages/usage-by-consumer';
+import { UsageByProviderPage } from './pages/usage-by-provider';
 import { UsageEarningsPage } from './pages/usage-earnings';
 import { UsageLedgerPage } from './pages/usage-ledger';
 import { UsageRequestsPage } from './pages/usage-requests';
@@ -105,7 +106,11 @@ const ROUTES: Array<{ path: string; element: ReactNode }> = [
   { path: '/usage/requests', element: <UsageRequestsPage /> },
   { path: '/usage/earnings', element: <UsageEarningsPage /> },
   { path: '/usage/ledger', element: <UsageLedgerPage /> },
-  { path: '/usage/breakdown', element: <UsageBreakdownPage /> },
+  // 两个聚合维度各是一页、各一条查询：谁在花 / 钱花在哪，不该互相买单。
+  { path: '/usage/by-consumer', element: <UsageByConsumerPage /> },
+  { path: '/usage/by-provider', element: <UsageByProviderPage /> },
+  // 旧链接（拆页前的「聚合」）不再是一个页面，直接落到其中一页上。
+  { path: '/usage/breakdown', element: <Navigate replace to="/usage/by-provider" /> },
   { path: '/provenance', element: <ProvenancePage /> },
   { path: '/attestation', element: <AttestationPage /> },
   { path: '/about', element: <AboutPage /> },
