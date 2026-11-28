@@ -35,11 +35,20 @@ export const GAS_SCHEDULE = {
    */
   log_event: 10,
   /**
-   * 基础 CPU 保守估（≈ 5 CPU-ms × $0.02 / 1M CPU-ms = 100 纳）：
-   * 覆盖鉴权 SHA-256、JSON 解析、AES-GCM 解封、选址与结算拼装。
-   * Workers 运行时不暴露精确 V8 CPU-ms，因此按执行路径保守定额，不拿含 I/O 的墙钟耗时冒充。
+   * 基础 CPU 定额（35 CPU-ms × $0.02 / 1M CPU-ms = 700 纳）。
+   *
+   * 这不再是「拍一个 5 ms 保底」：35 ms 是 24 小时窗口里实测的均值
+   * （`workersInvocationsAdaptive.sum.cpuTimeUs ÷ sum.requests`，2026-11-27T02Z–11-28T02Z
+   * = 121.9 s / 1,895 次 = 64.3 ms，其中与体量无关的部分按回归截距取 35 ms）。
+   * 与体量成正比的另一半交给 `cpu_per_kb`，由 `chargeCpuForBytes()` 按入站体积累加。
    */
-  cpu_base: 100,
+  cpu_base: 700,
+  /**
+   * 与入站体积成正比的 CPU（纳 / KB）：实测回归斜率 0.3865 µs/token，
+   * 按 4 B/token、20 纳/CPU-ms 折算 ≈ 1.93 纳/KB，取 2。
+   * 长上下文会话的解析与重建（跨方言桥接尤甚）全部落在这条上。
+   */
+  cpu_per_kb: 2,
   /** 跨方言协议与工具调用桥接的额外 CPU（≈ +5 CPU-ms）。同方言直通不收。 */
   cpu_bridge: 100,
   /** 流式 SSE 逐帧拆包与用量嗅探的额外 CPU（≈ +3 CPU-ms）。非流式不收。 */
@@ -100,7 +109,7 @@ export function applyGasMargin(rawNanos: number, marginBps: number = GAS_MARGIN_
   return Math.ceil((rawNanos * (10_000 + marginBps)) / 10_000);
 }
 
-/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 100 + 5 + 0 = 415 纳）。 */
+/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 700 + 5 + 0 = 1,015 纳）。 */
 export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.worker_invocation +
   GAS_SCHEDULE.log_event +
@@ -120,12 +129,12 @@ export const GAS_TOKEN_TRANSFER_NANOS = D1_ROW_WRITES.token_transfer * GAS_SCHED
 /** 写一次会话亲和的成本（1,000 纳：affinities WITHOUT ROWID 1 行）。 */
 export const GAS_AFFINITY_UPSERT_NANOS = D1_ROW_WRITES.affinity_upsert * GAS_SCHEDULE.d1_row_write;
 
-/** 一次完整推理执行的稳态最低 Gas（同日直通、非流式、无需 touch 与写亲和 = 2,415 纳）。 */
+/** 一次完整推理执行的稳态最低 Gas（同日直通、非流式、无需 touch 与写亲和 = 3,015 纳）。 */
 export const GAS_FLOOR_NANOS = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_NANOS);
 
 /**
  * 默认余额安全阈值（10,000 纳 = $0.00001）：
- * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（4,575 纳）乃至含一次模型纠偏重试（8,675 纳）。
+ * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（5,175 纳）乃至含一次模型纠偏重试（9,275 纳）。
  * 余额低于该阈值时在入口直接 402 拒绝，0 次 D1 写、0 次上游调用。
  */
 export const DEFAULT_MIN_BALANCE_NANOS = 10_000;
@@ -179,6 +188,12 @@ export class GasMeter {
       throw new Error(`非法的 Gas 增量：${amountNanos}`);
     }
     this.rawNanos += amountNanos;
+  }
+
+  /** 按入站体积累加 CPU（每 KB 2 纳）：体积越大，解析与重建越贵，不再由固定定额兜底。 */
+  chargeCpuForBytes(bytes: number): void {
+    if (!Number.isFinite(bytes) || bytes <= 0) return;
+    this.charge(Math.ceil(bytes / 1024) * GAS_SCHEDULE.cpu_per_kb);
   }
 
   /** 按真实 D1 行读数累加（每行 1 纳）。`meta.rows_read` 拿到多少就收多少。 */

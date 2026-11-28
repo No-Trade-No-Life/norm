@@ -154,6 +154,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
   // 原始字节先留住：同格式直通要把它一个字节不改地发出去。模型名也要在选址之前读出来
   // ——路由按模型筛候选，不先知道跑什么，就等于没筛。
   const rawBody = await c.req.text();
+  // 入站体积：CPU 里与体量成正比的那一半（JSON 解析、跨方言重建、序列化）按它计。
+  const inboundBytes = Number(c.req.header('content-length') ?? 0) || rawBody.length;
   let raw: Record<string, unknown>;
   try {
     raw = JSON.parse(rawBody) as Record<string, unknown>;
@@ -178,6 +180,8 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     availableNanos: principal.balanceNanos,
     minBalanceNanos: minBalanceNanos(c.env),
   });
+  // 与体量成正比的 CPU 在入口一次计入（2 纳/KB），固定部分在 GAS_ENTRY_BASE_NANOS 里。
+  gas.chargeCpuForBytes(inboundBytes);
   // 闸门 A（入口安全阈值）：低于安全阈值直接 402 拒绝，0 次 D1 写、0 次上游请求。
   if (!gas.canStart()) {
     fail(
