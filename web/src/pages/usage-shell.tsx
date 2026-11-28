@@ -20,8 +20,41 @@ export const USAGE_TABS = [
   { to: '/usage/requests', labelKey: 'us.tab_requests' },
   { to: '/usage/earnings', labelKey: 'us.tab_earnings' },
   { to: '/usage/ledger', labelKey: 'us.tab_ledger' },
-  { to: '/usage/breakdown', labelKey: 'us.tab_breakdown' },
+  // 两张聚合各是一页：它们查的是两张不同的表（按钥匙 / 按上游），放在一起就是其中一张白算。
+  { to: '/usage/by-consumer', labelKey: 'us.tab_by_consumer' },
+  { to: '/usage/by-provider', labelKey: 'us.tab_by_provider' },
 ] as const;
+
+/**
+ * 聚合的时间窗。默认近 30 天：聚合要把窗口内的请求全扫一遍，默认全量等于每开一次页面
+ * 就把整个历史读一遍——而「谁花的、花在哪」这类问题，一个季度以前的答案基本没人再看。
+ */
+export const WINDOWS = [
+  { days: 7, labelKey: 'us.window_7' },
+  { days: 30, labelKey: 'us.window_30' },
+  { days: 90, labelKey: 'us.window_90' },
+  { days: 0, labelKey: 'us.window_all' },
+] as const;
+
+/** 聚合页上的窗口选择器。窗口进查询 key：换窗口就是另一份数据，不能复用。 */
+export function WindowPicker({ days, onChange }: { days: number; onChange: (days: number) => void }) {
+  const { t } = useI18n();
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <span className="mr-1 text-xs text-muted-foreground">{t('us.window')}</span>
+      {WINDOWS.map((option) => (
+        <Button
+          key={option.days}
+          size="sm"
+          variant={days === option.days ? 'default' : 'ghost'}
+          onClick={() => onChange(option.days)}
+        >
+          {t(option.labelKey)}
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 /** 账本各页共用的外壳：标题 + 分区导航。子页面只负责自己那一段数据与表格。 */
 export function UsageShell({
