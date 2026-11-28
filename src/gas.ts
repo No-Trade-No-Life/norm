@@ -35,20 +35,22 @@ export const GAS_SCHEDULE = {
    */
   log_event: 10,
   /**
-   * 基础 CPU 定额（35 CPU-ms × $0.02 / 1M CPU-ms = 700 纳）。
+   * 基础 CPU 定额（70 CPU-ms × $0.02 / 1M CPU-ms = 1,400 纳）。
    *
-   * 这不再是「拍一个 5 ms 保底」：35 ms 是 24 小时窗口里实测的均值
-   * （`workersInvocationsAdaptive.sum.cpuTimeUs ÷ sum.requests`，2026-11-27T02Z–11-28T02Z
-   * = 121.9 s / 1,895 次 = 64.3 ms，其中与体量无关的部分按回归截距取 35 ms）。
+   * 35 ms 是 2026-11-27 那次 24 小时窗口的回归截距，11-28 复测已经不够：按现价应收的
+   * CPU 只有 CF 实测（`workersInvocationsAdaptive.sum.cpuTimeUs`，口径见
+   * `scripts/cpu-drift.mjs`）的 1/1.7，而最近几小时的长上下文流量稳定在 1/2.2–1/2.9。
+   * 这里连同 `cpu_per_kb` 整体翻倍，取「把两段流量都拉回 ±20% 内」的那个整数：
+   * 少收是实打实的成本，多收只是纳级零头，宁可靠保守一侧。
    * 与体量成正比的另一半交给 `cpu_per_kb`，由 `chargeCpuForBytes()` 按入站体积累加。
    */
-  cpu_base: 700,
+  cpu_base: 1_400,
   /**
-   * 与入站体积成正比的 CPU（纳 / KB）：实测回归斜率 0.3865 µs/token，
-   * 按 4 B/token、20 纳/CPU-ms 折算 ≈ 1.93 纳/KB，取 2。
+   * 与入站体积成正比的 CPU（纳 / KB）：跟着 `cpu_base` 一起翻倍到 4。
+   * 实测斜率随上游前缀缓存命中率在 3–15 纳/KB 之间摆，取靠保守一侧的 4；
    * 长上下文会话的解析与重建（跨方言桥接尤甚）全部落在这条上。
    */
-  cpu_per_kb: 2,
+  cpu_per_kb: 4,
   /** 跨方言协议与工具调用桥接的额外 CPU（≈ +5 CPU-ms）。同方言直通不收。 */
   cpu_bridge: 100,
   /** 流式 SSE 逐帧拆包与用量嗅探的额外 CPU（≈ +3 CPU-ms）。非流式不收。 */
@@ -109,7 +111,7 @@ export function applyGasMargin(rawNanos: number, marginBps: number = GAS_MARGIN_
   return Math.ceil((rawNanos * (10_000 + marginBps)) / 10_000);
 }
 
-/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 700 + 5 + 0 = 1,015 纳）。 */
+/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 1,400 + 5 + 0 = 1,715 纳）。 */
 export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.worker_invocation +
   GAS_SCHEDULE.log_event +
@@ -134,7 +136,8 @@ export const GAS_FLOOR_NANOS = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_
 
 /**
  * 默认余额安全阈值（10,000 纳 = $0.00001）：
- * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（5,175 纳）乃至含一次模型纠偏重试（9,275 纳）。
+ * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（5,875 纳：1,715 + 100 + 60 + 1,000 + 1,000 + 2,000 结算）；
+ * 更贵的纠偏重试路径由发往上游前的预算熔断兜底，不会欠费。
  * 余额低于该阈值时在入口直接 402 拒绝，0 次 D1 写、0 次上游调用。
  */
 export const DEFAULT_MIN_BALANCE_NANOS = 10_000;

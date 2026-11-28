@@ -108,42 +108,42 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(GAS_SCHEDULE.log_event).toBe(10);
     expect(GAS_SCHEDULE.read_subsidy).toBe(0);
     expect(GAS_MARGIN_BPS).toBe(0);
-    expect(GAS_ENTRY_BASE_NANOS).toBe(1_015);
+    expect(GAS_ENTRY_BASE_NANOS).toBe(1_715);
     expect(GAS_SETTLE_NANOS).toBe(2_000);
     expect(GAS_TOKEN_TRANSFER_NANOS).toBe(1_000);
     expect(D1_ROW_WRITES.token_transfer).toBe(1);
     expect(GAS_AFFINITY_UPSERT_NANOS).toBe(1_000);
-    expect(GAS_FLOOR_NANOS).toBe(3_015);
+    expect(GAS_FLOOR_NANOS).toBe(3_715);
     expect(DEFAULT_MIN_BALANCE_NANOS).toBe(10_000);
 
-    // 1. 稳态同日直通、非流式、自有上游（无写亲和、无跨用户转账）：1_015 + 2,000 = 3,015
+    // 1. 稳态同日直通、非流式、自有上游（无写亲和、无跨用户转账）：1_715 + 2,000 = 3,715
     const steady = new GasMeter({ availableNanos: 100_000 });
-    expect(steady.finalizeForSettlement()).toBe(3_015);
-    expect(steady.finalTotal()).toBe(3_015);
+    expect(steady.finalizeForSettlement()).toBe(3_715);
+    expect(steady.finalTotal()).toBe(3_715);
 
-    // 1b. 稳态同日直通、非流式、公共池/他人上游（额外 1 行上游入账写库）：1_015 + 1,000 + 2,000 = 4,015
+    // 1b. 稳态同日直通、非流式、公共池/他人上游（额外 1 行上游入账写库）：1_715 + 1,000 + 2,000 = 4,715
     const steadyPool = new GasMeter({ availableNanos: 100_000 });
     steadyPool.chargeD1Writes(D1_ROW_WRITES.token_transfer);
-    expect(steadyPool.finalizeForSettlement()).toBe(4_015);
+    expect(steadyPool.finalizeForSettlement()).toBe(4_715);
 
-    // 2. 同日直通 + 流式：3,015 + 60 = 3,075
+    // 2. 同日直通 + 流式：3,715 + 60 = 3,775
     const steadyStream = new GasMeter({ availableNanos: 100_000 });
     steadyStream.charge(GAS_SCHEDULE.cpu_stream);
-    expect(steadyStream.finalizeForSettlement()).toBe(3_075);
+    expect(steadyStream.finalizeForSettlement()).toBe(3_775);
 
-    // 3. 同日跨方言桥接 + 非流式：3,015 + 100 = 3,115
+    // 3. 同日跨方言桥接 + 非流式：3,715 + 100 = 3,815
     const bridge = new GasMeter({ availableNanos: 100_000 });
     bridge.charge(GAS_SCHEDULE.cpu_bridge);
-    expect(bridge.finalizeForSettlement()).toBe(3_115);
+    expect(bridge.finalizeForSettlement()).toBe(3_815);
 
     // 4. 跨方言桥接 + 流式 + 当日首次 touch（1 行）+ 首次写亲和（WITHOUT ROWID 1 行）：
-    //    1_015 + 1,000 + 100 + 60 + 1,000 + 2,000 = 5,175
+    //    1_715 + 1,000 + 100 + 60 + 1,000 + 2,000 = 5,875
     const fullFirst = new GasMeter({ availableNanos: 10_000 });
     expect(fullFirst.canStart()).toBe(true);
     fullFirst.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
     fullFirst.charge(GAS_SCHEDULE.cpu_bridge + GAS_SCHEDULE.cpu_stream);
     fullFirst.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(fullFirst.finalizeForSettlement()).toBe(5_175);
+    expect(fullFirst.finalizeForSettlement()).toBe(5_875);
   });
 
   it('约束 1：结算冻结后禁止再追加计费或重复结算，未冻结前禁止读最终值', () => {
@@ -160,9 +160,9 @@ describe('GasMeter 动态累加与四条硬约束', () => {
   });
 
   it('约束 2：毛利倍数向上取整，绝不向下截断少收', () => {
-    expect(applyGasMargin(3_015, 0)).toBe(3_015);
-    // +10%（1,000 bps）：3,015 × 1.1 = 3,317
-    expect(applyGasMargin(3_015, 1_000)).toBe(3_317);
+    expect(applyGasMargin(3_715, 0)).toBe(3_715);
+    // +10%（1,000 bps）：3,715 × 1.1 = 4,086.5 → 4,087
+    expect(applyGasMargin(3_715, 1_000)).toBe(4_087);
     // 出现小数时向上取整：1 × 1.0001 = 1.0001 → 2
     expect(applyGasMargin(1, 1)).toBe(2);
   });
@@ -178,14 +178,14 @@ describe('GasMeter 动态累加与四条硬约束', () => {
 
     // 闸门 C：余额不够覆盖「删模型(3行) + 删亲和(1行) + 二次 CPU + 结算(2行)」时放弃重试
     const tight = new GasMeter({ availableNanos: 6_000 });
-    tight.chargeD1Writes(D1_ROW_WRITES.consumer_touch); // 1_015 + 1,000 = 2,015
+    tight.chargeD1Writes(D1_ROW_WRITES.consumer_touch); // 1_715 + 1,000 = 2,715
     const retryEstimate =
       (D1_ROW_WRITES.provider_model_delete + D1_ROW_WRITES.affinity_delete) * GAS_SCHEDULE.d1_row_write +
       GAS_SCHEDULE.cpu_base +
       GAS_SETTLE_NANOS;
-    // 2,015 + 4,000 + 100 + 2,000 = 8,115 > 6,000 → 放弃重试
+    // 2,715 + 4,000 + 1,400 + 2,000 = 10,115 > 6,000 → 放弃重试
     expect(tight.canAfford(retryEstimate)).toBe(false);
-    // 结算本次第 1 次失败（2,015 + 2,000 = 4,015 <= 6,000）完全付得起
+    // 结算本次第 1 次失败（2,715 + 2,000 = 4,715 <= 6,000）完全付得起
     expect(tight.canAfford(GAS_SETTLE_NANOS)).toBe(true);
   });
 

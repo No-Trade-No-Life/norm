@@ -180,7 +180,7 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     availableNanos: principal.balanceNanos,
     minBalanceNanos: minBalanceNanos(c.env),
   });
-  // 与体量成正比的 CPU 在入口一次计入（2 纳/KB），固定部分在 GAS_ENTRY_BASE_NANOS 里。
+  // 与体量成正比的 CPU 在入口一次计入（4 纳/KB），固定部分在 GAS_ENTRY_BASE_NANOS 里。
   gas.chargeCpuForBytes(inboundBytes);
   // 闸门 A（入口安全阈值）：低于安全阈值直接 402 拒绝，0 次 D1 写、0 次上游请求。
   if (!gas.canStart()) {
