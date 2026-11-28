@@ -48,10 +48,42 @@ async function proxyTransport(proxy: ProxyTarget): Promise<Tunnel> {
     const { value, done } = await reader.read();
     return done ? undefined : value;
   });
-  const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => {
-    writer.write(data).catch(() => undefined);
-  });
+  const sink = chunkedWriter({ write: (bytes) => writer.write(bytes) });
+  const outer = await startTls(proxy.host, CA_ROOTS, queue.read.bind(queue), (data) => sink.enqueue(data));
   return { read: () => outer.read(), write: (data) => outer.write(data) };
+}
+
+/**
+ * 把「写进 socket」串成一条 promise 链，并对外提供「按块写 + 块间等这条链」。
+ *
+ * 为什么需要它：subtls 的写回调是同步的（`(data) => void`），socket 写只能 fire-and-forget，
+ * 失败还被 `.catch(() => undefined)` 吞掉。请求体一大，记录一条接一条塞进 socket 的写队列，
+ * 队列一过 64KB 运行时就把 socket 断掉，而上游收到的是一份半截请求——于是它不回响应直接
+ * 断开，Norm 这一侧只好报「Provider 不可达：连接在响应读完之前就断了」。
+ *
+ * 现场边界实测：50KB 请求体通，64KB 起必断（与响应大小无关：折叠 instructions 后响应只有
+ * 7KB 的请求也一样）。所以按 16KiB 一块、块间等 socket 真把这些字节收下。
+ *
+ * 注意：等的是 `write()` 的 promise，不是 `writer.ready`——后者在 Workers 的 socket
+ * writer 上不可依赖（PR #92 用它把 44KB 的请求也写断了）。
+ */
+function chunkedWriter(sink: { write: (data: Uint8Array) => Promise<unknown> }) {
+  let pending: Promise<unknown> = Promise.resolve();
+  return {
+    /** subtls 的写回调：排队，不等待。 */
+    enqueue: (data: Uint8Array) => {
+      pending = pending.then(() => sink.write(data)).catch(() => undefined);
+    },
+    /** 对外：按块写，块间等 socket 把这些字节收下。 */
+    write: async (data: Uint8Array) => {
+      for (let offset = 0; offset < data.length; offset += WRITE_CHUNK_BYTES) {
+        await pending;
+        // 这一块的字节由 subtls 摊成记录，再经 enqueue 追加到链尾。
+        await sink.write(data.subarray(offset, offset + WRITE_CHUNK_BYTES));
+        await pending;
+      }
+    },
+  };
 }
 
 async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
@@ -103,10 +135,9 @@ async function openTunnel(proxy: ProxyTarget, host: string): Promise<Tunnel> {
     }
     return transport.read();
   });
-  const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => {
-    transport.write(data).catch(() => undefined);
-  });
-  return { read: () => tls.read(), write: (data) => tls.write(data) };
+  const sink = chunkedWriter({ write: (bytes) => transport.write(bytes) });
+  const tls = await startTls(host, CA_ROOTS, queue.read.bind(queue), (data) => sink.enqueue(data));
+  return { read: () => tls.read(), write: (data) => sink.write(data) };
 }
 
 /**
