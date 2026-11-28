@@ -10,9 +10,11 @@ import { fail } from './http';
 import { nowSeconds, randomToken } from './ids';
 import {
   D1_ROW_WRITES,
+  D1_SETTLE_WRITES,
   GAS_AFFINITY_UPSERT_NANOS,
   type GasMeter,
 } from './gas';
+import { logError } from './log';
 import { affinityFresh, affinityHash, narrowToOwned, narrowToServingModel, pickByRendezvous, type AffinityKey } from './routing';
 
 /**
@@ -250,18 +252,6 @@ export type RequestRecord = {
   at: number;
 };
 
-/** 只写请求记录、不扣费：`settle` 三次都被并发改写时用它兜底，那一笔标成未收。 */
-export async function recordRequest(env: Env, row: RequestRecord, spendNanos: number): Promise<void> {
-  await requestInsert(env, row, {
-    gasBilledNanos: 0,
-    tokenBilledNanos: 0,
-    spendBeforeNanos: spendNanos,
-    spendAfterNanos: spendNanos,
-    earnBeforeNanos: 0,
-    earnAfterNanos: 0,
-  }).run();
-}
-
 /**
  * 这次转发用哪条上游：模型跑得了是前提，自己名下的优先，公共池兜底，会话按 thread-id / session-id 粘住。
  *
@@ -461,7 +451,8 @@ export async function dropProviderModel(env: Env, providerId: string, model: str
   const result = await env.DB.prepare('DELETE FROM provider_models WHERE provider_id = ? AND model = ?')
     .bind(providerId, model)
     .run();
-  return result.meta?.changes ?? 0;
+  // 返回**写了几行**（表行 + 每条受影响的二级索引），不是改了几行：D1 就是这么计费的。
+  return result.meta?.rows_written ?? 0;
 }
 
 /** 忘掉一条会话的粘性：这条路选错了，下一次重挑。返回实际删掉的行数（0 或 1，WITHOUT ROWID = 1 行写）。 */
@@ -469,7 +460,7 @@ export async function forgetAffinity(env: Env, address: string, hash: string): P
   const result = await env.DB.prepare('DELETE FROM affinities WHERE address = ? AND affinity_hash = ?')
     .bind(address, hash)
     .run();
-  return result.meta?.changes ?? 0;
+  return result.meta?.rows_written ?? 0;
 }
 
 /** 一条同方言的上游都没有：带工具的请求在这里说清楚，而不是打出去再被拒。 */
@@ -698,10 +689,9 @@ export async function resolveProvider(
       return { provider: chosen, via: via(chosen), sticky: false };
     }
   }
-  await rememberAffinity(env, address, hash, chosen.id, now);
-  if (gas) {
-    gas.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
-  }
+  const affinityRows = await rememberAffinity(env, address, hash, chosen.id, now);
+  // 按实测收：这条 UPSERT 真正写了几行，就收几行（正常 1 行）。
+  gas?.chargeD1Writes(affinityRows);
   return { provider: chosen, via: via(chosen), sticky: false };
 }
 
@@ -718,9 +708,9 @@ export async function rememberAffinity(
   hash: string,
   providerId: string,
   now: number,
-): Promise<void> {
+): Promise<number> {
   const ttl = affinityTtlSeconds(env);
-  await env.DB.prepare(
+  const result = await env.DB.prepare(
     `INSERT INTO affinities (address, affinity_hash, provider_id, expires_at, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(address, affinity_hash) DO UPDATE SET
@@ -730,6 +720,8 @@ export async function rememberAffinity(
   )
     .bind(address, hash, providerId, now + ttl, now)
     .run();
+  // 写了几行由 D1 说了算（WITHOUT ROWID 1 行；真要是 0 行，就不该收这 1,000 纳）。
+  return result.meta?.rows_written ?? 0;
 }
 
 /**
@@ -769,14 +761,39 @@ export async function catalogProviders(env: Env, address: string): Promise<Provi
   return own.length > 0 ? own : results;
 }
 
+/** 结算第一段的结果：钱扣了没有、这一段实际写了几行、账怎么记。 */
+export type SettlementCharge = {
+  /** 钱有没有真的扣到：false = 三次都被并发改写，这一笔记成未收（0 行写）。 */
+  collected: boolean;
+  /**
+   * 这一段**实际**写入的行数：D1 每条语句返回的 `meta.rows_written` 之和。
+   * 扣款命中 1 行，跨用户转账再 1 行；乐观锁没命中的那几次写 0 行，不计。
+   */
+  rowsWritten: number;
+  gasBilledNanos: number;
+  tokenBilledNanos: number;
+  balanceNanos: number;
+  spendBeforeNanos: number;
+  spendAfterNanos: number;
+  earnBeforeNanos: number;
+  earnAfterNanos: number;
+};
+
 /**
- * 分开结算 Gas 费（付给 Norm）与 Token 费（转给上游提供方），并写请求记录：
+ * 结算第一段：只扣钱（`UPDATE principals`），请求行留给第二段。
+ *
+ * 为什么拆两段：结算要写两处——扣款与请求行——而请求行里写的那个 Gas 数字包含这两次写
+ * 的成本。先把钱扣了、把这一段真实写了几行（`meta.rows_written`）拿到手，调用方才能把
+ * 「实测扣款行数 + 结构上的 1 行请求行」一起计入 GasMeter，冻结出最终价，再写那一行。
+ * 拆完，结算路上除了请求行本身，没有任何一行是按常数收的。
+ *
+ * 分开结算 Gas 费（付给 Norm）与 Token 费（转给上游提供方）：
  *
  *   - 扣费优先级：先扣 Gas（基础设施成本已发生），余下余额再扣 Token；余额永远不会变成负数。
  *   - 价值守恒：只有「调用他人/公共池上游」时才产生 Token 费用；实际从消费方扣到的
  *     `tokenBilled` 会等额加到上游提供方的 `earn_nanos` 上，绝不凭空增发未扣到的钱。
  *   - 调用自己的上游（`providerUser === address`）不产生跨用户价值转移：`tokenDue = 0`，
- *     只扣 Gas、不写上游提供方，稳态严格维持 2 行 D1 写。
+ *     只扣 Gas、不写上游提供方，稳态严格维持 1 行扣款写。
  *
  * 并发控制：
  *   - 消费方用 `(gas_spend_nanos, token_spend_nanos, withdraw_nanos)` 做乐观锁（这三块是
@@ -784,13 +801,12 @@ export async function catalogProviders(env: Env, address: string): Promise<Provi
  *   - 上游提供方的入账是纯加法 `SET earn_nanos = earn_nanos + ? RETURNING earn_nanos`，
  *     在 SQLite 里天然原子、可交换、无需乐观锁，且直接返回准确的 `earn_after_nanos`。
  */
-export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
+export async function chargeSettlement(env: Env, row: RequestRecord): Promise<SettlementCharge> {
   const isExternal = Boolean(row.providerUser && row.providerUser !== row.address);
   const gasDue = row.gasFeeNanos;
   // Token 费按真价记：自有上游不是免费，只是「自己转给了自己」。记成 0 会让账本说不出
   // 这一次到底花了多少钱，所以自转自也照样记全额。
   const tokenDue = row.providerUser ? row.tokenNanos : 0;
-  const due = gasDue + tokenDue;
   const countersSql = 'recharge_nanos, voucher_nanos, earn_nanos, gas_spend_nanos, token_spend_nanos, withdraw_nanos';
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -799,16 +815,18 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
       .first<PrincipalCounters>();
     if (!current) throw new Error(`账户不存在：${row.address}`);
 
-    // 先扣 Gas（给 Norm），余额有剩再扣 Token（转给上游提供方）；差额记成 unbilled。
+    // 先扣 Gas（给 Norm），余额有剩再扣 Token（转给上游提供方）；差额由第二段记成 unbilled。
     const avail = Math.max(availableNanos(current), 0);
     const gasBilled = Math.min(gasDue, avail);
     // 自转自不需要余额：同一账户扣多少就加回多少，净额恒为 0，所以按真价全额记；
     // 跨账户转移只能转出真正扣得到的钱。
     const tokenBilled = isExternal ? Math.min(tokenDue, Math.max(avail - gasBilled, 0)) : tokenDue;
-    const billed = gasBilled + tokenBilled;
 
     // 消费方只增 gas_spend / token_spend；自转自的那笔 earn 在同一条语句里加回同一账户
     // （仍只算 1 行写，不额外收 Gas）；盯住所有减项计数器防并发透支。
+    //
+    // 用 `.all()` 而不是 `.first()`：只有 `.all()` 会带回 `meta`，而写侧 Gas 就是按
+    // `meta.rows_written` 收的——命中 1 行收 1 行，乐观锁冲突写 0 行就收 0。
     const updated = await env.DB.prepare(
       `UPDATE principals
           SET gas_spend_nanos = gas_spend_nanos + ?,
@@ -829,8 +847,11 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
         current.token_spend_nanos,
         current.withdraw_nanos,
       )
-      .first<PrincipalCounters>();
-    if (!updated) continue;
+      .all<PrincipalCounters>();
+    const next = updated.results[0];
+    // 没命中 = 这条语句一行都没写：不扣钱、也不收这行的 Gas，原样重来。
+    if (!next) continue;
+    let rowsWritten = updated.meta?.rows_written ?? 0;
 
     // 跨用户 Token 价值转移：只有实际从消费方扣到的那部分才转给上游提供方，保证全站价值守恒。
     // 自转自的那一半已经在上面的 UPDATE 里加回同一账户，这里只读出来记进收入链。
@@ -844,55 +865,81 @@ export async function settle(env: Env, row: RequestRecord): Promise<Settled> {
           RETURNING earn_nanos`,
       )
         .bind(tokenBilled, row.providerUser)
-        .first<{ earn_nanos: number }>();
-      if (credited) {
-        earnAfter = credited.earn_nanos;
-        earnBefore = credited.earn_nanos - tokenBilled;
+        .all<{ earn_nanos: number }>();
+      rowsWritten += credited.meta?.rows_written ?? 0;
+      const credit = credited.results[0];
+      if (credit) {
+        earnAfter = credit.earn_nanos;
+        earnBefore = credit.earn_nanos - tokenBilled;
       }
     } else if (tokenBilled > 0) {
-      earnAfter = updated.earn_nanos;
-      earnBefore = updated.earn_nanos - tokenBilled;
+      earnAfter = next.earn_nanos;
+      earnBefore = next.earn_nanos - tokenBilled;
     }
 
-    const settled: Settled = {
-      billedNanos: billed,
+    return {
+      collected: true,
+      rowsWritten,
       gasBilledNanos: gasBilled,
       tokenBilledNanos: tokenBilled,
-      unbilledNanos: due - billed,
-      balanceNanos: availableNanos(updated),
+      balanceNanos: availableNanos(next),
+      spendBeforeNanos: totalSpendNanos(current),
+      spendAfterNanos: totalSpendNanos(next),
+      earnBeforeNanos: earnBefore,
+      earnAfterNanos: earnAfter,
     };
-
-    // 消费与收入的账都在请求表里：同一行既可验消费方 spend 链，也可验上游提供方 earn 链。
-    await requestInsert(
-      env,
-      { ...row, tokenNanos: tokenDue, feeNanos: billed, unbilledNanos: settled.unbilledNanos },
-      {
-        gasBilledNanos: gasBilled,
-        tokenBilledNanos: tokenBilled,
-        spendBeforeNanos: totalSpendNanos(current),
-        spendAfterNanos: totalSpendNanos(updated),
-        earnBeforeNanos: earnBefore,
-        earnAfterNanos: earnAfter,
-      },
-    ).run();
-    return settled;
   }
 
-  // 三次都被并发改写：宁可不扣不转，也不猜一个数。请求照样落库，账面上标成未收。
+  // 三次都被并发改写：宁可不扣不转，也不猜一个数。钱没动（0 行写），账面上标成未收。
   const latest = await env.DB.prepare(`SELECT ${countersSql} FROM principals WHERE address = ?`)
     .bind(row.address)
     .first<PrincipalCounters>();
-  await recordRequest(
-    env,
-    { ...row, tokenNanos: tokenDue, feeNanos: 0, unbilledNanos: due },
-    latest ? totalSpendNanos(latest) : 0,
-  );
+  const spend = latest ? totalSpendNanos(latest) : 0;
   return {
-    billedNanos: 0,
+    collected: false,
+    rowsWritten: 0,
     gasBilledNanos: 0,
     tokenBilledNanos: 0,
-    unbilledNanos: due,
     balanceNanos: latest ? availableNanos(latest) : 0,
+    spendBeforeNanos: spend,
+    spendAfterNanos: spend,
+    earnBeforeNanos: 0,
+    earnAfterNanos: 0,
+  };
+}
+
+/**
+ * 结算第二段：把这一次调用写成 `requests` 那一行，并把 `unbilled` 按真实差价补齐。
+ *
+ * 这一行是整条结算路上唯一按结构算行数的地方——它携带的正是这次 Gas，先有价才能写、
+ * 先写才有价。结构是 WITHOUT ROWID 聚簇表（主键 (address, id)）且线上 0 条二级索引，
+ * 所以恒为 1 行；写完之后拿 `meta.rows_written` 核对，哪天给这张表加了索引，这里会立刻
+ * 报 `d1_settle_write_drift`，而不是默默少收。
+ */
+export async function writeSettlement(env: Env, row: RequestRecord, charge: SettlementCharge): Promise<Settled> {
+  const tokenDue = row.providerUser ? row.tokenNanos : 0;
+  const billed = charge.gasBilledNanos + charge.tokenBilledNanos;
+  // 冻结出来的价减去真正扣到的，就是这一次没扣满的部分；扣满了就是 0。
+  const unbilled = Math.max(row.gasFeeNanos + tokenDue - billed, 0);
+  const result = await requestInsert(
+    env,
+    { ...row, tokenNanos: tokenDue, feeNanos: billed, unbilledNanos: unbilled },
+    charge,
+  ).run();
+  const written = result.meta?.rows_written ?? 0;
+  if (written !== D1_SETTLE_WRITES.request) {
+    logError('d1_settle_write_drift', new Error(`requests 单行插入实际写了 ${written} 行`), {
+      request_id: row.requestId,
+      rows_written: written,
+      expected: D1_SETTLE_WRITES.request,
+    });
+  }
+  return {
+    billedNanos: billed,
+    gasBilledNanos: charge.gasBilledNanos,
+    tokenBilledNanos: charge.tokenBilledNanos,
+    unbilledNanos: unbilled,
+    balanceNanos: charge.balanceNanos,
   };
 }
 

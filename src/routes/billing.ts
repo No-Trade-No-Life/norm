@@ -9,7 +9,7 @@
  */
 import type { NormMeta } from '../dialects';
 import type { Env } from '../env';
-import { D1_ROW_WRITES, type GasMeter } from '../gas';
+import { D1_ROW_WRITES, D1_SETTLE_WRITES, GAS_SCHEDULE, type GasMeter } from '../gas';
 import { nowSeconds } from '../ids';
 import {
   ZERO_AUDIO_USAGE,
@@ -19,7 +19,7 @@ import {
   type PriceAnchor,
   type Usage,
 } from '../pricing';
-import { settle, type RequestRecord, type Settled } from '../store';
+import { chargeSettlement, writeSettlement, type RequestRecord, type Settled } from '../store';
 
 /** 一次调用在记账时需要知道的一切，与它最终成功还是失败无关。 */
 export type Accounting = {
@@ -103,16 +103,12 @@ export function normMeta(accounting: Accounting, receipt: Receipt, billed: Settl
  *
  * Gas 与 Token 分开处理：
  *   - 调用自有上游（providerUser === address）：Token 费按真价记成「自转自」——同一账户的
- *     token_spend 与 earn 同增，余额只减 Gas；这笔转账和结算同一条 UPDATE，所以不额外计 Gas；
+ *     token_spend 与 earn 同增，余额只减 Gas；这笔转账和扣款同一条 UPDATE，不额外写库；
  *   - 调用他人/公共池上游（providerUser !== address）：按价目表计算 Token 费并转给上游提供方，
- *     同时在 Gas 里计入这次跨用户入账的 1 行 D1 写库成本。
+ *     那一行转账写库的成本按实际发生与否**实测**计入 Gas（没扣到 Token 费就不发生，也就不收）。
  */
 export async function settleBill(accounting: Accounting, receipt: Receipt): Promise<NormMeta> {
-  if (accounting.providerUser !== accounting.address && receipt.tokenNanos > 0) {
-    accounting.gas.chargeD1Writes(D1_ROW_WRITES.token_transfer);
-  }
-  const gasFeeNanos = accounting.gas.finalizeForSettlement();
-  const settled = await settle(accounting.env, requestRecord(accounting, { ...receipt, gasFeeNanos }));
+  const settled = await settleAndRecord(accounting, requestRecord(accounting, receipt));
   return normMeta(accounting, receipt, settled);
 }
 
@@ -122,18 +118,50 @@ export async function settleBill(accounting: Accounting, receipt: Receipt): Prom
  * 记录仍然是完整的——打了哪台机器、用哪把钥匙、跑了多久，一个都不少。
  */
 export async function recordFailure(accounting: Accounting, status: string, statusCode: number): Promise<Settled> {
-  const gasFeeNanos = accounting.gas.finalizeForSettlement();
-  return settle(
-    accounting.env,
+  return settleAndRecord(
+    accounting,
     requestRecord(accounting, {
       status,
       statusCode,
-      gasFeeNanos,
       tokenNanos: 0,
       usage: { input: 0, cached: 0, output: 0 },
       audio: ZERO_AUDIO_USAGE,
     }),
   );
+}
+
+/**
+ * 结算：先扣钱、再写请求行，Gas 按这条路上**真实写下的行数**收。
+ *
+ * 结算只写两处：`UPDATE principals` 扣款、`INSERT requests` 记下这一次调用。请求行里写的
+ * 那个 Gas 数字包含了写这一行本身的成本（先有价才能写、先写才有价），所以这两条语句只能
+ * 按结构算行数：扣款按地址主键命中 1 行、请求行是 WITHOUT ROWID 聚簇表且 0 条二级索引 = 1 行；
+ * 跨用户转账再 1 行，且只在真扣到 Token 费时才发生。
+ *
+ * 除此之外，这条路上每一行都按语句返回的 `meta.rows_written` 实测收：扣款命中几行收几行
+ * （乐观锁冲突 0 行就不收），转账没发生就不收，转发面上的亲和 UPSERT / consumers touch /
+ * 清单行删除同理。
+ */
+async function settleAndRecord(accounting: Accounting, row: RequestRecord): Promise<Settled> {
+  const gas = accounting.gas;
+  const external = Boolean(row.providerUser && row.providerUser !== row.address);
+  // 扣款前要先把结算这两条语句的价钱算进去（它们就写在这个数字里），跨用户转账按「会发生」
+  // 预留——余额不足以扣出 Token 费时 gasBilled 会被 available 截断，那笔转账也就不会发生。
+  const reserve =
+    (D1_SETTLE_WRITES.debit +
+      D1_SETTLE_WRITES.request +
+      (external && row.tokenNanos > 0 ? D1_ROW_WRITES.token_transfer : 0)) *
+    GAS_SCHEDULE.d1_row_write;
+  const charge = await chargeSettlement(accounting.env, {
+    ...row,
+    gasFeeNanos: gas.projectedTotal(reserve),
+  });
+  // 实测：扣款这一段写了几行就收几行（重试里没命中的那几次写 0 行，不收）。
+  gas.chargeD1Writes(charge.rowsWritten);
+  // 请求行自己那一行：结构 1 行，写完由 writeSettlement 拿 meta 核对。
+  gas.chargeD1Writes(D1_SETTLE_WRITES.request);
+  const gasFeeNanos = gas.finalizeForSettlement();
+  return writeSettlement(accounting.env, { ...row, gasFeeNanos }, charge);
 }
 
 /**
@@ -161,10 +189,7 @@ export function failureHeaders(requestId: string, settled: Settled): Record<stri
 }
 
 /** 把这次调用写成 requests 那一行。 */
-function requestRecord(
-  accounting: Accounting,
-  parts: Receipt & { gasFeeNanos: number },
-): RequestRecord {
+function requestRecord(accounting: Accounting, parts: Receipt): RequestRecord {
   return {
     requestId: accounting.requestId,
     address: accounting.address,
@@ -185,7 +210,8 @@ function requestRecord(
     audioCharacters: parts.audio.characters,
     imageCount: (parts.image ?? ZERO_IMAGE_USAGE).count,
     imagePixels: (parts.image ?? ZERO_IMAGE_USAGE).pixels,
-    gasFeeNanos: parts.gasFeeNanos,
+    // 由 settleAndRecord 按这次结算真正写下的行数定价后填进来。
+    gasFeeNanos: 0,
     tokenNanos: parts.tokenNanos,
     // 由 settle 覆盖成「真正扣掉的」：成功是 Gas + token，失败只有 Gas。
     feeNanos: 0,

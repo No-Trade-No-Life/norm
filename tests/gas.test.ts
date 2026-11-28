@@ -7,6 +7,7 @@ import type { Env } from '../src/env';
 import { minBalanceNanos } from '../src/env';
 import {
   D1_ROW_WRITES,
+  D1_SETTLE_WRITES,
   DEFAULT_MIN_BALANCE_NANOS,
   GAS_AFFINITY_UPSERT_NANOS,
   GAS_CONSUMER_TOUCH_NANOS,
@@ -67,12 +68,16 @@ function spyD1(db: DatabaseSync) {
     all: async <T>() => {
       reads += 1;
       const results = db.prepare(sql).all(...params) as T[];
-      return { results, meta: { rows_read: results.length } };
+      // 写语句（UPDATE … RETURNING）也走 all()：写了几行由 SQLite 自己说。
+      const changed = db.prepare('SELECT changes() AS n').get() as { n: number } | undefined;
+      return { results, meta: { rows_read: results.length, rows_written: Number(changed?.n ?? 0) } };
     },
     run: async () => {
       writes += 1;
       const result = db.prepare(sql).run(...params) as { changes?: number | bigint } | undefined;
-      return { success: true, meta: { changes: Number(result?.changes ?? 0) } };
+      const changes = Number(result?.changes ?? 0);
+      // rows_written 是 D1 的计费口径：真 SQLite 这里只数表行（测试库没有二级索引参与）。
+      return { success: true, meta: { changes, rows_written: changes } };
     },
   });
 
@@ -103,6 +108,16 @@ function spyD1(db: DatabaseSync) {
   };
 }
 
+/**
+ * 结算那两段在 Gas 里的样子：扣款按实测 `meta.rows_written`（命中 1 行）、请求行按结构 1 行，
+ * 然后冻结。生产路径见 `settleAndRecord`。
+ */
+function settleGauge(gas: GasMeter): number {
+  gas.chargeD1Writes(1);
+  gas.chargeD1Writes(D1_SETTLE_WRITES.request);
+  return gas.finalizeForSettlement();
+}
+
 describe('GasMeter 动态累加与四条硬约束', () => {
   it('起步价与稳态/当日首次/跨方言/流式/写亲和各路径金额精确匹配列表价', () => {
     expect(GAS_SCHEDULE.worker_invocation).toBe(300);
@@ -117,41 +132,43 @@ describe('GasMeter 动态累加与四条硬约束', () => {
     expect(GAS_FLOOR_NANOS).toBe(3_715);
     expect(DEFAULT_MIN_BALANCE_NANOS).toBe(10_000);
 
-    // 1. 稳态同日直通、非流式、自有上游（无写亲和、无跨用户转账）：1_715 + 2,000 = 3,715
+    // 1. 稳态同日直通、非流式、自有上游（无写亲和、无跨用户转账）：1_715 + 结算 2 行(2,000) = 3,715
     const steady = new GasMeter({ availableNanos: 100_000 });
-    expect(steady.finalizeForSettlement()).toBe(3_715);
+    expect(settleGauge(steady)).toBe(3_715);
     expect(steady.finalTotal()).toBe(3_715);
 
-    // 1b. 稳态同日直通、非流式、公共池/他人上游（额外 1 行上游入账写库）：1_715 + 1,000 + 2,000 = 4,715
+    // 1b. 稳态同日直通、非流式、公共池/他人上游（额外 1 行上游入账写库，实测到才收）：
+    //     1_715 + 1,000 + 2,000 = 4,715
     const steadyPool = new GasMeter({ availableNanos: 100_000 });
-    steadyPool.chargeD1Writes(D1_ROW_WRITES.token_transfer);
-    expect(steadyPool.finalizeForSettlement()).toBe(4_715);
+    // chargeSettlement 实测到的转账行数（真扣到 Token 费才发生）：1 行
+    steadyPool.chargeD1Writes(1);
+    expect(settleGauge(steadyPool)).toBe(4_715);
 
     // 2. 同日直通 + 流式：3,715 + 60 = 3,775
     const steadyStream = new GasMeter({ availableNanos: 100_000 });
     steadyStream.charge(GAS_SCHEDULE.cpu_stream);
-    expect(steadyStream.finalizeForSettlement()).toBe(3_775);
+    expect(settleGauge(steadyStream)).toBe(3_775);
 
     // 3. 同日跨方言桥接 + 非流式：3,715 + 100 = 3,815
     const bridge = new GasMeter({ availableNanos: 100_000 });
     bridge.charge(GAS_SCHEDULE.cpu_bridge);
-    expect(bridge.finalizeForSettlement()).toBe(3_815);
+    expect(settleGauge(bridge)).toBe(3_815);
 
     // 4. 跨方言桥接 + 流式 + 当日首次 touch（1 行）+ 首次写亲和（WITHOUT ROWID 1 行）：
-    //    1_715 + 1,000 + 100 + 60 + 1,000 + 2,000 = 5,875
+    //    1_715 + 100 + 60 + 1,000 + 1,000 + 2,000 = 5,875
     const fullFirst = new GasMeter({ availableNanos: 10_000 });
     expect(fullFirst.canStart()).toBe(true);
-    fullFirst.chargeD1Writes(D1_ROW_WRITES.affinity_upsert);
+    fullFirst.chargeD1Writes(1); // 亲和 UPSERT 的 meta.rows_written
     fullFirst.charge(GAS_SCHEDULE.cpu_bridge + GAS_SCHEDULE.cpu_stream);
-    fullFirst.chargeD1Writes(D1_ROW_WRITES.consumer_touch);
-    expect(fullFirst.finalizeForSettlement()).toBe(5_875);
+    fullFirst.chargeD1Writes(1); // consumers.last_used_at 的 meta.rows_written
+    expect(settleGauge(fullFirst)).toBe(5_875);
   });
 
   it('约束 1：结算冻结后禁止再追加计费或重复结算，未冻结前禁止读最终值', () => {
     const gas = new GasMeter({ availableNanos: 50_000 });
     expect(() => gas.finalTotal()).toThrow();
 
-    const total = gas.finalizeForSettlement();
+    const total = settleGauge(gas);
     expect(total).toBe(GAS_FLOOR_NANOS);
     expect(gas.isFinalized).toBe(true);
 

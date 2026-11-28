@@ -15,8 +15,8 @@ Norm 在每次推理请求内维护一个纯内存 `GasMeter`：**从 300 纳（
 
 四条硬约束同时落进代码：
 
-1. **不允许计费后再事后获取计费信息**：`finalizeForSettlement()` 在 `settle()` 前冻结计量器，之后任何 `charge()` 直接抛错。
-2. **不允许少收漏收**：Worker 调用、异常日志摊销、CPU 保守估、D1 读上界与每次实际发生的 D1 行写（含所有受影响二级索引）全部按列表价入账。
+1. **不允许计费后再事后获取计费信息**：`finalizeForSettlement()` 在扣款（`chargeSettlement`）与落账（`writeSettlement`）之前冻结计量器，之后任何 `charge()` 直接抛错。
+2. **不允许少收漏收**：Worker 调用、异常日志摊销、CPU 保守估、D1 读上界与每次实际发生的 D1 行写（含所有受影响二级索引）全部按列表价入账。**写侧不查表、不猜**：除下面说明的两行，每一行都按该语句返回的 `meta.rows_written` 收（Cloudflare 的计费计数器就是它，表行与每条受影响的二级索引各算一行）——扣款没命中就收 0，转账没发生就收 0。
 3. **余额不足提前中止以省费**：入口安全余额阈值 `MIN_BALANCE_NANOS = 10,000`（$0.00001），低于该值直接 402 拒绝（**0 次 D1 写、0 次上游请求**）；写亲和前、发往上游前与纠偏重试前同样用内存余额快照做预算熔断。
 4. **零计费 Overhead**：纯内存整数累加，不发起任何额外的 D1 或网络调用；通过 `consumers JOIN principals` 合并鉴权与余额读、按 UTC 自然日节流 `consumers.last_used_at`、`WITHOUT ROWID` 聚簇表消除冗余索引写入，把工程降本直接变成更低的 Gas。
 
@@ -32,15 +32,17 @@ Norm 在每次推理请求内维护一个纯内存 `GasMeter`：**从 300 纳（
 | | `cpu_per_kb` | 与入站体积成正比的 CPU（长上下文的解析与重建；按真实请求体大小累加） | +4 / KB |
 | | `d1_reads` | D1 行读保守上界（$0.001 / 1M 行，5 纳覆盖 5,000 行读） | 5 |
 | | `read_subsidy` | 免费只读操作公共摊销（`R × C_read`，冷启动期先置 0，按线上实际读写比校准） | 0 |
-| **执行路径** | `consumer_touch` | `UPDATE consumers SET last_used_at`（非索引列，按 UTC 自然日节流：当日首次 1 行，同日后续 +0） | +0 或 +1,000 |
-| | `affinity_write` | 首次/过期 `UPSERT affinities`（`WITHOUT ROWID`，0 二级索引 = 1 行写；7 天内命中 +0） | +0 或 +1,000 |
+| **执行路径** | `consumer_touch` | `UPDATE consumers SET last_used_at`（非索引列，按 UTC 自然日节流：当日首次 1 行，同日后续 +0；按 `meta.rows_written` 实测） | +0 或 +1,000 |
+| | `affinity_write` | 首次/过期 `UPSERT affinities`（`WITHOUT ROWID`，0 二级索引 = 1 行写；7 天内命中 +0；按 `meta.rows_written` 实测） | +0 或 +1,000 |
 | | `cpu_bridge` | 跨方言协议与工具调用桥接 CPU（≈ +5 CPU-ms；直通 +0） | +100 |
 | | `cpu_stream` | 流式 SSE 拆帧与用量嗅探 CPU（≈ +3 CPU-ms；非流式 +0） | +60 |
-| **纠偏重试** | `retry_drop_model` | `isModelNotServed` 删 `provider_models`（表 + PK + 索引 = 3 行写） | +changes × 3,000 |
-| | `retry_forget_affinity` | 忘掉错误会话粘性 `DELETE affinities`（`WITHOUT ROWID` = 1 行写） | +changes × 1,000 |
+| **纠偏重试** | `retry_drop_model` | `isModelNotServed` 删 `provider_models`（表行 + 每条受影响的二级索引；按 `meta.rows_written` 实测，不再是「×3」的估算） | 实测 |
+| | `retry_forget_affinity` | 忘掉错误会话粘性 `DELETE affinities`（`WITHOUT ROWID` = 1 行写；按 `meta.rows_written` 实测） | 实测 |
 | | `retry_attempt` | 二次候选转发基础 CPU | +100 |
-| **结算入账** | `settle` | `UPDATE principals`（消费方，1 行）+ `INSERT requests`（`WITHOUT ROWID`，0 二级索引 = 1 行）= 2 行写 | +2,000 |
-| | `token_transfer` | 跨用户/公共池 Token 价值转移时额外 `UPDATE principals`（上游提供方 `earn_nanos`，1 行）；自有上游的自转自与结算同一条 `UPDATE`、失败不计 = +0 | +0 或 +1,000 |
+| **结算入账** | `settle` | `UPDATE principals`（消费方，按主键命中 1 行，**按 `meta.rows_written` 实测**）+ `INSERT requests`（`WITHOUT ROWID`，0 二级索引 = **结构 1 行**）= 2 行写 | 实测 + 1,000 |
+| | `token_transfer` | 跨用户/公共池 Token 价值转移时额外 `UPDATE principals`（上游提供方 `earn_nanos`）；自有上游的自转自与扣款同一条 `UPDATE`、失败不计；**真扣到 Token 费才发生，按实测收** | +0 或 +1,000 |
+
+> **为什么请求行那 1,000 纳是结构行数而不是实测**：请求行里写的那个 Gas 数字包含写这一行本身的成本——先有价才能写、先写才有价，这个环只能在「按表结构算」处闭合（`requests` 是 `WITHOUT ROWID` 聚簇表、主键 `(address, id)`，线上 `sqlite_master` 里 0 条二级索引，恒为 1 行）。写完仍会用 `meta.rows_written` 核对，不等于 1 就报 `d1_settle_write_drift`——给这张表加索引会立刻暴露，而不是默默少收。结算拆成 `chargeSettlement`（扣款，交出实测行数）+ `writeSettlement`（落账）两段，就是为了让请求行以外的每一行都能按实测收。
 
 ### 典型请求总 Gas 一览
 

@@ -73,9 +73,33 @@ export const GAS_SCHEDULE = {
 } as const;
 
 /**
- * 转发路径上每个 D1 写操作对应的「表行 + 受影响索引」行写数。
+ * 结算那两条语句各写多少行——**结构事实**，不是经验值。
  *
- * 与 migrations/ 里的表结构和索引一一对应：每增删一条索引，都必须同步更新这里与单测。
+ *   - `UPDATE principals`（消费方扣款）：按 `address` 主键命中 1 行。线上 `principals`
+ *     只有主键自动索引，扣款改的三列（gas_spend / token_spend / earn）都不在二级索引里 → 1 行。
+ *     乐观锁冲突时未命中 = 0 行，那一次不收费、直接重来。
+ *   - `INSERT requests`：`requests` 是 WITHOUT ROWID 聚簇表（主键 (address, id)），
+ *     线上 `sqlite_master` 里 0 条二级索引 → 1 行。
+ *
+ * 为什么这两条只能按结构算：请求行里写的那个 Gas 数字**包含写这一行本身的成本**——
+ * 先有价才能写、先写才有价，环在这里闭合。除了这两条，转发面上每一次 D1 写都按语句
+ * 返回的 `meta.rows_written` 实测收费（见 `GasMeter.chargeD1Writes`），写 0 行就收 0。
+ */
+export const D1_SETTLE_WRITES = {
+  /** UPDATE principals：扣消费方的 Gas 与 Token。 */
+  debit: 1,
+  /** INSERT requests：这一次调用的账本行。 */
+  request: 1,
+} as const;
+
+/**
+ * 转发路径上每个 D1 写操作的**预估**行写数（表行 + 受影响二级索引）。
+ *
+ * 这些数只用在两处拿不到 `meta` 的地方：余额闸门（写之前先判断付不付得起）与
+ * `GET /api/v1/pricing` 的公开价目表。**收费不读这张表**：能拿到 `meta` 的写一律
+ * 按 `chargeD1Writes(meta.rows_written)` 实测收；只有上面那两条「价格写在它自己那一行里」
+ * 的结算语句按结构算，并在写完之后用 `meta.rows_written` 核对（漂了就报错）。
+ * 每增删一条索引，都必须同步更新这里与单测。
  */
 export const D1_ROW_WRITES = {
   /** UPDATE consumers SET last_used_at = ?（非索引列，按 UTC 自然日节流，每天最多 1 行）。 */
@@ -86,12 +110,8 @@ export const D1_ROW_WRITES = {
   affinity_delete: 1,
   /** DELETE provider_models 每删 1 行：表 1 + PK 1 + provider_models_model 1 = 3 行。 */
   provider_model_delete: 3,
-  /**
-   * 结算（settle）：UPDATE principals（消费方 gas_spend_nanos / token_spend_nanos 非索引，1 行）+
-   * INSERT requests（WITHOUT ROWID 聚簇表，PRIMARY KEY (address, id)，0 二级索引，1 行）= 2 行。
-   * 乐观锁冲突时未命中的 UPDATE 变更 0 行，不会放大写入。
-   */
-  settle: 2,
+  /** 结算两段：扣款 1 行 + 请求行 1 行，见 `D1_SETTLE_WRITES`。 */
+  settle: D1_SETTLE_WRITES.debit + D1_SETTLE_WRITES.request,
   /**
    * 跨用户 Token 价值转移结算：调用他人/公共池上游且产生 Token 费时，
    * 额外 UPDATE principals（上游提供方 earn_nanos 非索引，1 行）；调用自有上游时为 0 行。
@@ -218,7 +238,10 @@ export class GasMeter {
     this.chargeD1Writes(meta.rows_written ?? 0);
   }
 
-  /** 按真实 D1 行写数累加（每行 1,000 纳）。 */
+  /**
+   * 按真实 D1 行写数累加（每行 1,000 纳）：`meta.rows_written` 拿到多少就收多少
+   * （Cloudflare 的计量口径——表行与每条受影响的二级索引各算一行，`meta` 用的是同一个计数器）。
+   */
   chargeD1Writes(rows: number): void {
     if (!Number.isInteger(rows) || rows < 0) {
       throw new Error(`非法的 D1 行写数：${rows}`);
@@ -244,14 +267,16 @@ export class GasMeter {
   }
 
   /**
-   * 结算前调用一次：把结算本身的 4 行 D1 写入入账并冻结计量器，返回最终 Gas。
-   * 重复调用直接抛错，确保一笔请求只结算一次。
+   * 结算前调用一次：冻结计量器并返回最终 Gas。重复调用直接抛错，确保一笔请求只结算一次。
+   *
+   * 这里**不再**自己加一个「结算固定 2 行」的常数：结算要写的那两行由调用方按实测
+   * （扣款，`meta.rows_written`）与结构（请求行，1 行）分别 `chargeD1Writes` 进来，
+   * 一行都不会漏，也不会为一笔没发生的转账白收 1,000 纳。
    */
   finalizeForSettlement(): number {
     if (this.finalized) {
       throw new Error('GasMeter 已冻结：不能重复结算');
     }
-    this.rawNanos += GAS_SETTLE_NANOS;
     this.frozenTotal = applyGasMargin(this.rawNanos, this.marginBps);
     this.finalized = true;
     return this.frozenTotal;
