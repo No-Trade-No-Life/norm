@@ -1,7 +1,46 @@
 import { describe, expect, it } from 'vitest';
 
-import { isModelNotServed, mergeCatalog } from '../src/models';
+import { isModelNotServed, mergeCatalog, unionModels } from '../src/models';
 import { MODEL_ROWS_PER_STATEMENT, modelInsertChunks } from '../src/store';
+
+/**
+ * 数据面清单的并集：`GET /v1/models` 逐条问、并成一条答。
+ *
+ * 抽一条上游回答是线上真实坏过的形状：同一个账户连着问六次，拿到 15 条 / 50 条 /
+ * 15 条 / 400 / 15 条。下游网关（NormAI）是拿这份清单同步模型行的，抽到哪一条，
+ * 它就少掉其余几条上游的型号——音频型号就是这么消失的，转写随后被拒成
+ * `400 model is not available`。
+ */
+describe('unionModels', () => {
+  it('几条上游的型号都并进来，按名字排序', () => {
+    const rows = unionModels([
+      { id: 'gpt-5.6-luna' },
+      { id: 'qwen-audio-3.0-asr-flash' },
+      { id: 'deepseek-v4-pro' },
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual([
+      'deepseek-v4-pro',
+      'gpt-5.6-luna',
+      'qwen-audio-3.0-asr-flash',
+    ]);
+  });
+
+  it('同名只留一份：先给的不被覆盖，后来的能补空', () => {
+    const rows = unionModels([
+      { id: 'm', created: 100 },
+      { id: 'm', created: 999, owned_by: 'someone' },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].created).toBe(100);
+    expect(rows[0].owned_by).toBe('someone');
+  });
+
+  it('一条都没答上来就是空清单，不编一个型号出来', () => {
+    expect(unionModels([])).toEqual([]);
+  });
+});
 
 /**
  * 合并规则是这张表的全部逻辑：同名就是同一条、谁有它记成一列、官方价按提供它的

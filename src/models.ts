@@ -158,6 +158,29 @@ export function mergeDeclaredModels(items: ModelInfo[], protocols: readonly Prot
   return merged;
 }
 
+/**
+ * 把几条上游的清单并成一条：同名只留一份，先给的不被覆盖，结果按名字排序。
+ *
+ * 数据面清单要回答的是「这个账户现在能调什么」，可每条上游只知道自己那一份。
+ * 抽样回答就是抽样一份残缺的清单——同名上游轮流被选中，同一个账户连着问会拿到
+ * 15 条、50 条、或者某条上游的 400。所以问到的每一条都要并进来：`created` /
+ * `owned_by` 先给的不被覆盖，后来的能补空（与 `mergeCatalog` 同一条规矩，只是这里
+ * 只留出口方言要的那几列）。
+ */
+export function unionModels(items: ModelInfo[]): ModelInfo[] {
+  const byId = new Map<string, ModelInfo>();
+  for (const item of items) {
+    const existing = byId.get(item.id);
+    if (existing === undefined) {
+      byId.set(item.id, { ...item });
+      continue;
+    }
+    if (existing.created === undefined && item.created !== undefined) existing.created = item.created;
+    if (existing.owned_by === undefined && item.owned_by !== undefined) existing.owned_by = item.owned_by;
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** 上游失败时压成一句话：状态码 + 上游原话的前一小段（换行压平，宁短勿长）。 */
 export function probeErrorText(probe: ModelProbe): string | null {
   if (probe.ok) return null;

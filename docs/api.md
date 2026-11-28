@@ -418,7 +418,7 @@ false）、`allowed_domains` / `blocked_domains`（裸域名数组、互斥，�
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/v1/models` | 这个上游有哪些模型。`{object:"list", data:[{id, object:"model", created?, owned_by?}]}`。问不出来、只能由协议声明的型号（图像工具、音频原生）也在这里报出，下游网关据它同步模型行 |
+| GET | `/v1/models` | 这个账户能调哪些模型：账户里启用中的每条上游各问一次，同名的合成一行，问不出来、只能由协议声明的型号（图像工具、音频原生）也一并报出。`{object:"list", data:[{id, object:"model", created?, owned_by?}], norm:{hosts:[…]}}`。下游网关据它同步模型行，所以它不能是「某一条上游刚才说了什么」 |
 | GET | `/v1/models/{model}` | 单个模型；没有上游的清单里有它 → `404 model_not_served`；选中那条的清单里没有 → `404 model_not_found` |
 
 选址规则与转发完全一样（自己的上游优先、公共池兜底、会话亲和）。
