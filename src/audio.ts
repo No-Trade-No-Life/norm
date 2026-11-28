@@ -5,12 +5,14 @@
  * 四家 SDK 里只有它把这件事件说成公共语言，Qwen LB 与 NormAI 也都对齐在它这一侧，
  * 所以入口不必有方言参数——音频的方言只在上游。
  *
- * 上游有两种音频方言：
+ * 上游有三种音频方言：
  *
- *   openai-audio  上游自己就说 OpenAI 音频（Qwen LB、OpenAI、任何兼容实现）：请求体原样转发，
- *                 应答原样回来。零翻译，和文本那四条通用方言协议同一个思路。
- *   qwen-native   Qwen 原生接口（多模态生成 / 语音合成器）：由 `qwen.ts` 构造请求、归一化应答，
- *                 即 Qwen LB 那层适配逻辑。它换来的是一件原生接口不会白给的事——转写。
+ *   openai-audio      上游自己就说 OpenAI 音频（Qwen LB、OpenAI、任何兼容实现）：请求体原样转发，
+ *                     应答原样回来。零翻译，和文本那四条通用方言协议同一个思路。
+ *   qwen-native       Qwen 原生接口（多模态生成 / 语音合成器）：由 `qwen.ts` 构造请求、归一化应答，
+ *                     即 Qwen LB 那层适配逻辑。它换来的是一件原生接口不会白给的事——转写。
+ *   chatgpt-desktop   ChatGPT 订阅的桌面专属转写端点（`/backend-api/transcribe`，OpenAI-LB 那条路）：
+ *                     请求体同样原样转发，变的是地址与身份——它不在 Codex API 根下面，也只认桌面客户端。
  *
  * 音频不进 `Dialect`：那种编解码是「请求体是 JSON、响应体是 JSON」的形状，音频这边一个入口是
  * multipart + 二进制、另一个入口回的是一段 WAV 字节。硬塞进四条方言的联合类型，只会让文本
@@ -18,6 +20,7 @@
  */
 import type { ModelInfo } from './codecs';
 import { fail } from './http';
+import { openaiTranscriptionHeaders } from './oauth';
 import { ZERO_AUDIO_USAGE, type AudioUsage } from './pricing';
 import {
   audioFormatOf,
@@ -33,7 +36,7 @@ import {
 export type AudioKind = 'transcriptions' | 'speech';
 
 /** 上游说哪一种音频方言。 */
-export type AudioDialect = 'openai-audio' | 'qwen-native';
+export type AudioDialect = 'openai-audio' | 'qwen-native' | 'chatgpt-desktop';
 
 /**
  * 一次音频调用的规范形式（Hub）：下游到底要什么，与上游怎么说不相干。
@@ -61,10 +64,26 @@ export type AudioAnswer =
 /** 一种上游音频方言：能不能跑、怎么问、怎么读、能往清单里贡献哪些型号。 */
 export type AudioCodec = {
   dialect: AudioDialect;
+  /**
+   * 这条方言接得住哪几种叫法。`GET /api/v1/protocols` 的 `audio` 就照它报，
+   * 不在别处再写一份「这条协议能不能合成」。
+   */
+  kinds: AudioKind[];
   /** 这条方言能不能满足这次调用：选址在打出去之前问，问不过的候选不参与。 */
   serves: (ask: AudioAsk) => boolean;
-  /** 规范请求 + 下游原始字节 → 上游路径与请求体。 */
-  encode: (ask: AudioAsk, wire: AudioWire) => { path: string; wire: AudioWire };
+  /**
+   * 规范请求 + 下游原始字节 + 上游基址 → 打给上游的地址与请求体。
+   *
+   * 地址由方言给出而不是转发层拼，因为这些方言的上游根并不一致：直通与原生方言是
+   * `{base}/audio/*` 与 `{base}/api/v1/*`，而 ChatGPT 的转写端点在文本基址的**旁边**
+   * （`{base 去掉 /codex}/transcribe`）。谁家的路长什么样，只有那一家的方言知道。
+   */
+  encode: (ask: AudioAsk, wire: AudioWire, baseUrl: string) => { url: string; wire: AudioWire };
+  /**
+   * 这条方言自己的上游头；不写就沿用协议的头（`profile.headers`）。
+   * 只有「同一个上游、另一套身份」的端点在用（ChatGPT 的桌面转写）。
+   */
+  headers?: (providerKey: string) => Record<string, string>;
   /** 上游的成功应答 → 规范应答。 */
   read: (ask: AudioAsk, reply: Response) => Promise<AudioAnswer>;
   /** 这条方言能替上游清单补上的型号（原生方言才有；直通方言由上游自己列）。 */
@@ -170,6 +189,21 @@ const upstreamJson = async (reply: Response): Promise<Record<string, unknown>> =
 const secondsOf = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 
+/** 基址 + 路径：基址末尾的斜杠在这里归零，方言不必各自再处理一遍。 */
+const endpointOf = (baseUrl: string, path: string): string => `${baseUrl.replace(/\/+$/, '')}${path}`;
+
+/**
+ * OpenAI 形状的转写应答：`{text}`，时长在 `usage.seconds`（或更老形状的 `duration`）里。
+ * 直通方言与 ChatGPT 桌面方言共用这一份——它们回来的就是同一个东西。
+ */
+const readOpenAITranscription = async (reply: Response): Promise<AudioAnswer> => {
+  const json = await upstreamJson(reply);
+  const text = typeof json.text === 'string' ? json.text : '';
+  if (text === '') fail(502, 'upstream_transcription_empty', '上游的转写应答里没有 text 字段');
+  const seconds = Math.max(secondsOf(recordOf(json.usage).seconds), secondsOf(json.duration));
+  return { kind: 'transcriptions', text, usage: { ...ZERO_AUDIO_USAGE, milliseconds: Math.round(seconds * 1000) } };
+};
+
 /**
  * 直通方言：上游自己就说 OpenAI 音频。
  *
@@ -178,16 +212,11 @@ const secondsOf = (value: unknown): number =>
  */
 const openaiAudio: AudioCodec = {
   dialect: 'openai-audio',
+  kinds: ['transcriptions', 'speech'],
   serves: () => true,
-  encode: (ask, wire) => ({ path: `/audio/${ask.kind}`, wire }),
+  encode: (ask, wire, baseUrl) => ({ url: endpointOf(baseUrl, `/audio/${ask.kind}`), wire }),
   read: async (ask, reply) => {
-    if (ask.kind === 'transcriptions') {
-      const json = await upstreamJson(reply);
-      const text = typeof json.text === 'string' ? json.text : '';
-      if (text === '') fail(502, 'upstream_transcription_empty', '上游的转写应答里没有 text 字段');
-      const seconds = Math.max(secondsOf(recordOf(json.usage).seconds), secondsOf(json.duration));
-      return { kind: 'transcriptions', text, usage: { ...ZERO_AUDIO_USAGE, milliseconds: Math.round(seconds * 1000) } };
-    }
+    if (ask.kind === 'transcriptions') return readOpenAITranscription(reply);
     return {
       kind: 'speech',
       audio: new Uint8Array(await reply.arrayBuffer()),
@@ -196,6 +225,36 @@ const openaiAudio: AudioCodec = {
     };
   },
   catalog: () => [],
+};
+
+/**
+ * ChatGPT 桌面端的转写端点（`/backend-api/transcribe`）：OpenAI OAuth 的 ASR 能力。
+ *
+ * 与直通方言的差别只有两处，都不是翻译：
+ *   1. 地址：它不在 Codex API 根下面。文本的基址带着 `/codex`，转写端点在它**旁边**——
+ *      同一个 `/backend-api` 根（OpenAI-LB 是 `upstream_base.trim_end_matches("/codex") + "/transcribe"`，
+ *      同一条推导）；
+ *   2. 身份：这条端点是桌面专属的，`codex_cli_rs` 那一支进不去，User-Agent 得是桌面那一个
+ *      （见 `oauth.ts` 的 `openaiTranscriptionHeaders`）。
+ *
+ * 请求体仍是下游那段 multipart，一个字节不改：`model` 是 Norm 用来计价与选址的名字，上游
+ * 不需要它（OpenAI-LB 的控制台连这个字段都不发，照样能转写）。只有转写——订阅额度里没有
+ * 一条合成的路。
+ */
+const chatgptDesktop: AudioCodec = {
+  dialect: 'chatgpt-desktop',
+  kinds: ['transcriptions'],
+  serves: (ask) => ask.kind === 'transcriptions',
+  headers: openaiTranscriptionHeaders,
+  // 基址去掉 `/codex` 才是转写端点所在的根；不带 `/codex` 的基址原样用。
+  encode: (_ask, wire, baseUrl) => ({ url: endpointOf(baseUrl.replace(/\/codex\/?$/, ''), '/transcribe'), wire }),
+  read: (_ask, reply) => readOpenAITranscription(reply),
+  // 订阅的清单端点是 Codex 那批文本型号，转写不在里面；替它补一行，否则选址会按「清单里
+  // 没有它」把这条上游划掉（与 Qwen 补音频型号同一个理由）。只补一行，端点本身与型号无关：
+  // 多补几个名字只是给同一件事多标几个价。
+  catalog: () => [
+    { id: 'gpt-4o-transcribe', owned_by: 'openai', modalities: { input: ['audio'], output: ['text'] } },
+  ],
 };
 
 /** Workers 里没有 Buffer 也要能 base64：分段折字符串，别一次展开几千万个参数。 */
@@ -216,13 +275,14 @@ function base64Of(bytes: Uint8Array): string {
  */
 const qwenNative: AudioCodec = {
   dialect: 'qwen-native',
+  kinds: ['transcriptions', 'speech'],
   serves: (ask) => qwenAudioModelOf(ask.model)?.kind === ask.kind,
-  encode: (ask, wire) => {
+  encode: (ask, wire, baseUrl) => {
     if (ask.kind === 'speech') {
       const row = qwenAudioModelOf(ask.model);
       if (row === null) fail(400, 'audio_model_unpriced', `${ask.model} 不在 Qwen 音频型号表里`);
       const { path, body } = qwenSpeechRequest({ surface: row.surface, model: ask.model, input: ask.input, voice: ask.voice });
-      return { path, wire: { contentType: 'application/json', body: JSON.stringify(body) } };
+      return { url: endpointOf(baseUrl, path), wire: { contentType: 'application/json', body: JSON.stringify(body) } };
     }
     const format = audioFormatOf(ask.file.mime, ask.file.filename);
     if (format === null) {
@@ -236,7 +296,10 @@ const qwenNative: AudioCodec = {
       audioBase64: base64Of(ask.file.bytes),
     });
     // 转写只有一条原生接口，路径由 `qwenSpeechRequest` 之外的这一支单独给出。
-    return { path: '/api/v1/services/aigc/multimodal-generation/generation', wire: { contentType: 'application/json', body: JSON.stringify(body) } };
+    return {
+      url: endpointOf(baseUrl, '/api/v1/services/aigc/multimodal-generation/generation'),
+      wire: { contentType: 'application/json', body: JSON.stringify(body) },
+    };
   },
   read: async (ask, reply) => {
     const json = await upstreamJson(reply);
@@ -274,6 +337,7 @@ const qwenNative: AudioCodec = {
 const AUDIO_CODECS: Record<AudioDialect, AudioCodec> = {
   'openai-audio': openaiAudio,
   'qwen-native': qwenNative,
+  'chatgpt-desktop': chatgptDesktop,
 };
 
 /** 取一条上游音频方言的编解码（与文本那条 `.dialect → dialectCodecFor` 同一个思路）。 */

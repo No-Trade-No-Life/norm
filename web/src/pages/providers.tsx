@@ -420,7 +420,9 @@ function NewProviderDialog({
               前端还旧（新前端 + 旧响应），少读一个字段就够把整页打崩一次。
             */}
             {schema !== null && (schema.audio ?? []).length > 0 ? (
-              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {t((schema.audio ?? []).includes('speech') ? 'pr.audio_hint' : 'pr.audio_hint_transcriptions')}
+              </p>
             ) : null}
           </div>
 
@@ -616,7 +618,9 @@ function EditProviderDialog({ provider, onClose }: { provider: Provider; onClose
               前端还旧（新前端 + 旧响应），少读一个字段就够把整页打崩一次。
             */}
             {schema !== null && (schema.audio ?? []).length > 0 ? (
-              <p className="text-[11px] leading-relaxed text-muted-foreground">{t('pr.audio_hint')}</p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {t((schema.audio ?? []).includes('speech') ? 'pr.audio_hint' : 'pr.audio_hint_transcriptions')}
+              </p>
             ) : null}
           </div>
 

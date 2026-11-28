@@ -253,6 +253,7 @@ Worker 调用，那一笔由站点自己吃掉（SDK 常在启动时先问一次
 |---|---|---|
 | `openai-audio` | Qwen LB、OpenAI、任何兼容实现（`openai-audio` 协议） | 请求体按原始字节转发，应答原样读：转写读 `text` 与用量，合成直接把字节交回 |
 | `qwen-native` | 百炼（`qwen` 协议） | 构造原生请求、归一化应答：转写折成 `input_audio` data URI，合成按型号的调用方式走两条原生接口，音频再从上游给的地址下载一次 |
+| `chatgpt-desktop` | 一份 ChatGPT 订阅（`openai-oauth` 协议） | 请求体按原始字节转发到桌面专属的 `/backend-api/transcribe`（地址在 Codex 根旁边），身份换成桌面客户端；应答读 `text` 与可选的时长。只接转写——订阅额度里没有合成的路 |
 
 音频的型号表与价目都在代码里：`qwen.ts` 说「哪个型号是转写还是合成、走哪条原生接口」，
 `pricing.ts` 说「按秒、按字符还是按 token」。音频**没有兜底价**——认不出的型号在转发之前就

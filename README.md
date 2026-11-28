@@ -99,7 +99,7 @@ Norm 刻意**不做** $M \times N$ 的成对翻译矩阵，而是把「线缆方
 
 - **同方言直通**：判定只看线缆方言（`entry.dialect === profile.dialect`）——例如 Responses 客户端打向 `deepseek`、Chat 客户端打向 `opencode-go` 均为直通；请求体按原始字节发出、响应体原样回来，不碰扩展字段（仅对 chat 流式补 `stream_options.include_usage` 以便记账，且客户端没要时自动吃掉多余用量帧）。
 - **跨方言桥接**：经由规范中间态互译，**完整支持流式与跨方言 Tool Calling**（`tools` / `tool_choice` / `tool_calls` / 工具结果双向互译）。
-- **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存；`openai-oauth` 复用 `openai-responses` 方言，把一份 **ChatGPT 订阅**接成上游——凭据是一对 OAuth 令牌（`access_token` 过期前自动换新并写回库），基址填你自己的**一跳**（自建一跳：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，chatgpt.com 见到直接 403，一跳同时决定出口 IP 与绕开这条被盖戳的管线），请求头由 `src/oauth.ts` 给，且上游只认流式（非流式调用在 Norm 这一侧就被 `400 stream_required` 挡住，不去换一次注定失败的上游 400 与 Gas）。
+- **厂商协议内置契约**：`deepseek` 复用 `openai-responses` 方言，钉死官方基址并按官方高峰/低谷时段两档计价；`opencode-go` 复用 `openai-chat` 方言，钉死推理面基址并自动派生 `x-opencode-session` 头以复用提示词缓存；`openai-oauth` 复用 `openai-responses` 方言，把一份 **ChatGPT 订阅**接成上游——凭据是一对 OAuth 令牌（`access_token` 过期前自动换新并写回库），基址填你自己的**一跳**（自建一跳：Worker 的 `fetch` 会在出站请求上盖 `cf-worker`，chatgpt.com 见到直接 403，一跳同时决定出口 IP 与绕开这条被盖戳的管线），请求头由 `src/oauth.ts` 给，且上游只认流式（非流式调用在 Norm 这一侧就被 `400 stream_required` 挡住，不去换一次注定失败的上游 400 与 Gas）；它也是唯一一条能**转写**的订阅上游：`/v1/audio/transcriptions` 在这里落到桌面客户端的 `/backend-api/transcribe`，只有转写，没有合成。
 - **统一模型清单**：`GET /v1/models` 按方言将上游清单归一成 OpenAI 形状，**不扣 Gas、不写账本**。
 
 ### Qwen：一条协议上的文本、视觉与音频
@@ -123,9 +123,21 @@ curl https://norm.ntnl.io/v1/audio/speech \
   -d '{"input":"你好，世界","model":"qwen3-tts-flash","voice":"Cherry"}' --output speech.wav
 ```
 
-音频的两个入口只有一种线缆形状（OpenAI 的 `/v1/audio/*`），上游可以有两种：`openai-audio`
-（把 Norm 指到一条**已经说 OpenAI 音频**的上游——Qwen LB、OpenAI、任何兼容实现，零翻译直通）
-与 `qwen-native`（Qwen 原生接口，`qwen` 协议自带）。音频按秒（转写）、按字符或按 token（合成）
+一份 **ChatGPT 订阅**（`openai-oauth`）也能转写：订阅额度里没有 OpenAI 平台的
+`/v1/audio/transcriptions`，只有桌面客户端的 `/backend-api/transcribe`——地址在 Codex 根旁边、
+身份也要换成桌面那一个（OpenAI-LB 那条路，原样搬进 `chatgpt-desktop` 方言）。型号写
+`gpt-4o-transcribe`：
+
+```bash
+curl https://norm.ntnl.io/v1/audio/transcriptions \
+  -H "Authorization: Bearer sk-norm-…" \
+  -F 'file=@sample.wav' -F 'model=gpt-4o-transcribe'
+```
+
+音频的两个入口只有一种线缆形状（OpenAI 的 `/v1/audio/*`），上游有三种：`openai-audio`
+（把 Norm 指到一条**已经说 OpenAI 音频**的上游——Qwen LB、OpenAI、任何兼容实现，零翻译直通）、
+`qwen-native`（Qwen 原生接口，`qwen` 协议自带）与 `chatgpt-desktop`（ChatGPT 订阅的桌面转写端点，
+`openai-oauth` 协议自带，只有转写）。音频按秒（转写）、按字符或按 token（合成）
 计价，**没有兜底价**：认不出的型号在打出去之前就拒——按秒与按字符不是同一个单位，猜错方向
 会差几个数量级，而账单不能靠猜。
 

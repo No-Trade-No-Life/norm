@@ -59,7 +59,7 @@ describe('协议契约（protocol schema）', () => {
       fields: ['provider_key'],
       oauth: true,
       stream_only: true,
-      audio: [],
+      audio: ['transcriptions'],
       image: true,
       search: true,
     });
@@ -84,11 +84,15 @@ describe('协议契约（protocol schema）', () => {
     expect(protocolFor('openai-oauth').search).toBe('openai-search');
   });
 
-  it('音频能力只落在 qwen 与 openai-audio 两条协议上', () => {
-    expect(PROTOCOL_SCHEMAS.filter((schema) => schema.audio.length > 0).map((schema) => schema.protocol)).toEqual([
-      'openai-audio',
-      'qwen',
+  it('音频能力：openai-oauth 只接转写，qwen 与 openai-audio 两个入口都认', () => {
+    expect(
+      PROTOCOL_SCHEMAS.filter((schema) => schema.audio.length > 0).map((schema) => [schema.protocol, schema.audio]),
+    ).toEqual([
+      ['openai-oauth', ['transcriptions']],
+      ['openai-audio', ['transcriptions', 'speech']],
+      ['qwen', ['transcriptions', 'speech']],
     ]);
+    expect(protocolFor('openai-oauth').audio).toBe('chatgpt-desktop');
   });
 
   it('qwen：基址是百炼的根，文本走兼容层路径，音频走原生接口', () => {

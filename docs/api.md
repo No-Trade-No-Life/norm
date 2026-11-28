@@ -115,7 +115,8 @@ Gas 费（付给 Norm）与 Token 费（上游那边的 Token 价值）分开处
 给固定基址的协议另填一个不同的 `base_url` 会被拒（`400 base_url_fixed`）——那不是在配置，
 是在以为它能选。
 
-`openai-oauth` **只填凭据**：基址钉死为官方地址 `https://chatgpt.com/backend-api/codex`，
+`openai-oauth` **只填凭据**（它还能出图、搜索与转写：图像走 `image_generation` 工具，
+搜索由 Norm 包 `web_search`，转写走桌面端点的 `chatgpt-desktop` 方言）：基址钉死为官方地址 `https://chatgpt.com/backend-api/codex`，
 `fields` 里没有 `base_url`。但这条上游还要一条 `proxy_url`：Worker 的 `fetch` 会在出站请求上盖
 `cf-worker` / `cf-connecting-ip`，chatgpt.com 见到直接 403（实测：直连 200、从边缘出去 403、
 换成真实 IP 也一样）；隧道里的字节由代理重新发出，这些头不存在。语义与 OpenAI-LB 的
@@ -290,6 +291,11 @@ Gas）。此时 `token_nanos = 0`、`fee_nanos = gas_fee_nanos`——请求已�
 下游只有一种形状：OpenAI 的音频接口。上游怎么说不重要——`qwen` 协议在这里把 Qwen 的原生
 接口翻成这两个端点（Qwen LB 的逻辑，落在 Norm 的一个协议里），`openai-audio` 协议则把请求
 原样转给一条已经说 OpenAI 音频的上游。
+
+一份 **ChatGPT 订阅**（`openai-oauth`）也能转写：它没有平台的 `/v1/audio/transcriptions`，
+只有桌面客户端的 `/backend-api/transcribe`（`chatgpt-desktop` 方言——地址在 Codex 根旁边，
+User-Agent 也换成桌面那一个）。型号写 `gpt-4o-transcribe`；它只接转写，`/v1/audio/speech`
+上没有这条上游。
 
 ```bash
 # 转写：multipart，file 必填，model / language 可选（language 留空或 auto 由上游自己认）
