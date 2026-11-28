@@ -44,8 +44,10 @@ export const GAS_SCHEDULE = {
   cpu_bridge: 100,
   /** 流式 SSE 逐帧拆包与用量嗅探的额外 CPU（≈ +3 CPU-ms）。非流式不收。 */
   cpu_stream: 60,
+  /** D1 行读单价：$0.001 / 1M 行 = 1 纳/行。公开在 /api/v1/pricing 的 schedule 里。 */
+  d1_row_read: D1_ROW_READ_NANOS,
   /**
-   * D1 行读（$0.001 / 1M 行读 = 1 纳/行）：入口只预付点查的 5 行，
+   * 入口预付的行读（5 行 × 1 纳/行）：只覆盖拿不到 `meta` 的点查，
    * 其余按 `report()` 实测累加——单价正确，就不需要再靠「向上取整碰运气」。
    */
   d1_reads: D1_READ_RESERVED_ROWS * D1_ROW_READ_NANOS,
