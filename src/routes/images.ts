@@ -13,6 +13,7 @@ import {
 } from '../gas';
 import { fail } from '../http';
 import { uuidv7 } from '../ids';
+import { logError } from '../log';
 import { MAX_HOST_ATTEMPTS } from '../hosts';
 import { imageCodecFor, readImageAsk, type ImageAsk } from '../images';
 import { isModelNotServed } from '../models';
@@ -111,6 +112,11 @@ imageRoutes.post('/images/generations', async (c: ImageContext) => {
   try {
     providerKey = await providerCredential({ env: c.env, address: provider.address, provider });
   } catch (error) {
+    logError('provider_credential_error', error, {
+      request_id: requestId,
+      provider_id: provider.id,
+      protocol: provider.protocol,
+    });
     return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
   }
 
@@ -160,6 +166,12 @@ imageRoutes.post('/images/generations', async (c: ImageContext) => {
         },
       });
     } catch (error) {
+      logError('upstream_network_error', error, {
+        request_id: requestId,
+        provider_id: provider.id,
+        protocol: provider.protocol,
+        host: accounting.host,
+      });
       const settled = await recordFailure(accounting, 'network_error', 502);
       return c.json(
         { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },

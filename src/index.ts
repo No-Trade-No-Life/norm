@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from './env';
 import { HttpError } from './http';
+import { logError } from './log';
 import { authenticate, authenticateConsumer, type Identity, type Principal } from './auth';
 import { availableNanos, totalSpendNanos, type PrincipalCounters } from './store';
 import { publicRoutes } from './routes/public';
@@ -112,10 +113,14 @@ app.route('/v1', relayOnly());
 app.notFound((c) => c.json({ error: 'not_found', message: `没有这个接口：${new URL(c.req.url).pathname}` }, 404));
 
 app.onError((error, c) => {
+  const path = new URL(c.req.url).pathname;
   if (error instanceof HttpError) {
+    if (error.status >= 500) {
+      logError('http_error', error, { method: c.req.method, path, status: error.status, code: error.code });
+    }
     return c.json({ error: error.code, message: error.message }, error.status as 400);
   }
-  console.error('norm error', error);
+  logError('unhandled_error', error, { method: c.req.method, path });
   return c.json({ error: 'internal_error', message: '服务内部错误' }, 500);
 });
 

@@ -66,7 +66,8 @@ function spyD1(db: DatabaseSync) {
     },
     all: async <T>() => {
       reads += 1;
-      return { results: db.prepare(sql).all(...params) as T[] };
+      const results = db.prepare(sql).all(...params) as T[];
+      return { results, meta: { rows_read: results.length } };
     },
     run: async () => {
       writes += 1;
@@ -463,5 +464,98 @@ describe('D1 WITHOUT ROWID、零额外 Overhead 与集合 diff 验证', () => {
     expect(spy.counts().writes).toBe(0);
     const rows = (db.prepare('SELECT COUNT(*) AS n FROM affinities').get() as { n: number }).n;
     expect(rows).toBe(0);
+  });
+
+  it('亲和命中快路径（pinnedProvider）：在最新表结构下不报缺列、仅 2 次读命中，并在搜索/图像能力不匹配时正确回落', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    const spy = spyD1(db);
+    const env = { DB: spy.DB, AFFINITY_TTL_SECONDS: '3600' } as unknown as Env;
+
+    // 迁移 0031 补齐 0030 重建 providers 后丢失的两条选址覆盖索引。
+    const providerIndexes = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'providers'")
+      .all() as { name: string }[];
+    const indexNames = new Set(providerIndexes.map((row) => row.name));
+    expect(indexNames.has('providers_serving_address')).toBe(true);
+    expect(indexNames.has('providers_serving_pool')).toBe(true);
+
+    const address = 'affinity-fastpath-fixture';
+    db.prepare('INSERT INTO principals (address, created_at, voucher_nanos) VALUES (?, ?, ?)').run(
+      address,
+      1_700_000_000,
+      1_000_000,
+    );
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run('prv_chat', address, 'chat', 'https://api.openai.com/v1', 'sk-a…z', 'sealed', 'aes-256-gcm', 'openai-chat', 1_700_000_000);
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run('prv_ds', address, 'ds', 'https://api.deepseek.com', 'sk-b…z', 'sealed', 'aes-256-gcm', 'deepseek', 1_700_000_001);
+    db.prepare(
+      `INSERT INTO providers (id, address, label, base_url, key_hint, sealed_key, kdf, protocol, scope, enabled, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'private', 1, ?)`,
+    ).run(
+      'prv_oauth',
+      address,
+      'oauth',
+      'https://chatgpt.com/backend-api/codex',
+      'acc_test',
+      'sealed',
+      'aes-256-gcm',
+      'openai-oauth',
+      1_700_000_002,
+    );
+    // 让 prv_chat 明确只服务 gpt-4o-mini，确保首次请求钉住它。
+    db.prepare('UPDATE providers SET models_fetched_at = ? WHERE id IN (?, ?, ?)').run(
+      1_700_000_010,
+      'prv_chat',
+      'prv_ds',
+      'prv_oauth',
+    );
+    db.prepare('INSERT INTO provider_models (provider_id, model, fetched_at) VALUES (?, ?, ?)').run(
+      'prv_chat',
+      'gpt-4o-mini',
+      1_700_000_010,
+    );
+
+    const key = { source: 'thread-id' as const, value: 'thread-fastpath-1' };
+
+    // 第 1 次请求：未命中亲和，写入 affinities 钉住 prv_chat。
+    const first = await resolveProvider(env, address, key, { model: 'gpt-4o-mini' });
+    expect(first.provider.id).toBe('prv_chat');
+    expect(first.sticky).toBe(false);
+
+    // 第 2 次请求：命中亲和快路径（pinnedProvider），不应再扫全表，也不应报缺 last_nonce 列。
+    spy.resetCounts();
+    const second = await resolveProvider(env, address, key, { model: 'gpt-4o-mini' });
+    expect(second.provider.id).toBe('prv_chat');
+    expect(second.sticky).toBe(true);
+    expect(second.via).toBe('owned');
+    expect(spy.counts().reads).toBe(2); // 1 次 affinities + 1 次 pinnedProvider
+    expect(spy.counts().writes).toBe(0);
+
+    // 同一会话发起 deepseek 搜索请求：快路径必须识别 prv_chat 不会搜索，回落选出 prv_ds。
+    const searchChoice = await resolveProvider(env, address, key, { search: 'deepseek-search', readOnly: true });
+    expect(searchChoice.provider.id).toBe('prv_ds');
+
+    // 同一会话发起图像请求：快路径必须识别 prv_chat 不会出图，回落选出 prv_oauth。
+    const imageChoice = await resolveProvider(env, address, key, {
+      readOnly: true,
+      image: {
+        model: 'gpt-image-1.5',
+        prompt: 'a circle',
+        size: 'auto',
+        quality: 'auto',
+        background: 'auto',
+        outputFormat: 'png',
+        outputCompression: 100,
+        moderation: 'auto',
+        referenceImages: [],
+      },
+    });
+    expect(imageChoice.provider.id).toBe('prv_oauth');
   });
 });

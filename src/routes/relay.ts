@@ -28,8 +28,9 @@ import {
   GAS_TOKEN_TRANSFER_NANOS,
   GasMeter,
 } from '../gas';
-import { fail } from '../http';
+import { HttpError, fail } from '../http';
 import { nowSeconds, uuidv7 } from '../ids';
+import { logError } from '../log';
 import { isModelNotServed } from '../models';
 import { quote, ZERO_AUDIO_USAGE } from '../pricing';
 import { providerCredential } from '../credentials';
@@ -213,7 +214,10 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
       });
     } catch (error) {
       // 换候选时发现没有下一条了：这不是新错误，把上一条上游的原话交回去。
-      if (attempt > 0 && refused) return upstreamFailure(c, refused.accounting, refused.failure);
+      // 只吞可预期的 HttpError（如 provider_exhausted / model_not_served），内部异常必须继续抛出并记日志。
+      if (attempt > 0 && refused && error instanceof HttpError) {
+        return upstreamFailure(c, refused.accounting, refused.failure);
+      }
       throw error;
     }
     const provider = choice.provider;
@@ -262,6 +266,11 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
     } catch (error) {
       // 这把钥匙用不了（换新被上游拒了、密文解不开）：请求根本没打出去，所以不记账，
       // 但必须把原因交回去——「服务内部错误」会把唯一一条能诊断的信息吞掉。
+      logError('provider_credential_error', error, {
+        request_id: requestId,
+        provider_id: provider.id,
+        protocol: provider.protocol,
+      });
       return c.json({ error: 'provider_credential_unavailable', message: (error as Error).message }, 502);
     }
 
@@ -342,6 +351,12 @@ async function proxy(c: RelayContext, entry: Entry): Promise<Response> {
         },
       });
     } catch (error) {
+      logError('upstream_network_error', error, {
+        request_id: requestId,
+        provider_id: provider.id,
+        protocol: provider.protocol,
+        host,
+      });
       const settled = await recordFailure(accounting, 'network_error', 502);
       return c.json(
         { error: 'provider_unreachable', message: `Provider 不可达：${(error as Error).message}` },
@@ -608,10 +623,19 @@ function passThroughStream(accounting: Accounting & { reply: Response; dialect: 
           return;
         }
       } catch (error) {
+        logError('stream_error', error, {
+          request_id: requestId,
+          provider_id: accounting.providerId,
+          host: accounting.host,
+          model: accounting.model,
+          mode: 'passthrough',
+        });
         if (!finished) {
           finished = true;
           if (!accounting.gas.isFinalized) {
-            await recordFailure(accounting, 'network_error', 502).catch(() => undefined);
+            await recordFailure(accounting, 'network_error', 502).catch((settleError) => {
+              logError('stream_record_failure_error', settleError, { request_id: requestId });
+            });
           }
         }
         controller.error(error);
@@ -814,10 +838,19 @@ function bridgeStream(accounting: Accounting & { reply: Response; entry: Dialect
           return;
         }
       } catch (error) {
+        logError('stream_error', error, {
+          request_id: accounting.requestId,
+          provider_id: accounting.providerId,
+          host: accounting.host,
+          model: accounting.model,
+          mode: 'bridge',
+        });
         if (!done) {
           done = true;
           if (!accounting.gas.isFinalized) {
-            await recordFailure(accounting, 'network_error', 502).catch(() => undefined);
+            await recordFailure(accounting, 'network_error', 502).catch((settleError) => {
+              logError('stream_record_failure_error', settleError, { request_id: accounting.requestId });
+            });
           }
         }
         controller.error(error);

@@ -3,6 +3,7 @@ import { canOwnPool, type Env } from '../env';
 import type { Identity } from '../auth';
 import { fail } from '../http';
 import { nowSeconds, uuidv4 } from '../ids';
+import { logError } from '../log';
 import { PROTOCOLS, isProtocol, protocolFor } from '../protocols';
 import { hostOf } from '../base-urls';
 import { syncProviderModels } from '../models';
@@ -335,7 +336,11 @@ function background(
   task: Promise<unknown>,
 ): void {
   try {
-    c.executionCtx.waitUntil(task.catch(() => undefined));
+    c.executionCtx.waitUntil(
+      task.catch((error) => {
+        logError('background_task_error', error);
+      }),
+    );
   } catch {
     // 没有 executionCtx：这次不同步，等「模型」页读一次总表时再补。
   }

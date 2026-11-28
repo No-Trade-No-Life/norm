@@ -522,7 +522,7 @@ export type ResolveRequest = {
  * 亲和命中时的快路径：按主键取「钉住的那一条」，不扫 providers 全表、也不联 provider_models。
  *
  * 命中必须满足「这条现在还能接这一单」：还在、还启用、还归自己或还在池子里、
- * 音频方言做得了、型号在它的清单里（清单没抓过算未知，允许一试）。
+ * 音频/搜索/图像方言做得了、型号在它的清单里（清单没抓过算未知，允许一试）。
  * 任何一条不满足就返回 null，让调用方回落到完整选址——粘性是「尽量不搬家」，不是「宁可失败」。
  */
 async function pinnedProvider(
@@ -533,9 +533,7 @@ async function pinnedProvider(
 ): Promise<ProviderRow | null> {
   const model = (request.model ?? '').trim();
   const { results, meta } = await env.DB.prepare(
-    `SELECT p.id, p.address, p.label, p.base_url, p.key_hint, p.sealed_key, p.sealed_proxy,
-            p.proxy_hint, p.kdf, p.protocol, p.scope, p.enabled, p.created_at, p.revoked_at,
-            p.last_nonce, p.models_fetched_at, m.model AS served_model
+    `SELECT p.*, m.model AS served_model
        FROM providers p
        LEFT JOIN provider_models m ON m.provider_id = p.id AND m.model = ?
       WHERE p.id = ? AND p.revoked_at IS NULL AND p.enabled = 1 AND (p.address = ? OR p.scope = 'pool')`,
@@ -545,15 +543,24 @@ async function pinnedProvider(
   request.gas?.report(meta);
   const row = results[0];
   if (!row) return null;
+  const { served_model: servedModel, ...provider } = row;
   // 清单抓过（models_fetched_at > 0）就必须真有这一行；没抓过算未知，允许一试。
-  if (model.length > 0 && row.models_fetched_at > 0 && row.served_model === null) return null;
+  if (model.length > 0 && provider.models_fetched_at > 0 && servedModel === null) return null;
   const audio = request.audio;
   if (audio !== undefined) {
-    const dialect = protocolFor(row.protocol).audio;
+    const dialect = protocolFor(provider.protocol).audio;
     if (dialect === undefined || !audioCodecFor(dialect).serves(audio)) return null;
   }
+  if (request.search !== undefined && protocolFor(provider.protocol).search !== request.search) {
+    return null;
+  }
+  const image = request.image;
+  if (image !== undefined) {
+    const dialect = protocolFor(provider.protocol).image;
+    if (dialect === undefined || !imageCodecFor(dialect).serves(image)) return null;
+  }
   // 自有优先：钉住的是池子那条时，只有自己名下一条启用中的上游都没有，才直接走它。
-  if (row.address !== address) {
+  if (provider.address !== address) {
     const own = await env.DB.prepare(
       'SELECT 1 AS found FROM providers WHERE address = ? AND revoked_at IS NULL AND enabled = 1 LIMIT 1',
     )
@@ -561,7 +568,7 @@ async function pinnedProvider(
       .first<{ found: number }>();
     if (own !== null) return null;
   }
-  return row;
+  return provider;
 }
 
 export async function resolveProvider(
@@ -575,16 +582,17 @@ export async function resolveProvider(
   // 否则两个 Worker 上同一个会话会落到不同上游。
   // 亲和命中是转发面最热的路径：钉住的那条还在，就直接按主键取那一行发过去，
   // 不扫 providers 全表、也不联 provider_models。命中不了再走下面的完整选址。
-  if (affinityKey) {
-    const fastHash = affinityHash(address, affinityKey.value);
+  const hash = affinityKey ? affinityHash(address, affinityKey.value) : null;
+  let pinned: { provider_id: string; expires_at: number } | null = null;
+  if (hash !== null) {
     const fastExcluded = new Set(request.exclude ?? []);
-    const pinnedRow = await env.DB.prepare(
+    pinned = await env.DB.prepare(
       'SELECT provider_id, expires_at FROM affinities WHERE address = ? AND affinity_hash = ?',
     )
-      .bind(address, fastHash)
+      .bind(address, hash)
       .first<{ provider_id: string; expires_at: number }>();
-    if (pinnedRow && affinityFresh(pinnedRow.expires_at, now) && !fastExcluded.has(pinnedRow.provider_id)) {
-      const chosen = await pinnedProvider(env, address, pinnedRow.provider_id, request);
+    if (pinned && affinityFresh(pinned.expires_at, now) && !fastExcluded.has(pinned.provider_id)) {
+      const chosen = await pinnedProvider(env, address, pinned.provider_id, request);
       if (chosen) {
         return { provider: chosen, via: chosen.address === address ? 'owned' : 'pool', sticky: true };
       }
@@ -658,17 +666,10 @@ export async function resolveProvider(
   const via = (provider: ProviderRow): 'owned' | 'pool' => (provider.address === address ? 'owned' : 'pool');
 
   // 没有亲和键 = 这次请求不粘：直接按随机种子摊开，连亲和表都不读。
-  if (!affinityKey) {
+  if (hash === null) {
     const chosen = pickByRendezvous(candidates, randomToken(12));
     return { provider: chosen, via: via(chosen), sticky: false };
   }
-
-  const hash = affinityHash(address, affinityKey.value);
-  const pinned = await env.DB.prepare(
-    'SELECT provider_id, expires_at FROM affinities WHERE address = ? AND affinity_hash = ?',
-  )
-    .bind(address, hash)
-    .first<{ provider_id: string; expires_at: number }>();
 
   if (pinned && affinityFresh(pinned.expires_at, now)) {
     const hit = candidates.find((candidate) => candidate.id === pinned.provider_id);
