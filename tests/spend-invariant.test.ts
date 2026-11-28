@@ -53,9 +53,14 @@ function d1(db: DatabaseSync): Env['DB'] {
   } as unknown as Env['DB'];
 }
 
-/** 结算两段连起来：先扣钱（这一段的行数由 meta 给出），再写请求行。 */
-async function settle(env: Env, row: RequestRecord): Promise<Settled> {
-  const charge = await chargeSettlement(env, row);
+/**
+ * 结算两段连起来：先扣钱（这一段的行数由 meta 给出），再写请求行。
+ *
+ * 默认按「不欠费」结算（`allowOverdraft = false`）：下面这些用例验证的是「扣不满就少扣、
+ * 绝不凭空增发」这条不变量。测试期线上跑的是 `ALLOW_OVERDRAFT = true`，那条路的用例单列。
+ */
+async function settle(env: Env, row: RequestRecord, allowOverdraft = false): Promise<Settled> {
+  const charge = await chargeSettlement(env, row, allowOverdraft);
   return writeSettlement(env, row, charge);
 }
 
@@ -289,6 +294,34 @@ describe('Gas 与 Token 分开结算及价值守恒不变量', () => {
     expect(sumOf(db, 'SELECT COALESCE(SUM(earn_nanos), 0) AS total FROM principals')).toBe(
       sumOf(db, 'SELECT COALESCE(SUM(token_billed_nanos), 0) AS total FROM requests WHERE provider_user <> address'),
     );
+  });
+
+  it('测试期允许欠费：余额不足也全额扣，余额变负、上游照收全额', async () => {
+    const db = new DatabaseSync(':memory:');
+    migrate(db);
+    db.prepare('INSERT INTO principals (address, created_at, recharge_nanos) VALUES (?, ?, ?)').run(
+      ALICE,
+      1_700_000_000,
+      5_000,
+    );
+    db.prepare('INSERT INTO principals (address, created_at) VALUES (?, ?)').run(BOB, 1_700_000_000);
+
+    const env = { DB: d1(db) } as unknown as Env;
+    // 欠费打开：Gas 3,420 与 Token 10,000 全额记账，余额 5,000 → −8,420，unbilled 恒为 0。
+    const overdrawn = await settle(env, record(ALICE, { gasFeeNanos: 3_420, tokenNanos: 10_000, providerUser: BOB }), true);
+    expect(overdrawn).toEqual({
+      billedNanos: 13_420,
+      gasBilledNanos: 3_420,
+      tokenBilledNanos: 10_000,
+      unbilledNanos: 0,
+      balanceNanos: -8_420,
+    });
+
+    const alice = countersOf(db, ALICE);
+    const bob = countersOf(db, BOB);
+    expect(availableNanos(alice)).toBe(-8_420);
+    // 价值守恒仍然成立：扣到的 Token 费一分不少地转给了上游。
+    expect(bob.earn_nanos).toBe(10_000);
   });
 
   it('迁移 0023 对历史数据回填准确，且 account 路由准确分开展示 Gas、Token 与上游收入', async () => {

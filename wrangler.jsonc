@@ -32,8 +32,6 @@
     // 余额安全阈值（纳美元）：余额低于此值时在转发入口直接 402 拒绝，0 D1 写、0 上游请求。
     // 动态 Gas 操作码单价表写在 src/gas.ts（随代码进入 source_sha256 可复现校验），不放部署变量里。
     "MIN_BALANCE_NANOS": "10000",
-    // 新地址的演示授信。
-    "GRANT_NANOS": "1000000000",
     // 签名时间窗：只校验请求是否新鲜，浏览器 ↔ Worker 全程走 TLS，不维护服务端 nonce 状态。
     "SIGNATURE_WINDOW_SECONDS": "60",
     // 亲和有效期：一个 thread-id / session-id 在这段时间里留在同一条上游上。
