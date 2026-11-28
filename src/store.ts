@@ -287,7 +287,12 @@ export type ProviderChoice = {
 };
 
 /** 这一次要问的两件事：谁的清单抓过、谁有这个名字。 */
-export type ModelCoverage = { known: Set<string>; serving: Set<string> };
+export type ModelCoverage = {
+  known: Set<string>;
+  serving: Set<string>;
+  /** 这条查询实际读了多少行（D1 `meta.rows_read` 之和），供 Gas 按行计价。 */
+  rowsRead: number;
+};
 
 /**
  * D1 每次查询最多 100 个绑定变量（`too many SQL variables`）。
@@ -337,11 +342,12 @@ export async function modelCoverage(
 ): Promise<ModelCoverage> {
   const known = new Set<string>();
   const serving = new Set<string>();
-  if (providerIds.length === 0 || model.length === 0) return { known, serving };
+  let rowsRead = 0;
+  if (providerIds.length === 0 || model.length === 0) return { known, serving, rowsRead };
 
   for (let start = 0; start < providerIds.length; start += MODEL_QUERY_CHUNK) {
     const chunk = providerIds.slice(start, start + MODEL_QUERY_CHUNK);
-    const { results } = await env.DB.prepare(
+    const { results, meta } = await env.DB.prepare(
       `SELECT p.id AS id, p.models_fetched_at AS fetched_at, m.model AS model
          FROM providers p
          LEFT JOIN provider_models m ON m.provider_id = p.id AND m.model = ?
@@ -353,8 +359,9 @@ export async function modelCoverage(
       if (row.fetched_at > 0) known.add(row.id);
       if (row.model !== null) serving.add(row.id);
     }
+    rowsRead += meta.rows_read ?? 0;
   }
-  return { known, serving };
+  return { known, serving, rowsRead };
 }
 
 /** 把要删除的模型名按 D1 绑定变量上限切成批次（1 个 provider_id + 最多 40 个 model）。 */
@@ -520,13 +527,15 @@ export async function resolveProvider(
   const now = nowSeconds();
   // 顺序固定（created_at, id）：rendezvous 的落点必须是候选的确定函数，
   // 否则两个 Worker 上同一个会话会落到不同上游。
-  const { results } = await env.DB.prepare(
+  const { results, meta } = await env.DB.prepare(
     `SELECT * FROM providers
       WHERE revoked_at IS NULL AND enabled = 1 AND (address = ? OR scope = 'pool')
       ORDER BY created_at, id`,
   )
     .bind(address)
     .all<ProviderRow>();
+  // 全表扫读到多少行就收多少（1 纳/行）：provider 变多时 Gas 会自己跟上，不用回来改常数。
+  request.gas?.report(meta);
   if (results.length === 0) return failNoCandidate(env, address);
 
   // 试过的不再选：换候选时这一步保证「换」真的发生了，而不是原地重试。
@@ -574,7 +583,9 @@ export async function resolveProvider(
   // 池子里那条能跑的反而用不上。
   const model = (request.model ?? '').trim();
   if (model) {
-    pool = [...narrowToServingModel(pool, await modelCoverage(env, pool.map((row) => row.id), model))];
+    const coverage = await modelCoverage(env, pool.map((row) => row.id), model);
+    request.gas?.chargeD1Reads(coverage.rowsRead);
+    pool = [...narrowToServingModel(pool, coverage)];
     if (pool.length === 0) failModelNotServed(model);
   }
 

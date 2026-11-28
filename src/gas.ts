@@ -14,6 +14,17 @@
  * 可被审查的合并，并在 `GET /api/v1/pricing` 完整公开。
  */
 
+/** D1 行读单价：$0.001 / 1M 行 = 1 纳/行（$1 = 1e9 纳）。 */
+export const D1_ROW_READ_NANOS = 1;
+/**
+ * 入口预付的固定行读（单位：行）。
+ *
+ * 只覆盖拿不到 `meta` 的点查：鉴权 2 行（`consumers JOIN principals`）+
+ * 结算 `UPDATE principals` 2 行 + 会话亲和点查 1 行。选举址全表扫与型号覆盖
+ * 这两条 `.all()` 读到多少行，由 `chargeD1Reads(meta.rows_read)` 按实测累加。
+ */
+export const D1_READ_RESERVED_ROWS = 5;
+
 /** Cloudflare 列表价换算后的单价（整数纳美元）。 */
 export const GAS_SCHEDULE = {
   /** Workers Paid：$0.30 / 1M 次调用。 */
@@ -34,10 +45,10 @@ export const GAS_SCHEDULE = {
   /** 流式 SSE 逐帧拆包与用量嗅探的额外 CPU（≈ +3 CPU-ms）。非流式不收。 */
   cpu_stream: 60,
   /**
-   * D1 行读保守上界（$0.001 / 1M 行读 = 0.001 纳/行）：
-   * 单次推理实际读 20–50 行（≈ 0.05 纳），向上取 10 纳可覆盖 10,000 行读，保证永不漏收。
+   * D1 行读（$0.001 / 1M 行读 = 1 纳/行）：入口只预付点查的 5 行，
+   * 其余按 `report()` 实测累加——单价正确，就不需要再靠「向上取整碰运气」。
    */
-  d1_reads: 10,
+  d1_reads: D1_READ_RESERVED_ROWS * D1_ROW_READ_NANOS,
   /** D1 行写：$1.00 / 1M 行写（表行与每一条二级索引各计 1 行）。 */
   d1_row_write: 1_000,
   /**
@@ -87,7 +98,7 @@ export function applyGasMargin(rawNanos: number, marginBps: number = GAS_MARGIN_
   return Math.ceil((rawNanos * (10_000 + marginBps)) / 10_000);
 }
 
-/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 100 + 10 + 0 = 420 纳）。 */
+/** 请求刚进入 Worker 就已经发生的固有基础成本（300 + 10 + 100 + 5 + 0 = 415 纳）。 */
 export const GAS_ENTRY_BASE_NANOS =
   GAS_SCHEDULE.worker_invocation +
   GAS_SCHEDULE.log_event +
@@ -107,12 +118,12 @@ export const GAS_TOKEN_TRANSFER_NANOS = D1_ROW_WRITES.token_transfer * GAS_SCHED
 /** 写一次会话亲和的成本（1,000 纳：affinities WITHOUT ROWID 1 行）。 */
 export const GAS_AFFINITY_UPSERT_NANOS = D1_ROW_WRITES.affinity_upsert * GAS_SCHEDULE.d1_row_write;
 
-/** 一次完整推理执行的稳态最低 Gas（同日直通、非流式、无需 touch 与写亲和 = 2,420 纳）。 */
+/** 一次完整推理执行的稳态最低 Gas（同日直通、非流式、无需 touch 与写亲和 = 2,415 纳）。 */
 export const GAS_FLOOR_NANOS = applyGasMargin(GAS_ENTRY_BASE_NANOS + GAS_SETTLE_NANOS);
 
 /**
  * 默认余额安全阈值（10,000 纳 = $0.00001）：
- * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（4,580 纳）乃至含一次模型纠偏重试（8,680 纳）。
+ * 余裕覆盖「跨方言 + 流式 + 当日首次 touch + 写亲和」（4,575 纳）乃至含一次模型纠偏重试（8,675 纳）。
  * 余额低于该阈值时在入口直接 402 拒绝，0 次 D1 写、0 次上游调用。
  */
 export const DEFAULT_MIN_BALANCE_NANOS = 10_000;
@@ -166,6 +177,25 @@ export class GasMeter {
       throw new Error(`非法的 Gas 增量：${amountNanos}`);
     }
     this.rawNanos += amountNanos;
+  }
+
+  /** 按真实 D1 行读数累加（每行 1 纳）。`meta.rows_read` 拿到多少就收多少。 */
+  chargeD1Reads(rows: number): void {
+    if (!Number.isInteger(rows) || rows < 0) {
+      throw new Error(`非法的 D1 行读数：${rows}`);
+    }
+    if (rows === 0) return;
+    this.charge(rows * D1_ROW_READ_NANOS);
+  }
+
+  /**
+   * 把一次 D1 返回的 `meta` 计入 Gas：读按 1 纳/行，写按 1,000 纳/行。
+   * 直接吃 `D1Result['meta']`，调用点不需要自己拆字段。
+   */
+  report(meta: { rows_read?: number; rows_written?: number } | undefined): void {
+    if (!meta) return;
+    this.chargeD1Reads(meta.rows_read ?? 0);
+    this.chargeD1Writes(meta.rows_written ?? 0);
   }
 
   /** 按真实 D1 行写数累加（每行 1,000 纳）。 */
